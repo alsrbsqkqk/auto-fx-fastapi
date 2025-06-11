@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Request
 import os
-from dotenv import load_dotenv
-load_dotenv()
+print("✅ Loaded OANDA_API_KEY =", os.getenv("OANDA_API_KEY"))
+print("✅ Loaded ACCOUNT_ID =", os.getenv("ACCOUNT_ID"))
 import requests
 import json
 import pandas as pd
