@@ -377,7 +377,6 @@ import os
 def log_trade_result(pair, signal, decision, score, notes, result=None):
     file_exists = os.path.exists("trade_results.csv")
     try:
-        
         with open("trade_results.csv", "a", newline="", encoding="utf-8-sig") as f:
             writer = csv.writer(f)
             if not file_exists:
@@ -386,8 +385,8 @@ def log_trade_result(pair, signal, decision, score, notes, result=None):
             writer.writerow(row)
             f.flush()
             print("📝 트레이드 기록 저장:", row)
-      except Exception as e:
-            print("❌ trade_results.csv 저장 실패:", str(e))
+    except Exception as e:
+        print("❌ trade_results.csv 저장 실패:", str(e))
 
           
 
