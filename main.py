@@ -49,13 +49,19 @@ async def webhook(request: Request):
             if isinstance(data, str):
                 data = json.loads(data)
         except Exception as e:
+            print("❌ JSON 파싱 실패:", str(e))
             return {"status": "error", "message": f"JSON 파싱 실패: {str(e)}"}
-        pair = data["pair"]
-        price = float(data["price"])
-        signal = data["signal"]
-        strategy = data.get("strategy", "N/A")
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+        pair = data.get("pair")
+        price_raw = data.get("price")
+        signal = data.get("signal")
+        strategy = data.get("strategy")
+
+        print(f"🧪 수신된 값 - pair: {pair}, price: {price_raw}, signal: {signal}, strategy: {strategy}")
+        try:
+            price = float(price_raw)
+        except Exception as e:
+            print(f"❌ price 변환 실패: {price_raw} → {str(e)}")
+            return {"status": "error", "message": f"price 변환 실패: {str(e)}"}        
 
     now = datetime.utcnow()
     if now.hour < 4 or now.hour >= 20:
