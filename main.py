@@ -8,9 +8,11 @@ import openai
 from openai import OpenAI
 import numpy as np
 import csv
+
 print("✅ Render에서 OANDA_API_KEY =", os.getenv("OANDA_API_KEY"))
 print("✅ Loaded OANDA_API_KEY =", os.getenv("OANDA_API_KEY"))
 print("✅ Loaded ACCOUNT_ID =", os.getenv("ACCOUNT_ID"))
+
 app = FastAPI()
 
 OANDA_API_KEY = os.getenv("OANDA_API_KEY")
@@ -49,130 +51,129 @@ async def webhook(request: Request):
             if isinstance(data, str):
                 data = json.loads(data)
         except Exception as e:
-            print("❌ JSON 파싱 실패:", str(e))
             return {"status": "error", "message": f"JSON 파싱 실패: {str(e)}"}
+
         pair = data.get("pair")
         price_raw = data.get("price")
         signal = data.get("signal")
         strategy = data.get("strategy")
 
-        print(f"🧪 수신된 값 - pair: {pair}, price: {price_raw}, signal: {signal}, strategy: {strategy}")
         try:
             price = float(price_raw)
         except Exception as e:
-            print(f"❌ price 변환 실패: {price_raw} → {str(e)}")
-            return {"status": "error", "message": f"price 변환 실패: {str(e)}"}  
-    except Exception as e:
-        print(f"❌ Webhook 처리 중 오류: {str(e)}")
-        return {"status": "error", "message": f"처리 실패: {str(e)}"}
+            return {"status": "error", "message": f"price 변환 실패: {str(e)}"}
 
-    now = datetime.utcnow()
-    if now.hour < 4 or now.hour >= 20:
-        return {"message": "현재는 유동성 낮은 시간대로, 전략 판단 신뢰도 저하. 관망 권장."}
+        now = datetime.utcnow()
+        if now.hour < 4 or now.hour >= 20:
+            return {"message": "현재는 유동성 낮은 시간대로, 전략 판단 신뢰도 저하. 관망 권장."}
 
-    candles = get_candles(pair, "M30", 200)
-    if candles.empty:
-        return {"status": "error", "message": f"{pair}에 대한 캔들 데이터 없음"}
-    close = candles["close"]
-    rsi = calculate_rsi(close)
-    macd, macd_signal = calculate_macd(close)
-    stoch_rsi = calculate_stoch_rsi(rsi)
-    support_resistance = detect_support_resistance(candles)
-    fibo_levels = calculate_fibonacci_levels(candles["high"].max(), candles["low"].min())
+        candles = get_candles(pair, "M30", 200)
+        if candles.empty:
+            return {"status": "error", "message": f"{pair}에 대한 캔들 데이터 없음"}
 
-    latest_rsi = rsi.iloc[-1]
-    latest_macd = macd.iloc[-1]
-    latest_signal = macd_signal.iloc[-1]
-    latest_stoch_rsi = stoch_rsi.iloc[-1]
+        close = candles["close"]
+        rsi = calculate_rsi(close)
+        macd, macd_signal = calculate_macd(close)
+        stoch_rsi = calculate_stoch_rsi(rsi)
+        support_resistance = detect_support_resistance(candles)
+        fibo_levels = calculate_fibonacci_levels(candles["high"].max(), candles["low"].min())
 
-    pattern = detect_candle_pattern(candles, pair)
-    trend = detect_trend(candles)
-    volatility = is_volatile(candles)
-    extreme_volatility = is_extremely_volatile(candles)
-    hhll = detect_hh_ll(candles)
-    liquidity = estimate_liquidity(candles)
-    news_risk = fetch_forex_news()
+        latest_rsi = rsi.iloc[-1]
+        latest_macd = macd.iloc[-1]
+        latest_signal = macd_signal.iloc[-1]
+        latest_stoch_rsi = stoch_rsi.iloc[-1]
 
-    if (latest_macd > latest_signal and signal == "SELL") or (latest_macd < latest_signal and signal == "BUY"):
-        log_trade_result(pair, signal, "WAIT", 0, "지표 해석 충돌")
-        return {"message": "지표 간 해석 충돌 감지. 관망 필터 적용."}
+        pattern = detect_candle_pattern(candles, pair)
+        trend = detect_trend(candles)
+        volatility = is_volatile(candles)
+        extreme_volatility = is_extremely_volatile(candles)
+        hhll = detect_hh_ll(candles)
+        liquidity = estimate_liquidity(candles)
+        news_risk = fetch_forex_news()
 
-    signal_score = 0
-    reasons = []
-    if latest_rsi < 30:
-        signal_score += 1
-        reasons.append("RSI < 30")
-    if latest_macd > latest_signal:
-        signal_score += 1
-        reasons.append("MACD 골든크로스")
-    if latest_stoch_rsi > 0.8:
-        signal_score += 1
-        reasons.append("Stoch RSI 과열")
-    if trend == "UPTREND" and signal == "BUY":
-        signal_score += 1
-        reasons.append("추세 상승 + 매수 일치")
-    if trend == "DOWNTREND" and signal == "SELL":
-        signal_score += 1
-        reasons.append("추세 하락 + 매도 일치")
-    if liquidity == "좋음":
-        signal_score += 1
-        reasons.append("유동성 충분")
-    if pattern in ["HAMMER", "BULLISH_ENGULFING"]:
-        signal_score += 1
-        reasons.append(f"캔들패턴: {pattern}")
-    if hhll["HH"] or hhll["LL"]:
-        signal_score += 1
-        reasons.append("고점/저점 갱신 감지")
-    if volatility and not extreme_volatility:
-        signal_score += 1
-        reasons.append("적절한 변동성")
+        if (latest_macd > latest_signal and signal == "SELL") or (latest_macd < latest_signal and signal == "BUY"):
+            log_trade_result(pair, signal, "WAIT", 0, "지표 해석 충돌")
+            return {"message": "지표 간 해석 충돌 감지. 관망 필터 적용."}
 
-    decision = "BUY" if signal_score >= 5 and signal == "BUY" else "SELL" if signal_score >= 5 and signal == "SELL" else "WAIT"
-    adjustment_reason = ""
-    result = {}
+        signal_score = 0
+        reasons = []
 
-    if decision in ["BUY", "SELL"]:
-        units = 50000 if decision == "BUY" else -50000
-        digits = precision_by_pair.get(pair, 5)
-        offset = entry_offset_by_pair.get(pair, 0.0003)
-        tp = round(price + offset, digits) if decision == "BUY" else round(price - offset, digits)
-        sl = round(price - offset, digits) if decision == "BUY" else round(price + offset, digits)
+        if latest_rsi < 30:
+            signal_score += 1
+            reasons.append("RSI < 30")
+        if latest_macd > latest_signal:
+            signal_score += 1
+            reasons.append("MACD 골든크로스")
+        if latest_stoch_rsi > 0.8:
+            signal_score += 1
+            reasons.append("Stoch RSI 과열")
+        if trend == "UPTREND" and signal == "BUY":
+            signal_score += 1
+            reasons.append("추세 상승 + 매수 일치")
+        if trend == "DOWNTREND" and signal == "SELL":
+            signal_score += 1
+            reasons.append("추세 하락 + 매도 일치")
+        if liquidity == "좋음":
+            signal_score += 1
+            reasons.append("유동성 충분")
+        if pattern in ["HAMMER", "BULLISH_ENGULFING"]:
+            signal_score += 1
+            reasons.append(f"캔들패턴: {pattern}")
+        if hhll["HH"] or hhll["LL"]:
+            signal_score += 1
+            reasons.append("고점/저점 갱신 감지")
+        if volatility and not extreme_volatility:
+            signal_score += 1
+            reasons.append("적절한 변동성")
 
-        if decision == "BUY" and (tp < support_resistance["resistance"] or tp < fibo_levels["0.382"]):
-            tp = round(price + 1.5 * offset, digits)
-            adjustment_reason = "TP 보정: S/R 또는 피보나치 저항 고려"
-        if decision == "SELL" and (tp > support_resistance["support"] or tp > fibo_levels["0.618"]):
-            tp = round(price - 1.5 * offset, digits)
-            adjustment_reason = "TP 보정: S/R 또는 피보나치 지지 고려"
+        decision = "BUY" if signal_score >= 5 and signal == "BUY" else "SELL" if signal_score >= 5 and signal == "SELL" else "WAIT"
+        adjustment_reason = ""
+        result = {}
 
-        result = place_order(pair, units, tp, sl, digits)
-        log_trade_result(pair, signal, decision, signal_score, ",".join(reasons) + (" | " + adjustment_reason if adjustment_reason else ""))
-    else:
-        log_trade_result(pair, signal, "WAIT", signal_score, ",".join(reasons))
+        if decision in ["BUY", "SELL"]:
+            units = 50000 if decision == "BUY" else -50000
+            digits = precision_by_pair.get(pair, 5)
+            offset = entry_offset_by_pair.get(pair, 0.0003)
+            tp = round(price + offset, digits) if decision == "BUY" else round(price - offset, digits)
+            sl = round(price - offset, digits) if decision == "BUY" else round(price + offset, digits)
 
-    return {
-        "rsi": round(latest_rsi, 2),
-        "stoch_rsi": round(latest_stoch_rsi, 2),
-        "macd": round(latest_macd, 5),
-        "macd_signal": round(latest_signal, 5),
-        "pattern": pattern,
-        "trend": trend,
-        "liquidity": liquidity,
-        "volatility": volatility,
-        "extreme_volatility": extreme_volatility,
-        "hhll": {
-            "HH": bool(hhll["HH"]),
-            "LL": bool(hhll["LL"])
+            if decision == "BUY" and (tp < support_resistance["resistance"] or tp < fibo_levels["0.382"]):
+                tp = round(price + 1.5 * offset, digits)
+                adjustment_reason = "TP 보정: S/R 또는 피보나치 저항 고려"
+            if decision == "SELL" and (tp > support_resistance["support"] or tp > fibo_levels["0.618"]):
+                tp = round(price - 1.5 * offset, digits)
+                adjustment_reason = "TP 보정: S/R 또는 피보나치 지지 고려"
+
+            result = place_order(pair, units, tp, sl, digits)
+            log_trade_result(pair, signal, decision, signal_score, ",".join(reasons) + (" | " + adjustment_reason if adjustment_reason else ""))
+        else:
+            log_trade_result(pair, signal, "WAIT", signal_score, ",".join(reasons))
+
+        return {
+            "rsi": round(latest_rsi, 2),
+            "stoch_rsi": round(latest_stoch_rsi, 2),
+            "macd": round(latest_macd, 5),
+            "macd_signal": round(latest_signal, 5),
+            "pattern": pattern,
+            "trend": trend,
+            "liquidity": liquidity,
+            "volatility": volatility,
+            "extreme_volatility": extreme_volatility,
+            "hhll": {
+                "HH": bool(hhll["HH"]),
+                "LL": bool(hhll["LL"])
+            },
+            "support_resistance": support_resistance,
+            "fibonacci_levels": fibo_levels,
+            "score": signal_score,
+            "decision": decision,
+            "reasons": reasons,
+            "adjustment_reason": adjustment_reason,
+            "news": news_risk,
+            "order_result": result
         }
-        "support_resistance": support_resistance,
-        "fibonacci_levels": fibo_levels,
-        "score": signal_score,
-        "decision": decision,
-        "reasons": reasons,
-        "adjustment_reason": adjustment_reason,
-        "news": news_risk,
-        "order_result": result
-    }
+    except Exception as e:
+        return {"status": "error", "message": f"처리 실패: {str(e)}"}
 
 def get_candles(pair="EUR_USD", granularity="M30", count=200):
     api_key = os.getenv("OANDA_API_KEY")
