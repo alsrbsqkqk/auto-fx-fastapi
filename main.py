@@ -157,7 +157,7 @@ async def webhook(request: Request):
         "liquidity": liquidity,
         "volatility": volatility,
         "extreme_volatility": extreme_volatility,
-        "hhll": hhll,
+        "hhll": {
             "HH": bool(hhll["HH"]),
             "LL": bool(hhll["LL"])
         }
