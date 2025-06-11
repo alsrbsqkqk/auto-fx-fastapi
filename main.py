@@ -125,7 +125,51 @@ async def webhook(request: Request):
         if volatility and not extreme_volatility:
             signal_score += 1
             reasons.append("적절한 변동성")
+        # 기존 signal_score 판단 후 payload 구성
+        payload = {
+            "pair": pair,
+            "signal": signal,
+            "price": price,
+            "rsi": round(latest_rsi, 2),
+            "macd": round(latest_macd, 5),
+            "macd_signal": round(latest_signal, 5),
+            "stoch_rsi": round(latest_stoch_rsi, 2),
+            "pattern": pattern,
+            "trend": trend,
+            "liquidity": liquidity,
+            "volatility": volatility,
+            "extreme_volatility": extreme_volatility,
+            "hhll": hhll,
+            "support_resistance": support_resistance,
+            "fibonacci_levels": fibo_levels,
+            "news": news_risk,
+            "score": signal_score,
+            "reasons": reasons
+        }
 
+        gpt_feedback = analyze_with_gpt(payload)
+
+        # GPT 응답 파싱
+        import re
+        match = re.search(r"결정\s*[:：]?\s*(BUY|SELL|WAIT)", gpt_feedback, re.IGNORECASE)
+        gpt_decision = match.group(1).upper() if match else "WAIT"
+
+        tp_match = re.search(r"TP\s*[:：]?\s*([\d.]+)", gpt_feedback)
+        sl_match = re.search(r"SL\s*[:：]?\s*([\d.]+)", gpt_feedback)
+        tp = float(tp_match.group(1)) if tp_match else None
+        sl = float(sl_match.group(1)) if sl_match else None
+
+        # 기존 decision 무시하고 GPT 판단 적용
+        decision = gpt_decision
+        adjustment_reason = "GPT 전략 판단 반영"
+
+        if decision in ["BUY", "SELL"] and tp and sl:
+            units = 50000 if decision == "BUY" else -50000
+            digits = precision_by_pair.get(pair, 5)
+            result = place_order(pair, units, tp, sl, digits)
+            log_trade_result(pair, signal, decision, signal_score, ",".join(reasons) + " | GPT결정")
+        else:
+            log_trade_result(pair, signal, "WAIT", signal_score, ",".join(reasons) + " | GPT WAIT")
         decision = "BUY" if signal_score >= 5 and signal == "BUY" else "SELL" if signal_score >= 5 and signal == "SELL" else "WAIT"
         adjustment_reason = ""
         result = {}
@@ -343,3 +387,35 @@ def oanda_auth_test():
 
     r = requests.get(url, headers=headers)
     return {"status": r.status_code, "response": r.text}
+
+def analyze_with_gpt(payload):
+    import requests
+    import os
+
+    url = "https://api.openai.com/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
+        "Content-Type": "application/json"
+    }
+    messages = [
+        {
+            "role": "system",
+            "content": "너는 실전 FX 트레이딩 전략 조력자야. 아래 JSON 데이터를 기반으로 전략 리포트를 생성하고, 진입 판단(BUY, SELL, WAIT)과 TP, SL 값을 제시해줘."
+        },
+        {
+            "role": "user",
+            "content": json.dumps(payload, ensure_ascii=False)
+        }
+    ]
+    body = {
+        "model": "gpt-4",
+        "messages": messages,
+        "temperature": 0.3
+    }
+
+    try:
+        response = requests.post(url, headers=headers, json=body, timeout=10)
+        result = response.json()
+        return result["choices"][0]["message"]["content"]
+    except Exception as e:
+        return f"GPT 요청 실패: {str(e)}"
