@@ -1,7 +1,9 @@
-from fastapi import FastAPI, Request
-import os
+print("🚀 FASTAPI 서버 시작됨")
 print("✅ Loaded OANDA_API_KEY =", os.getenv("OANDA_API_KEY"))
 print("✅ Loaded ACCOUNT_ID =", os.getenv("ACCOUNT_ID"))
+
+from fastapi import FastAPI, Request
+import os
 import requests
 import json
 import pandas as pd
