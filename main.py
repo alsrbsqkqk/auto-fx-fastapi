@@ -162,7 +162,7 @@ async def webhook(request: Request):
             "hhll_HH": bool(hhll.get("HH", False)),
             "hhll_LL": bool(hhll.get("LL", False)),
            
-            },
+            }
             "support_resistance": support_resistance,
             "fibonacci_levels": fibo_levels,
             "score": signal_score,
