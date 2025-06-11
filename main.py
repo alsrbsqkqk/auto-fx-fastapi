@@ -43,7 +43,13 @@ def home():
 @app.post("/webhook")
 async def webhook(request: Request):
     try:
-        data = await request.json()
+        raw_data = await request.body()
+        try:
+            data = json.loads(raw_data) if isinstance(raw_data, bytes) else raw_data
+            if isinstance(data, str):
+                data = json.loads(data)
+        except Exception as e:
+            return {"status": "error", "message": f"JSON 파싱 실패: {str(e)}"}
         pair = data["pair"]
         price = float(data["price"])
         signal = data["signal"]
