@@ -1,9 +1,5 @@
-print("🚀 FASTAPI 서버 시작됨")
-print("✅ Loaded OANDA_API_KEY =", os.getenv("OANDA_API_KEY"))
-print("✅ Loaded ACCOUNT_ID =", os.getenv("ACCOUNT_ID"))
-
-from fastapi import FastAPI, Request
 import os
+from fastapi import FastAPI, Request
 import requests
 import json
 import pandas as pd
@@ -13,6 +9,8 @@ from openai import OpenAI
 import numpy as np
 import csv
 
+print("✅ Loaded OANDA_API_KEY =", os.getenv("OANDA_API_KEY"))
+print("✅ Loaded ACCOUNT_ID =", os.getenv("ACCOUNT_ID"))
 app = FastAPI()
 
 OANDA_API_KEY = os.getenv("OANDA_API_KEY")
