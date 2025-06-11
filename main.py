@@ -61,9 +61,12 @@ async def webhook(request: Request):
             price = float(price_raw)
         except Exception as e:
             print(f"❌ price 변환 실패: {price_raw} → {str(e)}")
-            return {"status": "error", "message": f"price 변환 실패: {str(e)}"}        
+            return {"status": "error", "message": f"price 변환 실패: {str(e)}"}  
+    except Exception as e:
+        print(f"❌ Webhook 처리 중 오류: {str(e)}")
+        return {"status": "error", "message": f"처리 실패: {str(e)}"}
 
-    now = datetime.utcnow()
+now = datetime.utcnow()
     if now.hour < 4 or now.hour >= 20:
         return {"message": "현재는 유동성 낮은 시간대로, 전략 판단 신뢰도 저하. 관망 권장."}
 
