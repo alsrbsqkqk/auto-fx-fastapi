@@ -8,7 +8,7 @@ import openai
 from openai import OpenAI
 import numpy as np
 import csv
-
+print("✅ Render에서 OANDA_API_KEY =", os.getenv("OANDA_API_KEY"))
 print("✅ Loaded OANDA_API_KEY =", os.getenv("OANDA_API_KEY"))
 print("✅ Loaded ACCOUNT_ID =", os.getenv("ACCOUNT_ID"))
 app = FastAPI()
