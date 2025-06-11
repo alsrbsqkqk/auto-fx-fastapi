@@ -161,8 +161,6 @@ async def webhook(request: Request):
             "extreme_volatility": extreme_volatility,
             "hhll_HH": bool(hhll.get("HH", False)),
             "hhll_LL": bool(hhll.get("LL", False)),
-           
-            }
             "support_resistance": support_resistance,
             "fibonacci_levels": fibo_levels,
             "score": signal_score,
