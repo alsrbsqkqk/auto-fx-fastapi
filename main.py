@@ -194,9 +194,9 @@ async def webhook(request: Request):
             log_trade_result(pair, signal, decision, signal_score, ",".join(reasons) + (" | " + adjustment_reason if adjustment_reason else ""))
         else:
             log_trade_result(pair, signal, "WAIT", signal_score, ",".join(reasons))
-
+        
+        print("✅ 최종 결과 반환 준비 완료:")
         return {
-        print("✅ 최종 결과 반환 준비 완료:", {
             "rsi": round(latest_rsi, 2),
             "stoch_rsi": round(latest_stoch_rsi, 2),
             "macd": round(latest_macd, 5),
