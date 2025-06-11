@@ -168,6 +168,7 @@ async def webhook(request: Request):
             units = 50000 if decision == "BUY" else -50000
             digits = precision_by_pair.get(pair, 5)
             result = place_order(pair, units, tp, sl, digits)
+            print("📥 GPT 판단에 따른 기록 시작:", gpt_decision)
             log_trade_result(pair, signal, decision, signal_score, ",".join(reasons) + " | GPT결정")
         else:
             log_trade_result(pair, signal, "WAIT", signal_score, ",".join(reasons) + " | GPT WAIT")
@@ -195,6 +196,7 @@ async def webhook(request: Request):
             log_trade_result(pair, signal, "WAIT", signal_score, ",".join(reasons))
 
         return {
+        print("✅ 최종 결과 반환 준비 완료:", {
             "rsi": round(latest_rsi, 2),
             "stoch_rsi": round(latest_stoch_rsi, 2),
             "macd": round(latest_macd, 5),
@@ -374,13 +376,21 @@ import os
 
 def log_trade_result(pair, signal, decision, score, notes, result=None):
     file_exists = os.path.exists("trade_results.csv")
-    with open("trade_results.csv", "a", newline="", encoding="utf-8-sig") as f:
-        writer = csv.writer(f)
-        if not file_exists:
-            writer.writerow(["timestamp", "pair", "signal", "decision", "score", "notes", "result"])
-        writer.writerow([
-            datetime.utcnow(), pair, signal, decision, score, notes, result or "미정"
-        ])
+    try:
+        
+        with open("trade_results.csv", "a", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+            if not file_exists:
+                writer.writerow(["timestamp", "pair", "signal", "decision", "score", "notes", "result"])
+            row = [datetime.utcnow(), pair, signal, decision, score, notes, result or "미정"]
+            writer.writerow(row)
+            f.flush()
+            print("📝 트레이드 기록 저장:", row)
+      except Exception as e:
+            print("❌ trade_results.csv 저장 실패:", str(e))
+
+          
+
 @app.get("/oanda-auth-test")
 def oanda_auth_test():
     api_key = os.getenv("OANDA_API_KEY")
