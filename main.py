@@ -323,3 +323,12 @@ def log_trade_result(pair, signal, decision, score, notes):
         if not file_exists:
             writer.writerow(["timestamp", "pair", "signal", "decision", "score", "notes"])
         writer.writerow([datetime.utcnow(), pair, signal, decision, score, notes])    
+
+@app.get("/oanda-auth-test")
+def oanda_auth_test():
+    api_key = os.getenv("OANDA_API_KEY")
+    headers = {"Authorization": f"Bearer {api_key}"}
+    url = "https://api-fxpractice.oanda.com/v3/accounts"
+
+    r = requests.get(url, headers=headers)
+    return {"status": r.status_code, "response": r.text}
