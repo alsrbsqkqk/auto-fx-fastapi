@@ -163,6 +163,7 @@ async def webhook(request: Request):
     }
 
 def get_candles(pair="EUR_USD", granularity="M30", count=200):
+    api_key = os.getenv("OANDA_API_KEY")
     url = f"https://api-fxpractice.oanda.com/v3/instruments/{pair}/candles"
     headers = {"Authorization": f"Bearer {OANDA_API_KEY}"}
     params = {"granularity": granularity, "count": count, "price": "M"}
