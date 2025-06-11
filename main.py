@@ -158,6 +158,9 @@ async def webhook(request: Request):
         "volatility": volatility,
         "extreme_volatility": extreme_volatility,
         "hhll": hhll,
+            "HH": bool(hhll["HH"]),
+            "LL": bool(hhll["LL"])
+        }
         "support_resistance": support_resistance,
         "fibonacci_levels": fibo_levels,
         "score": signal_score,
