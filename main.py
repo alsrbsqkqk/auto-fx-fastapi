@@ -51,6 +51,7 @@ async def webhook(request: Request):
             if isinstance(data, str):
                 data = json.loads(data)
         except Exception as e:
+            print("❌ Webhook 처리 실패:", str(e))
             return {"status": "error", "message": f"JSON 파싱 실패: {str(e)}"}
 
         pair = data.get("pair")
