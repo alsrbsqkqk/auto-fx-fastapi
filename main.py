@@ -371,14 +371,15 @@ def place_order(symbol, units, tp, sl, digits):
         return {"status": "error", "message": str(e)}
 import os
 
-def log_trade_result(pair, signal, decision, score, notes):
+def log_trade_result(pair, signal, decision, score, notes, result=None):
     file_exists = os.path.exists("trade_results.csv")
     with open("trade_results.csv", "a", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
         if not file_exists:
-            writer.writerow(["timestamp", "pair", "signal", "decision", "score", "notes"])
-        writer.writerow([datetime.utcnow(), pair, signal, decision, score, notes])    
-
+            writer.writerow(["timestamp", "pair", "signal", "decision", "score", "notes", "result"])
+        writer.writerow([
+            datetime.utcnow(), pair, signal, decision, score, notes, result or "미정"
+        ])
 @app.get("/oanda-auth-test")
 def oanda_auth_test():
     api_key = os.getenv("OANDA_API_KEY")
