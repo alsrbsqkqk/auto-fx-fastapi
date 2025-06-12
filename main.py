@@ -38,18 +38,20 @@ async def webhook(request: Request):
     liquidity = estimate_liquidity(candles)
     news = fetch_forex_news()
     support_resistance = detect_support_resistance(candles)
+    high_low_analysis = analyze_highs_lows(candles)
+    atr = calculate_atr(candles).iloc[-1]
 
     # 점수 계산
     signal_score = 0
     reasons = []
     if rsi.iloc[-1] < 30:
-        signal_score += 1
+        signal_score += 2  # 가중치 강화
         reasons.append("RSI < 30")
     if macd.iloc[-1] > macd_signal.iloc[-1]:
-        signal_score += 1
+        signal_score += 2  # 가중치 강화
         reasons.append("MACD 골든크로스")
     if stoch_rsi > 0.8:
-        signal_score += 1
+        signal_score += 1  # 유지
         reasons.append("Stoch RSI 과열")
     if trend == "UPTREND" and signal == "BUY":
         signal_score += 1
@@ -58,10 +60,10 @@ async def webhook(request: Request):
         signal_score += 1
         reasons.append("추세 하락 + 매도 일치")
     if liquidity == "좋음":
-        signal_score += 1
+        signal_score += 1  # 유지
         reasons.append("유동성 좋음")
     if pattern in ["HAMMER", "BULLISH_ENGULFING"]:
-        signal_score += 1
+        signal_score += 1  # 유지
         reasons.append(f"캔들패턴: {pattern}")
 
     fibo_levels = calculate_fibonacci_levels(candles["high"].max(), candles["low"].min())
@@ -81,11 +83,25 @@ async def webhook(request: Request):
         "liquidity": liquidity,
         "support": support_resistance["support"],
         "resistance": support_resistance["resistance"],
-        "news": news
+        "news": news,
+        "new_high": high_low_analysis["new_high"],
+        "new_low": high_low_analysis["new_low"],
+        "atr": atr
     }
 
-    gpt_feedback = analyze_with_gpt(payload)
+    # ⏰ 2시간 내 거래 여부 판단을 위한 더미 조건
+    recent_trade_time = get_last_trade_time()
+    time_since_last = datetime.utcnow() - recent_trade_time if recent_trade_time else timedelta(hours=999)
+    allow_conditional_trade = time_since_last > timedelta(hours=2)
+
+gpt_feedback = analyze_with_gpt(payload)
     decision, tp, sl = parse_gpt_feedback(gpt_feedback)
+
+    # 조건 완화 적용: 점수 기준 및 2시간 무거래 시 조건부 진입 허용
+    if decision == "WAIT" and signal_score >= 6 and allow_conditional_trade:
+        decision = signal
+        gpt_feedback += "
+조건부 진입: 최근 2시간 거래 없음 + 6점 이상 조건 충족"
 
     result = {}
     if decision in ["BUY", "SELL"] and tp and sl:
@@ -93,7 +109,45 @@ async def webhook(request: Request):
         digits = 5 if "EUR" in pair else 3
         result = place_order(pair, units, tp, sl, digits)
 
-    log_trade_result(pair, signal, decision, signal_score, gpt_reason, result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi.iloc[-1], pattern, trend, fibo_levels, decision, news, gpt_feedback, alert_name, tp, sl, price, pnl)
+        # ✅ 성공/실패 및 SL/TP 분석 자동 판단
+        # 추적용 캔들 저장
+        executed_time = datetime.utcnow()
+        candles_post = get_candles(pair, "M30", 8)
+        price_movements = candles_post[["high", "low"]].to_dict("records")
+    if decision in ["BUY", "SELL"] and isinstance(result, dict) and "order_placed" in result.get("status", ""):
+        if pnl is not None:
+            if pnl > 0:
+                if abs(tp - price) < abs(sl - price):
+                    outcome_analysis = "성공: TP 우선 도달"
+                else:
+                    outcome_analysis = "성공: 수익 실현"
+            elif pnl < 0:
+                if abs(sl - price) < abs(tp - price):
+                    outcome_analysis = "실패: SL 우선 터치"
+                else:
+                    outcome_analysis = "실패: 손실 발생"
+            else:
+                outcome_analysis = "보류: 실현손익 미확정"
+        else:
+            outcome_analysis = "보류: 실현손익 미확정"
+    else:
+        outcome_analysis = "WAIT 또는 주문 미실행"
+        elif pnl is not None and pnl < 0:
+            outcome_analysis = "실패: 손실 발생"
+        else:
+            outcome_analysis = "보류: 실현손익 미확정"
+    else:
+        outcome_analysis = "WAIT 또는 주문 미실행"
+
+        # 조정 제안 메시지 생성
+    adjustment_suggestion = ""
+    if outcome_analysis.startswith("실패"):
+        if abs(sl - price) < abs(tp - price):
+            adjustment_suggestion = "SL 터치 → SL 너무 타이트했을 수 있음, 다음 전략에서 완화 필요"
+        elif abs(tp - price) < abs(sl - price):
+            adjustment_suggestion = "TP 거의 닿았으나 실패 → TP 약간 보수적일 필요 있음"
+
+    log_trade_result(pair, signal, decision, signal_score, gpt_reason, result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi, pattern, trend, fibo_levels, decision, news, gpt_feedback, alert_name, tp, sl, price, pnl, outcome_analysis, adjustment_suggestion, price_movements)
     return {"결정": decision, "TP": tp, "SL": sl, "GPT응답": gpt_feedback}
 
 def detect_support_resistance(candles, window=10):
@@ -103,6 +157,24 @@ def detect_support_resistance(candles, window=10):
         "support": round(lows.min(), 5),
         "resistance": round(highs.max(), 5)
     }
+
+def analyze_highs_lows(candles, window=20):
+    highs = candles['high'].tail(window)
+    lows = candles['low'].tail(window)
+    new_high = highs.iloc[-1] > highs.max()
+    new_low = lows.iloc[-1] < lows.min()
+    return {
+        "new_high": new_high,
+        "new_low": new_low
+    }
+
+def calculate_atr(candles, period=14):
+    high_low = candles['high'] - candles['low']
+    high_close = np.abs(candles['high'] - candles['close'].shift())
+    low_close = np.abs(candles['low'] - candles['close'].shift())
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    atr = tr.rolling(window=period).mean()
+    return atr
 
 # ✳️ Helper Functions
 
@@ -193,7 +265,7 @@ def analyze_with_gpt(payload):
     except Exception as e:
         return f"[GPT EXCEPTION] {str(e)}"
 
-def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None, macd=None, stoch_rsi=None, pattern=None, trend=None, fibo=None, gpt_decision=None, news=None, gpt_feedback=None, alert_name=None, tp=None, sl=None, entry=None, pnl=None):
+def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None, macd=None, stoch_rsi=None, pattern=None, trend=None, fibo=None, gpt_decision=None, news=None, gpt_feedback=None, alert_name=None, tp=None, sl=None, entry=None, pnl=None, outcome_analysis=None, adjustment_suggestion=None, price_movements=None):
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
     client = gspread.authorize(creds)
@@ -203,7 +275,14 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
         str(now_atlanta), pair, alert_name or "", signal, decision, score, rsi or "", macd or "", stoch_rsi or "",
         pattern or "", trend or "", fibo.get("0.382", ""), fibo.get("0.618", ""),
         gpt_decision or "", news or "", notes, result or "미정", gpt_feedback or "",
-        entry or "", tp or "", sl or "", pnl or ""
+        entry or "", tp or "", sl or "", pnl or "",
+        "신고점" if high_low_analysis.get("new_high") else "", "신저점" if high_low_analysis.get("new_low") else "",
+        f"ATR: {round(payload.get('atr', 0), 5)}"
     ]
     row.insert(19, news)  # 뉴스 분석 전용 컬럼으로 추가
+        row.append("")  # 성공/실패 분석 컬럼 추가
+        row.append(outcome_analysis or "")
+        row.append(adjustment_suggestion or "")
+    row.append(gpt_feedback or "")  # GPT 전략 리포트 전체 저장
+        row.append(json.dumps(price_movements))  # 8봉 가격 흐름 저장
     sheet.append_row(row)
