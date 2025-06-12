@@ -43,7 +43,13 @@ def home():
 @app.post("/webhook")
 async def webhook(request: Request):
     try:
-        data = await request.json()
+        raw_data = await request.body()
+        try:
+            data = json.loads(raw_data) if isinstance(raw_data, bytes) else raw_data
+            if isinstance(data, str):
+                data = json.loads(data)
+        except Exception as e:
+            return {"status": "error", "message": f"JSON 파싱 실패: {str(e)}"}
         pair = data["pair"]
         price = float(data["price"])
         signal = data["signal"]
@@ -56,6 +62,8 @@ async def webhook(request: Request):
         return {"message": "현재는 유동성 낮은 시간대로, 전략 판단 신뢰도 저하. 관망 권장."}
 
     candles = get_candles(pair, "M30", 200)
+    if candles.empty:
+        return {"status": "error", "message": f"{pair}에 대한 캔들 데이터 없음"}
     close = candles["close"]
     rsi = calculate_rsi(close)
     macd, macd_signal = calculate_macd(close)
@@ -159,8 +167,15 @@ def get_candles(pair="EUR_USD", granularity="M30", count=200):
     headers = {"Authorization": f"Bearer {OANDA_API_KEY}"}
     params = {"granularity": granularity, "count": count, "price": "M"}
     r = requests.get(url, headers=headers, params=params)
-    data = r.json()
+
+    try:
+        data = r.json()
+    except Exception as e:
+        raise ValueError(f"캔들 JSON 파싱 실패: {e}")
+        
     candles = data.get("candles", [])
+    if not candles:
+        raise ValueError(f"OANDA에서 받은 {pair}의 캔들 데이터가 비어 있습니다. 응답: {data}")
     df = pd.DataFrame([
         {
             "time": c["time"],
@@ -171,6 +186,8 @@ def get_candles(pair="EUR_USD", granularity="M30", count=200):
             "volume": c.get("volume", 0)
         } for c in candles if c.get("complete", False)
     ])
+    if df.empty:
+        raise ValueError(f"{pair}의 유효한 캔들 데이터가 없습니다 (모두 'complete=False')")
     return df
 
 def calculate_rsi(series, period=14):

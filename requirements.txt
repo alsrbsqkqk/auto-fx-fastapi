@@ -5,3 +5,5 @@ pandas
 python-dotenv
 openai
 aiohttp
+gspread
+oauth2client
