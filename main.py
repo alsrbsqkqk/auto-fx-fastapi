@@ -390,18 +390,65 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 
-def log_trade_result(pair, signal, decision, score, notes, result=None):
+def log_trade_result(pair, signal, decision, score, notes, result=None,
+                     rsi=None, macd=None, stoch_rsi=None, pattern=None,
+                     trend=None, fibo=None, gpt_decision=None, news=None):
     try:
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
         client = gspread.authorize(creds)
         sheet = client.open("민균 FX trading result").sheet1
-        row = [str(datetime.utcnow()), pair, signal, decision, score, notes, result or "미정"]
+
+        row = [
+            str(datetime.utcnow()), pair, signal, decision, score,
+            rsi or "", macd or "", stoch_rsi or "", pattern or "", trend or "",
+            fibo or "", gpt_decision or "", news or "", notes, result or "미정"
+        ]
         sheet.append_row(row)
-        print("📄 구글 시트에 트레이드 기록 저장 완료:", row)
+        print("📄 구글 시트에 확장된 트레이드 기록 저장 완료:", row)
     except Exception as e:
         print("❌ 구글 시트 기록 실패:", str(e))
+def should_avoid_trade(notes, score):
+    negative_keywords = ["충돌", "관망", "불일치", "모호", "회피"]
+    if score < 4 or any(keyword in notes for keyword in negative_keywords):
+        return True
+    return False
 
+def analyze_trade_logs(sheet):
+    records = sheet.get_all_records()
+    stats = {
+        "total": len(records),
+        "buy": 0,
+        "sell": 0,
+        "wait": 0,
+        "gpt_buy": 0,
+        "gpt_sell": 0,
+        "gpt_wait": 0,
+        "avg_score": 0
+    }
+    total_score = 0
+
+    for r in records:
+        decision = r.get("decision", "").upper()
+        reason = r.get("notes", "")
+        score = int(r.get("score", 0))
+        gpt = "GPT" in reason.upper()
+
+        if decision == "BUY":
+            stats["buy"] += 1
+            if gpt: stats["gpt_buy"] += 1
+        elif decision == "SELL":
+            stats["sell"] += 1
+            if gpt: stats["gpt_sell"] += 1
+        else:
+            stats["wait"] += 1
+            if gpt: stats["gpt_wait"] += 1
+
+        total_score += score
+
+    stats["avg_score"] = round(total_score / stats["total"], 2) if stats["total"] > 0 else 0
+    print("📊 거래 분석 통계:", stats)
+    return stats    
           
 
 @app.get("/oanda-auth-test")
