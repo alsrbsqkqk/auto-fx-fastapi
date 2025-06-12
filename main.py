@@ -136,8 +136,16 @@ def analyze_with_gpt(payload):
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}
     ]
     body = {"model": "gpt-4", "messages": messages, "temperature": 0.3}
-    r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body)
-    return r.json()["choices"][0]["message"]["content"]
+
+    try:
+        r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body)
+        result = r.json()
+        if "choices" in result:
+            return result["choices"][0]["message"]["content"]
+        else:
+            return f"[GPT ERROR] {result.get('error', {}).get('message', 'Unknown GPT response error')}"
+    except Exception as e:
+        return f"[GPT EXCEPTION] {str(e)}"
 
 def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None, macd=None, stoch_rsi=None, pattern=None, trend=None, fibo=None, gpt_decision=None, news=None, gpt_feedback=None):
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
