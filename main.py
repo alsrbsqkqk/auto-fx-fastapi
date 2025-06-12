@@ -137,7 +137,9 @@ async def webhook(request: Request):
         elif abs(tp - price) < abs(sl - price):
             adjustment_suggestion = "TP 거의 닿았으나 실패 → TP 약간 보수적일 필요 있음"
 
-    log_trade_result(pair, signal, decision, signal_score, "\n".join(reasons, atr=atr), result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi, pattern, trend, fibo_levels, decision, news, gpt_feedback, alert_name, tp, sl, price, pnl, outcome_analysis, adjustment_suggestion, price_movements)
+    log_trade_result(pair, signal, decision, signal_score, \"
+\".join(reasons) + f"
+ATR: {round(atr or 0, 5)}", result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi, pattern, trend, fibo_levels, decision, news, gpt_feedback, alert_name, tp, sl, price, pnl, outcome_analysis, adjustment_suggestion, price_movements)
     return {"결정": decision, "TP": tp, "SL": sl, "GPT응답": gpt_feedback}
 
 def get_last_trade_time():
