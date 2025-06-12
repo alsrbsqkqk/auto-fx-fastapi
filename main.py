@@ -50,6 +50,7 @@ async def webhook(request: Request):
         raw_data = await request.body()
         try:
             data = json.loads(raw_data) if isinstance(raw_data, bytes) else raw_data
+            print("📩 웹훅 데이터 수신됨:", data)
             if isinstance(data, str):
                 data = json.loads(data)
         except Exception as e:
@@ -68,7 +69,9 @@ async def webhook(request: Request):
 
         now = datetime.utcnow()
         if now.hour < 4 or now.hour >= 20:
-            return {"message": "현재는 유동성 낮은 시간대로, 전략 판단 신뢰도 저하. 관망 권장."}
+            print("⏰ 유동성 시간 필터에 의해 관망 처리됨")
+            log_trade_result(pair, signal, "WAIT", 0, "유동성 필터")
+            return {"message": "유동성 낮은 시간. 기록만 수행됨"}
 
         candles = get_candles(pair, "M30", 200)
         print("📊 캔들 데이터 길이:", len(candles))
