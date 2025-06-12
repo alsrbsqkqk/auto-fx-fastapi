@@ -178,7 +178,22 @@ async def webhook(request: Request):
             digits = precision_by_pair.get(pair, 5)
             result = place_order(pair, units, tp, sl, digits)
             print("📥 GPT 판단에 따른 기록 시작:", gpt_decision)
-            log_trade_result(pair, signal, decision, signal_score, ",".join(reasons) + " | GPT결정")
+            log_trade_result(
+                    pair=pair,
+                    signal=signal,
+                    decision=decision,
+                    score=signal_score,
+                    notes=",".join(reasons) + " | GPT결정",
+                    result=result,
+                    rsi=round(latest_rsi, 2),
+                    macd=round(latest_macd, 5),
+                    stoch_rsi=round(latest_stoch_rsi, 2),
+                    pattern=pattern,
+                    trend=trend,
+                    fibo=fibo_levels,
+                    gpt_decision=gpt_decision,
+                    news=news_risk
+            )
         else:
             log_trade_result(pair, signal, "WAIT", signal_score, ",".join(reasons) + " | GPT WAIT")
             print("📌 log_trade_result 호출 완료: 기록 시도 완료됨")
@@ -201,7 +216,22 @@ async def webhook(request: Request):
                 adjustment_reason = "TP 보정: S/R 또는 피보나치 지지 고려"
 
             result = place_order(pair, units, tp, sl, digits)
-            log_trade_result(pair, signal, decision, signal_score, ",".join(reasons) + (" | " + adjustment_reason if adjustment_reason else ""))
+            log_trade_result(
+                    pair=pair,
+                    signal=signal,
+                    decision=decision,
+                    score=signal_score,
+                    notes=",".join(reasons) + " | GPT결정",
+                    result=result,
+                    rsi=round(latest_rsi, 2),
+                    macd=round(latest_macd, 5),
+                    stoch_rsi=round(latest_stoch_rsi, 2),
+                    pattern=pattern,
+                    trend=trend,
+                    fibo=fibo_levels,
+                    gpt_decision=gpt_decision,
+                    news=news_risk
+            )
         else:
             log_trade_result(pair, signal, "WAIT", signal_score, ",".join(reasons))
             print("📌 log_trade_result 호출 완료: 기록 시도 완료됨")
