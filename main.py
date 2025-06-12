@@ -40,7 +40,7 @@ def fetch_forex_news():
 
 @app.get("/")
 def home():
-    return {"message": "🚀 FastAPI 서버 정상 작동 중"}
+    return "✅ FastAPI is alive"
 
 @app.post("/webhook")
 async def webhook(request: Request):
