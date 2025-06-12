@@ -178,7 +178,9 @@ async def webhook(request: Request):
             units = 50000 if decision == "BUY" else -50000
             digits = precision_by_pair.get(pair, 5)
             result = place_order(pair, units, tp, sl, digits)
+            result = str(result)
             print("📥 GPT 판단에 따른 기록 시작:", gpt_decision)
+        try:
             log_trade_result(
                     pair=pair,
                     signal=signal,
@@ -195,9 +197,16 @@ async def webhook(request: Request):
                     gpt_decision=gpt_decision,
                     news=news_risk
             )
+            print("✅ log_trade_result 함수 호출 완료됨")
+        except Exception as e:
+            print("❌ log_trade_result 에러 발생:", str(e))
         else:
-            log_trade_result(pair, signal, "WAIT", signal_score, ",".join(reasons) + " | GPT WAIT")
-            print("📌 log_trade_result 호출 완료: 기록 시도 완료됨")
+            try:
+                log_trade_result(pair, signal, "WAIT", signal_score, ",".join(reasons) + " | GPT WAIT")
+                print("📌 log_trade_result 함수 호출 완료: WAIT 기록도 성공")
+            except Exception as e:
+                print("❌ log_trade_result WAIT 기록 에러:", str(e))
+
         decision = "BUY" if signal_score >= 5 and signal == "BUY" else "SELL" if signal_score >= 5 and signal == "SELL" else "WAIT"
         adjustment_reason = ""
         result = {}
