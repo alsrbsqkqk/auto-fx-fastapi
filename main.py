@@ -95,7 +95,7 @@ async def webhook(request: Request):
     allow_conditional_trade = time_since_last > timedelta(hours=2)
 
 gpt_feedback = analyze_with_gpt(payload)
-    decision, tp, sl = parse_gpt_feedback(gpt_feedback)
+decision, tp, sl = parse_gpt_feedback(gpt_feedback)
 
     # 조건 완화 적용: 점수 기준 및 2시간 무거래 시 조건부 진입 허용
     if decision == "WAIT" and signal_score >= 6 and allow_conditional_trade:
