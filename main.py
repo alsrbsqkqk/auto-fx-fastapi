@@ -95,6 +95,7 @@ async def webhook(request: Request):
         if (latest_macd > latest_signal and signal == "SELL") or (latest_macd < latest_signal and signal == "BUY"):
             print("⚠️ 지표 간 충돌 조건으로 인해 기록 시도")
             log_trade_result(pair, signal, "WAIT", 0, "지표 해석 충돌")
+            return {"message": "지표 간 해석 충돌로 인해 관망 처리됨"}
             
 
         signal_score = 0
