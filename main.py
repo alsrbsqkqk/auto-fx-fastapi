@@ -139,11 +139,11 @@ def analyze_with_gpt(payload):
     r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body)
     return r.json()["choices"][0]["message"]["content"]
 
-def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None, macd=None, stoch_rsi=None, pattern=None, trend=None, fibo=None, gpt_decision=None, news=None):
+def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None, macd=None, stoch_rsi=None, pattern=None, trend=None, fibo=None, gpt_decision=None, news=None, gpt_feedback=None):
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
     client = gspread.authorize(creds)
     sheet = client.open("민균 FX trading result").sheet1
     now_atlanta = datetime.utcnow() - timedelta(hours=4)
-    row = [str(now_atlanta), pair, signal, decision, score, rsi or "", macd or "", stoch_rsi or "", pattern or "", trend or "", json.dumps(fibo or {}), gpt_decision or "", news or "", notes, result or "미정"]
+    row = [str(now_atlanta), pair, signal, decision, score, rsi or "", macd or "", stoch_rsi or "", pattern or "", trend or "", json.dumps(fibo or {}), gpt_decision or "", news or "", notes, result or "미정", gpt_feedback or ""]
     sheet.append_row(row)
