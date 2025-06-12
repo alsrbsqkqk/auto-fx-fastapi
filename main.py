@@ -23,11 +23,13 @@ async def webhook(request: Request):
     pair = data.get("pair")
     price = float(data.get("price"))
     signal = data.get("signal")
+    alert_name = data.get("alert_name", "기본알림")
 
     candles = get_candles(pair, "M30", 200)
     close = candles["close"]
     rsi = calculate_rsi(close)
-    stoch_rsi = calculate_stoch_rsi(rsi)
+    stoch_rsi_series = calculate_stoch_rsi(rsi)
+    stoch_rsi = stoch_rsi_series.dropna().iloc[-1] if not stoch_rsi_series.dropna().empty else 0
     macd, macd_signal = calculate_macd(close)
     boll_up, boll_mid, boll_low = calculate_bollinger_bands(close)
 
@@ -35,6 +37,34 @@ async def webhook(request: Request):
     trend = detect_trend(candles, rsi, boll_mid)
     liquidity = estimate_liquidity(candles)
     news = fetch_forex_news()
+    support_resistance = detect_support_resistance(candles)
+
+    # 점수 계산
+    signal_score = 0
+    reasons = []
+    if rsi.iloc[-1] < 30:
+        signal_score += 1
+        reasons.append("RSI < 30")
+    if macd.iloc[-1] > macd_signal.iloc[-1]:
+        signal_score += 1
+        reasons.append("MACD 골든크로스")
+    if stoch_rsi > 0.8:
+        signal_score += 1
+        reasons.append("Stoch RSI 과열")
+    if trend == "UPTREND" and signal == "BUY":
+        signal_score += 1
+        reasons.append("추세 상승 + 매수 일치")
+    if trend == "DOWNTREND" and signal == "SELL":
+        signal_score += 1
+        reasons.append("추세 하락 + 매도 일치")
+    if liquidity == "좋음":
+        signal_score += 1
+        reasons.append("유동성 좋음")
+    if pattern in ["HAMMER", "BULLISH_ENGULFING"]:
+        signal_score += 1
+        reasons.append(f"캔들패턴: {pattern}")
+
+    fibo_levels = calculate_fibonacci_levels(candles["high"].max(), candles["low"].min())
 
     payload = {
         "pair": pair,
@@ -43,12 +73,14 @@ async def webhook(request: Request):
         "rsi": rsi.iloc[-1],
         "macd": macd.iloc[-1],
         "macd_signal": macd_signal.iloc[-1],
-        "stoch_rsi": stoch_rsi.iloc[-1],
+        "stoch_rsi": stoch_rsi,
         "bollinger_upper": boll_up.iloc[-1],
         "bollinger_lower": boll_low.iloc[-1],
         "pattern": pattern,
         "trend": trend,
         "liquidity": liquidity,
+        "support": support_resistance["support"],
+        "resistance": support_resistance["resistance"],
         "news": news
     }
 
@@ -61,8 +93,16 @@ async def webhook(request: Request):
         digits = 5 if "EUR" in pair else 3
         result = place_order(pair, units, tp, sl, digits)
 
-    log_trade_result(pair, signal, decision, 0, "GPT판단", result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi.iloc[-1], pattern, trend, {}, decision, news)
+    log_trade_result(pair, signal, decision, signal_score, gpt_reason, result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi.iloc[-1], pattern, trend, fibo_levels, decision, news, gpt_feedback, alert_name, tp, sl, price, pnl)
     return {"결정": decision, "TP": tp, "SL": sl, "GPT응답": gpt_feedback}
+
+def detect_support_resistance(candles, window=10):
+    highs = candles["high"].tail(window)
+    lows = candles["low"].tail(window)
+    return {
+        "support": round(lows.min(), 5),
+        "resistance": round(highs.max(), 5)
+    }
 
 # ✳️ Helper Functions
 
@@ -117,7 +157,13 @@ def estimate_liquidity(candles):
     return "좋음" if candles["volume"].tail(10).mean() > 100 else "낮음"
 
 def fetch_forex_news():
-    return "🟢 뉴스 영향 적음"
+    try:
+        response = requests.get("https://www.forexfactory.com/", timeout=5)
+        if "High Impact Expected" in response.text:
+            return "⚠️ 고위험 뉴스 존재"
+        return "🟢 뉴스 영향 적음"
+    except:
+        return "❓ 뉴스 확인 실패"
 
 def place_order(pair, units, tp, sl, digits):
     return {"status": "order_placed", "tp": tp, "sl": sl}
@@ -147,11 +193,17 @@ def analyze_with_gpt(payload):
     except Exception as e:
         return f"[GPT EXCEPTION] {str(e)}"
 
-def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None, macd=None, stoch_rsi=None, pattern=None, trend=None, fibo=None, gpt_decision=None, news=None, gpt_feedback=None):
+def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None, macd=None, stoch_rsi=None, pattern=None, trend=None, fibo=None, gpt_decision=None, news=None, gpt_feedback=None, alert_name=None, tp=None, sl=None, entry=None, pnl=None):
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
     client = gspread.authorize(creds)
     sheet = client.open("민균 FX trading result").sheet1
     now_atlanta = datetime.utcnow() - timedelta(hours=4)
-    row = [str(now_atlanta), pair, signal, decision, score, rsi or "", macd or "", stoch_rsi or "", pattern or "", trend or "", json.dumps(fibo or {}), gpt_decision or "", news or "", notes, result or "미정", gpt_feedback or ""]
+    row = [
+        str(now_atlanta), pair, alert_name or "", signal, decision, score, rsi or "", macd or "", stoch_rsi or "",
+        pattern or "", trend or "", fibo.get("0.382", ""), fibo.get("0.618", ""),
+        gpt_decision or "", news or "", notes, result or "미정", gpt_feedback or "",
+        entry or "", tp or "", sl or "", pnl or ""
+    ]
+    row.insert(19, news)  # 뉴스 분석 전용 컬럼으로 추가
     sheet.append_row(row)
