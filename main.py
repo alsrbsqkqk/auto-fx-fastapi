@@ -382,20 +382,21 @@ def place_order(symbol, units, tp, sl, digits):
         return {"status": "error", "message": str(e)}
 import os
 
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+from datetime import datetime
+
 def log_trade_result(pair, signal, decision, score, notes, result=None):
-    file_exists = os.path.exists("trade_results.csv")
     try:
-        with open("trade_results.csv", "a", newline="", encoding="utf-8-sig") as f:
-            writer = csv.writer(f)
-            if not file_exists:
-                writer.writerow(["timestamp", "pair", "signal", "decision", "score", "notes", "result"])
-            row = [datetime.utcnow(), pair, signal, decision, score, notes, result or "미정"]
-            print("📄 로그 작성 대상 데이터:", row)
-            writer.writerow(row)
-            f.flush()
-            print("📝 트레이드 기록 저장:", row)
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
+        client = gspread.authorize(creds)
+        sheet = client.open("민균 FX trading result").sheet1
+        row = [str(datetime.utcnow()), pair, signal, decision, score, notes, result or "미정"]
+        sheet.append_row(row)
+        print("📄 구글 시트에 트레이드 기록 저장 완료:", row)
     except Exception as e:
-        print("❌ trade_results.csv 저장 실패:", str(e))
+        print("❌ 구글 시트 기록 실패:", str(e))
 
           
 
