@@ -99,15 +99,25 @@ async def webhook(request: Request):
         liquidity = estimate_liquidity(candles)
         news_risk = fetch_forex_news()
 
+        macd_gap = abs(latest_macd - latest_signal)
+
         conflict_detected = (
             (latest_macd > latest_signal and signal == "SELL") or
             (latest_macd < latest_signal and signal == "BUY")
-        )
+        ) and macd_gap > 0.005
+
         if conflict_detected:
-            print("⚠️ MACD-SIGNAL 충돌 감지됨 → 기록만 하고 분석 계속 진행")
-            notes = "지표 해석 충돌 있음 | 조건 추가 분석"
+            print(f"⚠️ MACD-SIGNAL 충돌 감지됨 (gap: {macd_gap:.5f}) → 기록만 하고 분석 계속 진행")
+            notes = f"MACD 해석 충돌 (gap: {macd_gap:.5f}) | 기록 후 분석 계속"
+            try:
+                log_trade_result(pair, signal, "WAIT", 0, notes)
+                print("📋 MACD 충돌 WAIT 기록 완료")
+            except Exception as e:
+                print("❌ 기록 실패:", str(e))
         else:
+            print(f"🔄 MACD 갭이 작아서 무시됨 (gap: {macd_gap:.5f}) → 분석 계속")
             notes = ""
+     
 
         signal_score = 0
         reasons = []
