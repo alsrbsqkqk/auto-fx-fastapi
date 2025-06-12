@@ -44,8 +44,6 @@ def home():
 
 @app.post("/webhook")
 async def webhook(request: Request):
-    # 테스트: 강제로 로그 기록
-    log_trade_result("TEST_PAIR", "BUY", "BUY", 10, "✅ 테스트용 강제 기록")
 
     # 원래 코드 계속 진행...
     try:
