@@ -99,12 +99,15 @@ async def webhook(request: Request):
         liquidity = estimate_liquidity(candles)
         news_risk = fetch_forex_news()
 
-        if (latest_macd > latest_signal and signal == "SELL") or (latest_macd < latest_signal and signal == "BUY"):
-            print("⚠️ 지표 간 충돌 조건으로 인해 기록 시도")
-            log_trade_result(pair, signal, "WAIT", 0, "지표 해석 충돌")
-            print("📌 log_trade_result 호출 완료: 기록 시도 완료됨")
-            return {"message": "지표 간 해석 충돌로 인해 관망 처리됨"}
-            
+        conflict_detected = (
+            (latest_macd > latest_signal and signal == "SELL") or
+            (latest_macd < latest_signal and signal == "BUY")
+        )
+        if conflict_detected:
+            print("⚠️ MACD-SIGNAL 충돌 감지됨 → 기록만 하고 분석 계속 진행")
+            notes = "지표 해석 충돌 있음 | 조건 추가 분석"
+        else:
+            notes = ""
 
         signal_score = 0
         reasons = []
@@ -186,7 +189,7 @@ async def webhook(request: Request):
                     signal=signal,
                     decision=decision,
                     score=signal_score,
-                    notes=",".join(reasons) + " | GPT결정",
+                    notes=notes + ",".join(reasons) + " | GPT결정",
                     result=result,
                     rsi=round(latest_rsi, 2),
                     macd=round(latest_macd, 5),
