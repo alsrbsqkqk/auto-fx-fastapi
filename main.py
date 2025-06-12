@@ -382,6 +382,7 @@ def log_trade_result(pair, signal, decision, score, notes, result=None):
             if not file_exists:
                 writer.writerow(["timestamp", "pair", "signal", "decision", "score", "notes", "result"])
             row = [datetime.utcnow(), pair, signal, decision, score, notes, result or "미정"]
+            print("📄 로그 작성 대상 데이터:", row)
             writer.writerow(row)
             f.flush()
             print("📝 트레이드 기록 저장:", row)
