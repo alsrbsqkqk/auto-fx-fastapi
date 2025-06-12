@@ -93,8 +93,9 @@ async def webhook(request: Request):
         news_risk = fetch_forex_news()
 
         if (latest_macd > latest_signal and signal == "SELL") or (latest_macd < latest_signal and signal == "BUY"):
+            print("⚠️ 지표 간 충돌 조건으로 인해 기록 시도")
             log_trade_result(pair, signal, "WAIT", 0, "지표 해석 충돌")
-            return {"message": "지표 간 해석 충돌 감지. 관망 필터 적용."}
+            
 
         signal_score = 0
         reasons = []
@@ -194,7 +195,8 @@ async def webhook(request: Request):
             log_trade_result(pair, signal, decision, signal_score, ",".join(reasons) + (" | " + adjustment_reason if adjustment_reason else ""))
         else:
             log_trade_result(pair, signal, "WAIT", signal_score, ",".join(reasons))
-        
+            
+        print("✅ 최종 return 직전: 모든 계산 완료, 결과 반환 시작")
         print("✅ 최종 결과 반환 준비 완료:")
         return {
             "rsi": round(latest_rsi, 2),
