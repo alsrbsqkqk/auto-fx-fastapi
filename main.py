@@ -83,8 +83,8 @@ async def webhook(request: Request):
         "support": support_resistance["support"],
         "resistance": support_resistance["resistance"],
         "news": news,
-        "new_high": high_low_analysis["new_high"],
-        "new_low": high_low_analysis["new_low"],
+        "new_high": bool(high_low_analysis["new_high"]),
+        "new_low": bool(high_low_analysis["new_low"]),
         "atr": atr
     }
 
