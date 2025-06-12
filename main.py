@@ -137,7 +137,7 @@ async def webhook(request: Request):
         elif abs(tp - price) < abs(sl - price):
             adjustment_suggestion = "TP 거의 닿았으나 실패 → TP 약간 보수적일 필요 있음"
 
-    log_trade_result(pair, signal, decision, signal_score, "\n".join(reasons), result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi, pattern, trend, fibo_levels, decision, news, gpt_feedback, alert_name, tp, sl, price, pnl, outcome_analysis, adjustment_suggestion, price_movements)
+    log_trade_result(pair, signal, decision, signal_score, "\n".join(reasons, atr=atr), result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi, pattern, trend, fibo_levels, decision, news, gpt_feedback, alert_name, tp, sl, price, pnl, outcome_analysis, adjustment_suggestion, price_movements)
     return {"결정": decision, "TP": tp, "SL": sl, "GPT응답": gpt_feedback}
 
 def get_last_trade_time():
@@ -265,7 +265,7 @@ def analyze_with_gpt(payload):
     except Exception as e:
         return f"[GPT EXCEPTION] {str(e)}"
 
-def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None, macd=None, stoch_rsi=None, pattern=None, trend=None, fibo=None, gpt_decision=None, news=None, gpt_feedback=None, alert_name=None, tp=None, sl=None, entry=None, pnl=None, outcome_analysis=None, adjustment_suggestion=None, price_movements=None):
+def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None, macd=None, stoch_rsi=None, pattern=None, trend=None, fibo=None, gpt_decision=None, news=None, gpt_feedback=None, alert_name=None, tp=None, sl=None, entry=None, pnl=None, outcome_analysis=None, adjustment_suggestion=None, price_movements=None, atr=None):
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
     client = gspread.authorize(creds)
@@ -278,7 +278,7 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
         entry or "", tp or "", sl or "", pnl or "",
         "신고점" if price_movements and price_movements[-1]['high'] > max(p['high'] for p in price_movements[:-1]) else "",
         "신저점" if price_movements and price_movements[-1]['low'] < min(p['low'] for p in price_movements[:-1]) else "",
-        f"ATR: {round(payload.get('atr', 0), 5)}"
+        f"ATR: {round(atr or 0, 5)}"
     ]
     row.append(news)
     row.append(outcome_analysis or "")
