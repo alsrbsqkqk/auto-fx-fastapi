@@ -69,6 +69,8 @@ async def webhook(request: Request):
             return {"message": "현재는 유동성 낮은 시간대로, 전략 판단 신뢰도 저하. 관망 권장."}
 
         candles = get_candles(pair, "M30", 200)
+        print("📊 캔들 데이터 길이:", len(candles))
+        print(candles.head())
         if candles.empty:
             return {"status": "error", "message": f"{pair}에 대한 캔들 데이터 없음"}
 
@@ -95,6 +97,7 @@ async def webhook(request: Request):
         if (latest_macd > latest_signal and signal == "SELL") or (latest_macd < latest_signal and signal == "BUY"):
             print("⚠️ 지표 간 충돌 조건으로 인해 기록 시도")
             log_trade_result(pair, signal, "WAIT", 0, "지표 해석 충돌")
+            print("📌 log_trade_result 호출 완료: 기록 시도 완료됨")
             return {"message": "지표 간 해석 충돌로 인해 관망 처리됨"}
             
 
@@ -174,6 +177,7 @@ async def webhook(request: Request):
             log_trade_result(pair, signal, decision, signal_score, ",".join(reasons) + " | GPT결정")
         else:
             log_trade_result(pair, signal, "WAIT", signal_score, ",".join(reasons) + " | GPT WAIT")
+            print("📌 log_trade_result 호출 완료: 기록 시도 완료됨")
         decision = "BUY" if signal_score >= 5 and signal == "BUY" else "SELL" if signal_score >= 5 and signal == "SELL" else "WAIT"
         adjustment_reason = ""
         result = {}
@@ -196,6 +200,7 @@ async def webhook(request: Request):
             log_trade_result(pair, signal, decision, signal_score, ",".join(reasons) + (" | " + adjustment_reason if adjustment_reason else ""))
         else:
             log_trade_result(pair, signal, "WAIT", signal_score, ",".join(reasons))
+            print("📌 log_trade_result 호출 완료: 기록 시도 완료됨")
             
         print("✅ 최종 return 직전: 모든 계산 완료, 결과 반환 시작")
         print("✅ 최종 결과 반환 준비 완료:")
