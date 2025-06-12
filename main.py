@@ -12,7 +12,7 @@ import csv
 print("✅ Render에서 OANDA_API_KEY =", os.getenv("OANDA_API_KEY"))
 print("✅ Loaded OANDA_API_KEY =", os.getenv("OANDA_API_KEY"))
 print("✅ Loaded ACCOUNT_ID =", os.getenv("ACCOUNT_ID"))
-
+print("📂 구글 인증파일 존재 확인:", os.path.exists("/etc/secrets/google_credentials.json"))
 app = FastAPI()
 
 OANDA_API_KEY = os.getenv("OANDA_API_KEY")
@@ -440,3 +440,15 @@ def analyze_with_gpt(payload):
         return result["choices"][0]["message"]["content"]
     except Exception as e:
         return f"GPT 요청 실패: {str(e)}"
+        
+@app.get("/test-sheet")
+def test_google_sheet():
+    try:
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
+        client = gspread.authorize(creds)
+        sheet = client.open("민균 FX trading result").sheet1
+        sheet.append_row(["✅ 테스트", "정상작동", str(datetime.utcnow())])
+        return {"status": "✅ 성공", "time": str(datetime.utcnow())}
+    except Exception as e:
+        return {"status": "❌ 실패", "error": str(e)}
