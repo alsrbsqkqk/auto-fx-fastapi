@@ -68,10 +68,10 @@ async def webhook(request: Request):
             return {"status": "error", "message": f"price 변환 실패: {str(e)}"}
 
         now = datetime.utcnow()
-        if now.hour < 4 or now.hour >= 20:
-            print("⏰ 유동성 시간 필터에 의해 관망 처리됨")
+        if 1 <= now.hour < 3:
+            print("⏳ 유동성 시간 필터에 의해 관망 처리됨 (애틀랜타 밤 9시~11시)")
             log_trade_result(pair, signal, "WAIT", 0, "유동성 필터")
-            return {"message": "유동성 낮은 시간. 기록만 수행됨"}
+            return {"message": "애틀랜타 밤 9~11시 유동성 낮음으로 관망"}
 
         candles = get_candles(pair, "M30", 200)
         print("📊 캔들 데이터 길이:", len(candles))
