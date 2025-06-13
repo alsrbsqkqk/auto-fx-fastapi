@@ -305,9 +305,15 @@ def analyze_with_gpt(payload):
 import math
 
 def safe_float(val):
-    if val is None or (isinstance(val, float) and (math.isnan(val) or math.isinf(val))):
+    try:
+        if val is None:
+            return ""
+        val = float(val)
+        if math.isnan(val) or math.isinf(val):
+            return ""
+        return round(val, 5)
+    except:
         return ""
-    return round(val, 5) if isinstance(val, float) else val
 
 
 def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None, macd=None, stoch_rsi=None, pattern=None, trend=None, fibo=None, gpt_decision=None, news=None, gpt_feedback=None, alert_name=None, tp=None, sl=None, entry=None, price=None, pnl=None, outcome_analysis=None, adjustment_suggestion=None, price_movements=None, atr=None):
@@ -317,7 +323,8 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
     sheet = client.open("민균 FX trading result").sheet1
     now_atlanta = datetime.utcnow() - timedelta(hours=4)
     if isinstance(price_movements, list):
-        price_movements = [p for p in price_movements if isinstance(p, dict) and 'high' in p and 'low' in p and isinstance(p['high'], (int, float, np.float64)) and isinstance(p['low'], (int, float, np.float64))]
+        price_movements = [p for p in price_movements if isinstance(p, dict) and all(k in p for k in ("high", "low")) and isinstance(p["high"], (int, float, np.float64)) and isinstance(p["low"], (int, float, np.float64)) and not math.isinf(p["high"]) and not math.isnan(p["high"]) and not math.isinf(p["low"]) and not math.isnan(p["low"])]
+        print("[DEBUG] 필터링된 price_movements 개수:", len(price_movements))
     else:    
         price_movements = []
     is_new_high = ""
