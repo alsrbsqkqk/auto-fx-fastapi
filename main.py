@@ -148,12 +148,14 @@ async def webhook(request: Request):
 
     
     should_execute = False
-    if decision == "WAIT" and signal_score >= 4 and allow_conditional_trade:
-        decision = signal
-        gpt_feedback += "\n조건부 진입: 최근 2시간 거래 없음 + 4점 이상 조건 충족"
+    # 1️⃣ 기본 진입 조건: GPT가 BUY/SELL 판단 + 점수 4점 이상
+    if decision in ["BUY", "SELL"] and signal_score >= 4:
         should_execute = True
-        
-    elif decision in ["BUY", "SELL"] and signal_score >= 4 and allow_conditional_trade:
+
+    # 2️⃣ 조건부 진입: 최근 2시간 거래 없으면 점수 4점 미만이어도 진입 허용
+    elif allow_conditional_trade:
+        decision = signal
+        gpt_feedback += "\n⚠️ 조건부 진입: 최근 2시간 거래 없음 → 점수 기준 완화"
         should_execute = True
         
     if should_execute:
@@ -161,7 +163,6 @@ async def webhook(request: Request):
         digits = 5 if "EUR" in pair else 3
         result = place_order(pair, units, tp, sl, digits)
         
-
 
     result = {}
     price_movements = []
