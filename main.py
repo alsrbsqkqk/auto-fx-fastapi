@@ -61,52 +61,52 @@ support_resistance = {
 high_low_analysis = analyze_highs_lows(candles)
 atr = calculate_atr(candles).iloc[-1]
 
-    signal_score = 0
-    reasons = []
-    if rsi.iloc[-1] < 30:
-        signal_score += 2
-        reasons.append("RSI < 30")
-    if macd.iloc[-1] > macd_signal.iloc[-1]:
-        signal_score += 2
-        reasons.append("MACD 골든크로스")
-    if stoch_rsi > 0.8:
-        signal_score += 1
-        reasons.append("Stoch RSI 과열")
-    if trend == "UPTREND" and signal == "BUY":
-        signal_score += 1
-        reasons.append("추세 상승 + 매수 일치")
-    if trend == "DOWNTREND" and signal == "SELL":
-        signal_score += 1
-        reasons.append("추세 하락 + 매도 일치")
-    if liquidity == "좋음":
-        signal_score += 1
-        reasons.append("유동성 좋음")
-    if pattern in ["HAMMER", "BULLISH_ENGULFING"]:
-        signal_score += 1
-        reasons.append(f"캔들패턴: {pattern}")
+signal_score = 0
+reasons = []
+if rsi.iloc[-1] < 30:
+    signal_score += 2
+    reasons.append("RSI < 30")
+if macd.iloc[-1] > macd_signal.iloc[-1]:
+    signal_score += 2
+    reasons.append("MACD 골든크로스")
+if stoch_rsi > 0.8:
+    signal_score += 1
+    reasons.append("Stoch RSI 과열")
+if trend == "UPTREND" and signal == "BUY":
+    signal_score += 1
+    reasons.append("추세 상승 + 매수 일치")
+if trend == "DOWNTREND" and signal == "SELL":
+    signal_score += 1
+    reasons.append("추세 하락 + 매도 일치")
+if liquidity == "좋음":
+    signal_score += 1
+    reasons.append("유동성 좋음")
+if pattern in ["HAMMER", "BULLISH_ENGULFING"]:
+    signal_score += 1
+    reasons.append(f"캔들패턴: {pattern}")
 
-    fibo_levels = calculate_fibonacci_levels(candles["high"].max(), candles["low"].min())
+fibo_levels = calculate_fibonacci_levels(candles["high"].max(), candles["low"].min())
 
-    payload = {
-        "pair": pair,
-        "price": price,
-        "signal": signal,
-        "rsi": rsi.iloc[-1],
-        "macd": macd.iloc[-1],
-        "macd_signal": macd_signal.iloc[-1],
-        "stoch_rsi": stoch_rsi,
-        "bollinger_upper": boll_up.iloc[-1],
-        "bollinger_lower": boll_low.iloc[-1],
-        "pattern": pattern,
-        "trend": trend,
-        "liquidity": liquidity,
-        "support": support_resistance["support"],
-        "resistance": support_resistance["resistance"],
-        "news": news,
-        "new_high": bool(high_low_analysis["new_high"]),
-        "new_low": bool(high_low_analysis["new_low"]),
-        "atr": atr
-    }
+payload = {
+    "pair": pair,
+    "price": price,
+    "signal": signal,
+    "rsi": rsi.iloc[-1],
+    "macd": macd.iloc[-1],
+    "macd_signal": macd_signal.iloc[-1],
+    "stoch_rsi": stoch_rsi,
+    "bollinger_upper": boll_up.iloc[-1],
+    "bollinger_lower": boll_low.iloc[-1],
+    "pattern": pattern,
+    "trend": trend,
+    "liquidity": liquidity,
+    "support": support_resistance["support"],
+    "resistance": support_resistance["resistance"],
+    "news": news,
+    "new_high": bool(high_low_analysis["new_high"]),
+    "new_low": bool(high_low_analysis["new_low"]),
+    "atr": atr
+}
 
     recent_trade_time = get_last_trade_time()
     time_since_last = datetime.utcnow() - recent_trade_time if recent_trade_time else timedelta(hours=999)
