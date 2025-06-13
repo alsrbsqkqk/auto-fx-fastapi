@@ -186,7 +186,9 @@ def get_candles(pair, granularity, count):
     candles = r.json().get("candles", [])
 
     if not candles:
-        return pd.DataFrame(columns=["time", "open", "high", "low", "close", "volume"])
+        return pd.DataFrame([
+            {"time": None, "open": None, "high": None, "low": None, "close": None, "volume": None}   
+        ])
 
 def calculate_rsi(series, period=14):
     delta = series.diff()
