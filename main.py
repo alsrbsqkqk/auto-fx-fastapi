@@ -134,6 +134,7 @@ async def webhook(request: Request):
         sl = round(price * (0.97 if decision == "BUY" else 1.03), 5)
         gpt_feedback += "\n⚠️ GPT로부터 TP/SL 추출 실패 → 기본값 적용 (TP: +5%, SL: -3%)"
 
+    should_execute = False
     if decision == "WAIT" and signal_score >= 4 and allow_conditional_trade:
         decision = signal
         gpt_feedback += "\n조건부 진입: 최근 2시간 거래 없음 + 4점 이상 조건 충족"
