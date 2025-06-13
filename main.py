@@ -426,6 +426,8 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
         for p in filtered_movements[-5:]
         if isinstance(p, dict) and "high" in p and "low" in p
     ])
+        if not filtered_movement_str:
+            filtered_movement_str = "no_data"
    
     row = [
       
