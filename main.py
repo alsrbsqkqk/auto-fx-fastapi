@@ -57,7 +57,7 @@ news = fetch_forex_news()
 support_resistance = {
     "support": candles["low"].min(),
     "resistance": candles["high"].max()
-}
+    }
     high_low_analysis = analyze_highs_lows(candles)
     atr = calculate_atr(candles).iloc[-1]
 
