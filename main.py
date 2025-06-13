@@ -286,3 +286,9 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
     row.append(gpt_feedback or "")
     row.append(json.dumps(price_movements))
     sheet.append_row(row)
+def get_last_trade_time():
+    try:
+        with open("/tmp/last_trade_time.txt", "r") as f:
+            return datetime.fromisoformat(f.read().strip())
+    except:
+        return None
