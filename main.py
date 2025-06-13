@@ -429,7 +429,7 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
     row.append(outcome_analysis or "")
     row.append(adjustment_suggestion or "")
     row.append(gpt_feedback or "")
-    row.append(json.dumps(price_movements))
+    row.append(price_movements) 
     clean_row = []
     for v in row:
         if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
