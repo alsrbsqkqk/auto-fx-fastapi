@@ -315,7 +315,33 @@ def fetch_forex_news():
         return "❓ 뉴스 확인 실패"
 
 def place_order(pair, units, tp, sl, digits):
-    return {"status": "order_placed", "tp": tp, "sl": sl}
+    url = f"https://api-fxpractice.oanda.com/v3/accounts/{ACCOUNT_ID}/orders"
+    headers = {
+        "Authorization": f"Bearer {OANDA_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    data = {
+        "order": {
+            "instrument": pair,
+            "units": str(units),
+            "type": "MARKET",
+            "positionFill": "DEFAULT",
+            "takeProfitOnFill": {
+                "price": str(round(tp, digits))
+            },
+            "stopLossOnFill": {
+                "price": str(round(sl, digits))
+            }
+        }
+    }
+
+    try:
+        response = requests.post(url, headers=headers, json=data)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        return {"status": "error", "message": str(e)}
 
 import re
 
