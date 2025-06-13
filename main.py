@@ -378,8 +378,11 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
                     is_new_low = "신저점"
         except Exception as e:
             print("❗ 신고점/신저점 계산 실패:", e)
-
+        result = json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else result
+        price_movements = json.dumps(price_movements) if isinstance(price_movements, list) else price_movements
+   
     row = [
+      
         str(now_atlanta), pair, alert_name or "", signal, decision, score,
         safe_float(rsi), safe_float(macd), safe_float(stoch_rsi),
         pattern or "", trend or "", fibo.get("0.382", ""), fibo.get("0.618", ""),
