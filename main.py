@@ -70,33 +70,33 @@ def analyze_highs_lows(candles, window=20):
         "new_low": new_low
     }
 
-signal_score = 0
-reasons = []
-    if rsi.iloc[-1] < 30:
-        signal_score += 2
-        reasons.append("RSI < 30")
-    if macd.iloc[-1] > macd_signal.iloc[-1]:
-        signal_score += 2
-        reasons.append("MACD 골든크로스")
-    if stoch_rsi > 0.8:
-        signal_score += 1
-        reasons.append("Stoch RSI 과열")
-    if trend == "UPTREND" and signal == "BUY":
-        signal_score += 1
-        reasons.append("추세 상승 + 매수 일치")
-    if trend == "DOWNTREND" and signal == "SELL":
-        signal_score += 1
-        reasons.append("추세 하락 + 매도 일치")
-    if liquidity == "좋음":
-        signal_score += 1
-        reasons.append("유동성 좋음")
-    if pattern in ["HAMMER", "BULLISH_ENGULFING"]:
-        signal_score += 1
-        reasons.append(f"캔들패턴: {pattern}")
+        signal_score = 0
+        reasons = []
+        if rsi.iloc[-1] < 30:
+            signal_score += 2
+            reasons.append("RSI < 30")
+        if macd.iloc[-1] > macd_signal.iloc[-1]:
+            signal_score += 2
+            reasons.append("MACD 골든크로스")
+        if stoch_rsi > 0.8:
+            signal_score += 1
+            reasons.append("Stoch RSI 과열")
+        if trend == "UPTREND" and signal == "BUY":
+            signal_score += 1
+            reasons.append("추세 상승 + 매수 일치")
+        if trend == "DOWNTREND" and signal == "SELL":
+            signal_score += 1
+            reasons.append("추세 하락 + 매도 일치")
+        if liquidity == "좋음":
+            signal_score += 1
+            reasons.append("유동성 좋음")
+        if pattern in ["HAMMER", "BULLISH_ENGULFING"]:
+            signal_score += 1
+            reasons.append(f"캔들패턴: {pattern}")
 
-    fibo_levels = calculate_fibonacci_levels(candles["high"].max(), candles["low"].min())
+        fibo_levels = calculate_fibonacci_levels(candles["high"].max(), candles["low"].min())
 
-    payload = {
+        payload = {
         "pair": pair,
         "price": price,
         "signal": signal,
