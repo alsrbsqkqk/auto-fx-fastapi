@@ -61,7 +61,28 @@ async def webhook(request: Request):
 
     high_low_analysis = analyze_highs_lows(candles)
     atr = calculate_atr(candles).iloc[-1]
+    fibo_levels = calculate_fibonacci_levels(candles["high"].max(), candles["low"].min())
 
+    payload = {
+        "pair": pair,
+        "price": price,
+        "signal": signal,
+        "rsi": rsi.iloc[-1],
+        "macd": macd.iloc[-1],
+        "macd_signal": macd_signal.iloc[-1],
+        "stoch_rsi": stoch_rsi,
+        "bollinger_upper": boll_up.iloc[-1],
+        "bollinger_lower": boll_low.iloc[-1],
+        "pattern": pattern,
+        "trend": trend,
+        "liquidity": liquidity,
+        "support": support_resistance["support"],
+        "resistance": support_resistance["resistance"],
+        "news": news,
+        "new_high": bool(high_low_analysis["new_high"]),
+        "new_low": bool(high_low_analysis["new_low"]),
+        "atr": atr
+    }
     signal_score = 0
     reasons = []
     if rsi.iloc[-1] < 30:
@@ -85,41 +106,7 @@ async def webhook(request: Request):
     if pattern in ["HAMMER", "BULLISH_ENGULFING"]:
         signal_score += 1
         reasons.append(f"캔들패턴: {pattern}")
-        
-
-    highs = candles['high'].tail(window)
-    lows = candles['low'].tail(window)
-    new_high = highs.iloc[-1] > highs.max()
-    new_low = lows.iloc[-1] < lows.min()
-    return {
-        "new_high": new_high,
-        "new_low": new_low
-    }
-
-def analyze_highs_lows(candles, window=20):
-    fibo_levels = calculate_fibonacci_levels(candles["high"].max(), candles["low"].min())
-
-    payload = {
-        "pair": pair,
-        "price": price,
-        "signal": signal,
-        "rsi": rsi.iloc[-1],
-        "macd": macd.iloc[-1],
-        "macd_signal": macd_signal.iloc[-1],
-        "stoch_rsi": stoch_rsi,
-        "bollinger_upper": boll_up.iloc[-1],
-        "bollinger_lower": boll_low.iloc[-1],
-        "pattern": pattern,
-        "trend": trend,
-        "liquidity": liquidity,
-        "support": support_resistance["support"],
-        "resistance": support_resistance["resistance"],
-        "news": news,
-        "new_high": bool(high_low_analysis["new_high"]),
-        "new_low": bool(high_low_analysis["new_low"]),
-        "atr": atr
-    }
-
+            
     recent_trade_time = get_last_trade_time()
     time_since_last = datetime.utcnow() - recent_trade_time if recent_trade_time else timedelta(hours=999)
     allow_conditional_trade = time_since_last > timedelta(hours=2)
