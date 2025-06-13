@@ -322,23 +322,19 @@ def parse_gpt_feedback(text):
     if d:
         decision = d.group(1)
 
-    # TP 추출 (표준 포맷 우선)
-    tp_match = re.search(r"TP\s*[=:：]?\s*([\d.]+)", text.upper())
+    # TP/SL 포함된 문장에서 마지막 숫자 추출
+    tp_line = next((line for line in text.splitlines() if "TP" in line.upper()), "")
+    sl_line = next((line for line in text.splitlines() if "SL" in line.upper()), "")
+
+    tp_matches = re.findall(r"([\d.]{4,})", tp_line)
+    sl_matches = re.findall(r"([\d.]{4,})", sl_line)
+    
     if tp_match:
-        tp = float(tp_match.group(1))
-    else:
-        fallback_tp = re.search(r"TP[^\d]{0,20}([\d.]{4,})", text, re.IGNORECASE)
-        if fallback_tp:
-            tp = float(fallback_tp.group(1))
-
-    sl_match = re.search(r"SL\s*[=:：]?\s*([\d.]+)", text.upper())
-    if sl_match:
-        sl = float(sl_match.group(1))
-    else:
-        fallback_sl = re.search(r"SL[^\d]{0,20}([\d.]{4,})", text, re.IGNORECASE)
-        if fallback_sl:
-            sl = float(fallback_sl.group(1))
-
+        tp = float(tp_matches[-1])
+    if sl_matches:
+        sl = float(sl_matches[-1])
+    return decision, tp, sl
+    
 def analyze_with_gpt(payload):
     headers = {"Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}", "Content-Type": "application/json"}
     messages = [
