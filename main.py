@@ -429,20 +429,20 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
 
 
     try:
-    filtered_movement_str = ", ".join([
-        f"H: {round(p['high'], 5)} / L: {round(p['low'], 5)}"
-        for p in filtered_movements[-5:]
-        if isinstance(p, dict) and "high" in p and "low" in p and
-           isinstance(p['high'], (float, int)) and isinstance(p['low'], (float, int)) and
-           not math.isnan(p['high']) and not math.isnan(p['low']) and
-           not math.isinf(p['high']) and not math.isinf(p['low'])
-    ])
-except Exception as e:
-    print("❌ filtered_movement_str 변환 실패:", e)
-    filtered_movement_str = "error_in_conversion"
+        filtered_movement_str = ", ".join([
+            f"H: {round(p['high'], 5)} / L: {round(p['low'], 5)}"
+            for p in filtered_movements[-5:]
+            if isinstance(p, dict) and "high" in p and "low" in p and
+               isinstance(p['high'], (float, int)) and isinstance(p['low'], (float, int)) and
+               not math.isnan(p['high']) and not math.isnan(p['low']) and
+               not math.isinf(p['high']) and not math.isinf(p['low'])
+        ])
+    except Exception as e:
+        print("❌ filtered_movement_str 변환 실패:", e)
+        filtered_movement_str = "error_in_conversion"
     
-    if not filtered_movement_str:
-        filtered_movement_str = "no_data"
+        if not filtered_movement_str:
+            filtered_movement_str = "no_data"
    
     row = [
       
