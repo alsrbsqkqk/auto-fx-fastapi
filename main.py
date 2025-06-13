@@ -168,6 +168,7 @@ async def webhook(request: Request):
     if should_execute:
         units = 50000 if decision == "BUY" else -50000
         digits = 5 if "EUR" in pair else 3
+        print(f"[DEBUG] 조건 충족 → 실제 주문 실행: {pair}, units={units}, tp={tp}, sl={sl}, digits={digits}")
         result = place_order(pair, units, tp, sl, digits)
         
 
