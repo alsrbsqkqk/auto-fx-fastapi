@@ -20,8 +20,12 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 
 
 def analyze_highs_lows(candles, window=20):
-    highs = candles['high'].tail(window)
-    lows = candles['low'].tail(window)
+    highs = candles['high'].tail(window).dropna()
+    lows = candles['low'].tail(window).dropna()
+
+    if highs.empty or lows.empty:
+        return {"new_high": False, "new_low": False}
+
     new_high = highs.iloc[-1] > highs.max()
     new_low = lows.iloc[-1] < lows.min()
     return {
