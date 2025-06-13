@@ -438,10 +438,6 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
         gpt_feedback or "",
         filtered_movement_str
     ]
-    row.append(news)
-    row.append(outcome_analysis or "")
-    row.append(adjustment_suggestion or "")
-    row.append(gpt_feedback or "")
 
     clean_row = []
     for v in row:
