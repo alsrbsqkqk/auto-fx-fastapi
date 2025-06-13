@@ -387,8 +387,7 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
             and not math.isnan(p["high"]) and not math.isnan(p["low"])
             and not math.isinf(p["high"]) and not math.isinf(p["low"])
         ]
-
-        else:    
+    else:    
         price_movements = []
     is_new_high = ""
     is_new_low = ""
