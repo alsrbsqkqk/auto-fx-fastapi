@@ -458,6 +458,16 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
             print(f"❌ [오류] clean_row[{idx}]에 dict 또는 list가 남아 있음 → {val}")
     
     sheet.append_row(clean_row)
+    for idx, val in enumerate(clean_row):
+        if isinstance(val, (dict, list)):
+            print(f"❌ [디버그] clean_row[{idx}]는 dict 또는 list → {val}")
+    print(f"🧪 최종 clean_row 길이: {len(clean_row)}")
+
+    try:
+        sheet.append_row(clean_row)
+    except Exception as e:
+        print("❌ Google Sheet append_row 실패:", e)
+        print("🧨 clean_row 전체 내용:\n", clean_row)
 
 
 def get_last_trade_time():
