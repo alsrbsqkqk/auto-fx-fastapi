@@ -129,11 +129,15 @@ async def webhook(request: Request):
     gpt_feedback = analyze_with_gpt(payload)
     decision, tp, sl = parse_gpt_feedback(gpt_feedback)
     # ✅ TP/SL 값이 없을 경우 기본 설정 (5% 수익 / 3% 손실)
+    effective_decision = decision if decision in ["BUY", "SELL"] else signal
     if (tp is None or sl is None) and price is not None:
-        tp = round(price * (1.05 if decision == "BUY" else 0.95), 5)
-        sl = round(price * (0.97 if decision == "BUY" else 1.03), 5)
-        gpt_feedback += "\n⚠️ GPT로부터 TP/SL 추출 실패 → 기본값 적용 (TP: +5%, SL: -3%)"
-
+        if effective_decision == "BUY":
+            tp = round(price * 1.05, 5)
+            sl = round(price * 0.97, 5)
+        elif effective_decision == "SELL":
+            tp = round(price * 0.95, 5)
+            sl = round(price * 1.03, 5)
+        gpt_feedback += "\n⚠️ TP/SL 추출 실패 → 기본값 적용 (TP: +5%, SL: -3%)"
     should_execute = False
     if decision == "WAIT" and signal_score >= 4 and allow_conditional_trade:
         decision = signal
@@ -295,20 +299,26 @@ def place_order(pair, units, tp, sl, digits):
     return {"status": "order_placed", "tp": tp, "sl": sl}
 
 import re
+
+
 def parse_gpt_feedback(text):
+    import re
+
     decision = "WAIT"
     tp = None
     sl = None
 
+    # 결정 추출
     d = re.search(r"결정\s*[:：]?\s*(BUY|SELL|WAIT)", text.upper())
     if d:
         decision = d.group(1)
 
+    # TP 추출 (표준 포맷 우선)
     tp_match = re.search(r"TP\s*[=:：]?\s*([\d.]+)", text.upper())
     if tp_match:
         tp = float(tp_match.group(1))
     else:
-        fallback_tp = re.search(r"TP[^\d]{0,10}([\d.]+)", text)
+        fallback_tp = re.search(r"TP[^\d]{0,20}([\d.]{4,})", text, re.IGNORECASE)
         if fallback_tp:
             tp = float(fallback_tp.group(1))
 
@@ -316,11 +326,9 @@ def parse_gpt_feedback(text):
     if sl_match:
         sl = float(sl_match.group(1))
     else:
-        fallback_sl = re.search(r"SL[^\d]{0,10}([\d.]+)", text)
+        fallback_sl = re.search(r"SL[^\d]{0,20}([\d.]{4,})", text, re.IGNORECASE)
         if fallback_sl:
             sl = float(fallback_sl.group(1))
-
-    return decision, tp, sl
 
 def analyze_with_gpt(payload):
     headers = {"Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}", "Content-Type": "application/json"}
