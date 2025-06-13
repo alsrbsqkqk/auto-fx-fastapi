@@ -426,6 +426,21 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
         for p in filtered_movements[-5:]
         if isinstance(p, dict) and "high" in p and "low" in p
     ])
+
+
+    try:
+    filtered_movement_str = ", ".join([
+        f"H: {round(p['high'], 5)} / L: {round(p['low'], 5)}"
+        for p in filtered_movements[-5:]
+        if isinstance(p, dict) and "high" in p and "low" in p and
+           isinstance(p['high'], (float, int)) and isinstance(p['low'], (float, int)) and
+           not math.isnan(p['high']) and not math.isnan(p['low']) and
+           not math.isinf(p['high']) and not math.isinf(p['low'])
+    ])
+except Exception as e:
+    print("❌ filtered_movement_str 변환 실패:", e)
+    filtered_movement_str = "error_in_conversion"
+    
     if not filtered_movement_str:
         filtered_movement_str = "no_data"
    
@@ -450,10 +465,17 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
 
     clean_row = []
     for v in row:
-        if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+        if isinstance(v, (dict, list)):
+            clean_row.append(json.dumps(v, ensure_ascii=False))
+        elif isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
             clean_row.append("")
         else:
             clean_row.append(v)
+
+
+
+
+
     print("✅ STEP 8: 시트 저장 직전", clean_row)
     for idx, val in enumerate(clean_row):
          if isinstance(val, (dict, list)):
