@@ -316,7 +316,7 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
     client = gspread.authorize(creds)
     sheet = client.open("민균 FX trading result").sheet1
     now_atlanta = datetime.utcnow() - timedelta(hours=4)
-    price_movements = [p for p in price_movements if isinstance(p, dict) and isinstance(p.get('high', None), (int, float, np.float64)) and isinstance(p.get('low', None), (int, float, np.float64))]
+    price_movements = [p for p in price_movements if isinstance(p, dict) and 'high' in p and 'low' in p and isinstance(p['high'], (int, float, np.float64)) and isinstance(p['low'], (int, float, np.float64))]
     row = [
         str(now_atlanta), pair, alert_name or "", signal, decision, score,
         safe_float(rsi), safe_float(macd), safe_float(stoch_rsi),
