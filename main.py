@@ -1,7 +1,7 @@
 # ⚠️ V2 업그레이드된 자동 트레이딩 스크립트 (학습 강화, 트렌드 보강, 시트 시간 보정 포함)
-
-import os
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+import os
 import requests
 import json
 import pandas as pd
