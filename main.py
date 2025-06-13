@@ -142,8 +142,6 @@ async def webhook(request: Request):
     "
 ".join(reasons) + f"
 ATR: {round(atr or 0, 5)}",
-
-
     result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi, pattern, trend, fibo_levels,
     decision, news, gpt_feedback, alert_name, tp, sl, price, pnl,
     outcome_analysis, adjustment_suggestion, price_movements,
