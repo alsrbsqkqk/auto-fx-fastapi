@@ -376,7 +376,7 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
     now_atlanta = datetime.utcnow() - timedelta(hours=4)
     if isinstance(price_movements, list):
         try:
-            price_movements = [
+            filtered_movements = [
                 {
                     "high": float(p["high"]),
                     "low": float(p["low"])
@@ -390,29 +390,27 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
             ]
         except Exception as e:
             print("❗ price_movements 정제 실패:", e)
-            price_movements = []
-
-        # ✅ 반드시 JSON 문자열로 변환
-        price_movements = json.dumps(price_movements, ensure_ascii=False)
+            filtered_movements = []
     else:
-        price_movements = "[]"
-    
+        filtered_movements = []
+
+    # ✅ 분석용 filtered_movements로 신고점/신저점 판단
     is_new_high = ""
     is_new_low = ""
-    if len(price_movements) > 1:
+    if len(filtered_movements) > 1:
         try:
-            highs = [p["high"] for p in price_movements[:-1] if isinstance(p, dict) and "high" in p]
-            lows = [p["low"] for p in price_movements[:-1] if isinstance(p, dict) and "low" in p]
-            last = price_movements[-1]
-            if isinstance(last, dict):
-                if "high" in last and highs and last["high"] > max(highs):
-                    is_new_high = "신고점"
-                if "low" in last and lows and last["low"] < min(lows):
-                    is_new_low = "신저점"
+            highs = [p["high"] for p in filtered_movements[:-1]]
+            lows = [p["low"] for p in filtered_movements[:-1]]
+            last = filtered_movements[-1]
+            if "high" in last and highs and last["high"] > max(highs):
+                is_new_high = "신고점"
+            if "low" in last and lows and last["low"] < min(lows):
+                is_new_low = "신저점"
         except Exception as e:
             print("❗ 신고점/신저점 계산 실패:", e)
-        result = json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else result
-        price_movements = json.dumps(price_movements) if isinstance(price_movements, list) else price_movements
+
+    # ✅ Google Sheet 저장용 문자열로 변환
+    price_movements = json.dumps(filtered_movements, ensure_ascii=False)
    
     row = [
       
