@@ -141,8 +141,8 @@ async def webhook(request: Request):
     effective_decision = decision if decision in ["BUY", "SELL"] else signal
     if (tp is None or sl is None) and price is not None:
         pip_value = 0.01 if "JPY" in pair else 0.0001
-        tp_pips = pip_value * 30
-        sl_pips = pip_value * 20
+        tp_pips = pip_value * 15
+        sl_pips = pip_value * 10
 
         if effective_decision == "BUY":
             tp = round(price + tp_pips, 5)
@@ -375,7 +375,7 @@ def parse_gpt_feedback(text):
 def analyze_with_gpt(payload):
     headers = {"Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}", "Content-Type": "application/json"}
     messages = [
-        {"role": "system", "content": "너는 실전 FX 트레이딩 전략 조력자야. 아래 JSON 데이터를 기반으로 전략 리포트를 생성하고, 진입 판단(BUY, SELL, WAIT)과 TP, SL 값을 제시해줘."},
+        {"role": "system", "content": "너는 실전 FX 트레이딩 전략 조력자야. 아래 JSON 데이터를 기반으로 전략 리포트를 생성하고, 이 전략은 보통 1,2시간 내에 종료하기를 목표로 하며, 적은 금액 몇십불이어도 짧은 기간에 수익을 내는것이 목표야.  진입 판단(BUY, SELL, WAIT)과 TP, SL 값을 제시해줘."},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}
     ]
     body = {"model": "gpt-4", "messages": messages, "temperature": 0.3}
@@ -503,7 +503,7 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
 
 
 
-    print("✅ STEP 8: 시트 저장 직전", clean_row)
+    # print("✅ STEP 8: 시트 저장 직전", clean_row)
     for idx, val in enumerate(clean_row):
          if isinstance(val, (dict, list)):
             print(f"❌ [오류] clean_row[{idx}]에 dict 또는 list가 남아 있음 → {val}")
