@@ -178,6 +178,7 @@ async def webhook(request: Request):
         units = 50000 if decision == "BUY" else -50000
         digits = 5 if "EUR" in pair else 3
         result = place_order(pair, units, tp, sl, digits)
+        print("✅ STEP 9: 주문 결과 확인 |", result)
 
         executed_time = datetime.utcnow()
         candles_post = get_candles(pair, "M30", 8)
@@ -208,7 +209,8 @@ async def webhook(request: Request):
             adjustment_suggestion = "SL 터치 → SL 너무 타이트했을 수 있음, 다음 전략에서 완화 필요"
         elif abs(tp - price) < abs(sl - price):
             adjustment_suggestion = "TP 거의 닿았으나 실패 → TP 약간 보수적일 필요 있음"
-
+            
+    print(f"✅ STEP 10: 전략 요약 저장 호출 | decision: {decision}, TP: {tp}, SL: {sl}")
     log_trade_result(
         pair, signal, decision, signal_score,
         "\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}",
@@ -419,7 +421,12 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
     # ✅ Google Sheet 저장용 문자열로 변환
     
 
-    filtered_movement_str = json.dumps(filtered_movements, ensure_ascii=False)
+    filtered_movement_str = ", ".join([
+        f"H: {round(p['high'], 5)} / L: {round(p['low'], 5)}"
+        for p in filtered_movements[-5:]
+        if isinstance(p, dict) and "high" in p and "low" in p
+    ])
+   
     row = [
       
         str(now_atlanta), pair, alert_name or "", signal, decision, score,
