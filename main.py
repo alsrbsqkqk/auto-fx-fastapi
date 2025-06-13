@@ -128,6 +128,11 @@ async def webhook(request: Request):
 
     gpt_feedback = analyze_with_gpt(payload)
     decision, tp, sl = parse_gpt_feedback(gpt_feedback)
+    # ✅ TP/SL 값이 없을 경우 기본 설정 (5% 수익 / 3% 손실)
+    if (tp is None or sl is None) and price is not None:
+    tp = round(price * (1.05 if decision == "BUY" else 0.95), 5)
+    sl = round(price * (0.97 if decision == "BUY" else 1.03), 5)
+    gpt_feedback += "\n⚠️ GPT로부터 TP/SL 추출 실패 → 기본값 적용 (TP: +5%, SL: -3%)"
 
     if decision == "WAIT" and signal_score >= 4 and allow_conditional_trade:
         decision = signal
