@@ -329,7 +329,7 @@ def parse_gpt_feedback(text):
     tp_matches = re.findall(r"([\d.]{4,})", tp_line)
     sl_matches = re.findall(r"([\d.]{4,})", sl_line)
     
-    if tp_match:
+    if tp_matches:
         tp = float(tp_matches[-1])
     if sl_matches:
         sl = float(sl_matches[-1])
