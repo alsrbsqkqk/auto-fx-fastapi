@@ -36,13 +36,13 @@ async def webhook(request: Request):
             status_code=400
         )
 
-    
     signal = data.get("signal")
     alert_name = data.get("alert_name", "기본알림")
 
     candles = get_candles(pair, "M30", 200)
     if candles is None or candles.empty:
         return JSONResponse(content={"error": "캔들 데이터를 불러올 수 없음"}, status_code=400)
+
     close = candles["close"]
     rsi = calculate_rsi(close)
     stoch_rsi_series = calculate_stoch_rsi(rsi)
@@ -57,44 +57,36 @@ async def webhook(request: Request):
     support_resistance = {
         "support": candles["low"].min(),
         "resistance": candles["high"].max()
-        }
-    high_low_analysis = analyze_highs_lows(candles)
-    atr = calculate_atr(candles).iloc[-1]
-def analyze_highs_lows(candles, window=20):
-    highs = candles['high'].tail(window)
-    lows = candles['low'].tail(window)
-    new_high = highs.iloc[-1] > highs.max()
-    new_low = lows.iloc[-1] < lows.min()
-    return {
-        "new_high": new_high,
-        "new_low": new_low
     }
 
-        signal_score = 0
-        reasons = []
-        if rsi.iloc[-1] < 30:
-            signal_score += 2
-            reasons.append("RSI < 30")
-        if macd.iloc[-1] > macd_signal.iloc[-1]:
-            signal_score += 2
-            reasons.append("MACD 골든크로스")
-        if stoch_rsi > 0.8:
-            signal_score += 1
-            reasons.append("Stoch RSI 과열")
-        if trend == "UPTREND" and signal == "BUY":
-            signal_score += 1
-            reasons.append("추세 상승 + 매수 일치")
-        if trend == "DOWNTREND" and signal == "SELL":
-            signal_score += 1
-            reasons.append("추세 하락 + 매도 일치")
-        if liquidity == "좋음":
-            signal_score += 1
-            reasons.append("유동성 좋음")
-        if pattern in ["HAMMER", "BULLISH_ENGULFING"]:
-            signal_score += 1
-            reasons.append(f"캔들패턴: {pattern}")
+    high_low_analysis = analyze_highs_lows(candles)
+    atr = calculate_atr(candles).iloc[-1]
 
-        fibo_levels = calculate_fibonacci_levels(candles["high"].max(), candles["low"].min())
+    signal_score = 0
+    reasons = []
+    if rsi.iloc[-1] < 30:
+        signal_score += 2
+        reasons.append("RSI < 30")
+    if macd.iloc[-1] > macd_signal.iloc[-1]:
+        signal_score += 2
+        reasons.append("MACD 골든크로스")
+    if stoch_rsi > 0.8:
+        signal_score += 1
+        reasons.append("Stoch RSI 과열")
+    if trend == "UPTREND" and signal == "BUY":
+        signal_score += 1
+        reasons.append("추세 상승 + 매수 일치")
+    if trend == "DOWNTREND" and signal == "SELL":
+        signal_score += 1
+        reasons.append("추세 하락 + 매도 일치")
+    if liquidity == "좋음":
+        signal_score += 1
+        reasons.append("유동성 좋음")
+    if pattern in ["HAMMER", "BULLISH_ENGULFING"]:
+        signal_score += 1
+        reasons.append(f"캔들패턴: {pattern}")
+
+    fibo_levels = calculate_fibonacci_levels(candles["high"].max(), candles["low"].min())
 
         payload = {
         "pair": pair,
