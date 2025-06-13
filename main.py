@@ -58,6 +58,18 @@ async def webhook(request: Request):
         "support": candles["low"].min(),
         "resistance": candles["high"].max()
         }
+
+
+def analyze_highs_lows(candles, window=20):
+    highs = candles['high'].tail(window)
+    lows = candles['low'].tail(window)
+    new_high = highs.iloc[-1] > highs.max()
+    new_low = lows.iloc[-1] < lows.min()
+    return {
+        "new_high": new_high,
+        "new_low": new_low
+    }
+
 high_low_analysis = analyze_highs_lows(candles)
 atr = calculate_atr(candles).iloc[-1]
 
@@ -168,15 +180,6 @@ result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi, pattern, trend, fibo_levels,
 )
 
 
-def analyze_highs_lows(candles, window=20):
-    highs = candles['high'].tail(window)
-    lows = candles['low'].tail(window)
-    new_high = highs.iloc[-1] > highs.max()
-    new_low = lows.iloc[-1] < lows.min()
-    return {
-        "new_high": new_high,
-        "new_low": new_low
-    }
 
 def calculate_atr(candles, period=14):
     high_low = candles['high'] - candles['low']
