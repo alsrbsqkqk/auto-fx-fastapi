@@ -170,11 +170,12 @@ async def webhook(request: Request):
     log_trade_result(
         pair, signal, decision, signal_score,
         "\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}",
-        result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi, pattern, trend, fibo_levels,
-        decision, news, gpt_feedback, alert_name, tp, sl, price, pnl,
+        result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi,
+        pattern, trend, fibo_levels, decision, news, gpt_feedback,
+        alert_name, tp, sl, price, pnl,
         outcome_analysis, adjustment_suggestion, price_movements,
-        result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi, pattern, trend, fibo_levels,
-     )
+        atr
+         )
     return JSONResponse(content={"status": "completed", "decision": decision})
 
 
