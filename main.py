@@ -322,18 +322,18 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
         price_movements = []
     is_new_high = ""
     is_new_low = ""
-if len(price_movements) > 1:
-    try:
-        highs = [p["high"] for p in price_movements[:-1] if isinstance(p, dict) and "high" in p]
-        lows = [p["low"] for p in price_movements[:-1] if isinstance(p, dict) and "low" in p]
-        last = price_movements[-1]
-        if isinstance(last, dict):
-            if "high" in last and highs and last["high"] > max(highs):
-                is_new_high = "신고점"
-            if "low" in last and lows and last["low"] < min(lows):
-                is_new_low = "신저점"
-    except Exception as e:
-        print("❗ 신고점/신저점 계산 실패:", e)
+    if len(price_movements) > 1:
+        try:
+            highs = [p["high"] for p in price_movements[:-1] if isinstance(p, dict) and "high" in p]
+            lows = [p["low"] for p in price_movements[:-1] if isinstance(p, dict) and "low" in p]
+            last = price_movements[-1]
+            if isinstance(last, dict):
+                if "high" in last and highs and last["high"] > max(highs):
+                    is_new_high = "신고점"
+                if "low" in last and lows and last["low"] < min(lows):
+                    is_new_low = "신저점"
+        except Exception as e:
+            print("❗ 신고점/신저점 계산 실패:", e)
 
     row = [
         str(now_atlanta), pair, alert_name or "", signal, decision, score,
