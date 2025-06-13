@@ -72,109 +72,109 @@ def analyze_highs_lows(candles, window=20):
 
 signal_score = 0
 reasons = []
-if rsi.iloc[-1] < 30:
-    signal_score += 2
-    reasons.append("RSI < 30")
-if macd.iloc[-1] > macd_signal.iloc[-1]:
-    signal_score += 2
-    reasons.append("MACD 골든크로스")
-if stoch_rsi > 0.8:
-    signal_score += 1
-    reasons.append("Stoch RSI 과열")
-if trend == "UPTREND" and signal == "BUY":
-    signal_score += 1
-    reasons.append("추세 상승 + 매수 일치")
-if trend == "DOWNTREND" and signal == "SELL":
-    signal_score += 1
-    reasons.append("추세 하락 + 매도 일치")
-if liquidity == "좋음":
-    signal_score += 1
-    reasons.append("유동성 좋음")
-if pattern in ["HAMMER", "BULLISH_ENGULFING"]:
-    signal_score += 1
-    reasons.append(f"캔들패턴: {pattern}")
+    if rsi.iloc[-1] < 30:
+        signal_score += 2
+        reasons.append("RSI < 30")
+    if macd.iloc[-1] > macd_signal.iloc[-1]:
+        signal_score += 2
+        reasons.append("MACD 골든크로스")
+    if stoch_rsi > 0.8:
+        signal_score += 1
+        reasons.append("Stoch RSI 과열")
+    if trend == "UPTREND" and signal == "BUY":
+        signal_score += 1
+        reasons.append("추세 상승 + 매수 일치")
+    if trend == "DOWNTREND" and signal == "SELL":
+        signal_score += 1
+        reasons.append("추세 하락 + 매도 일치")
+    if liquidity == "좋음":
+        signal_score += 1
+        reasons.append("유동성 좋음")
+    if pattern in ["HAMMER", "BULLISH_ENGULFING"]:
+        signal_score += 1
+        reasons.append(f"캔들패턴: {pattern}")
 
-fibo_levels = calculate_fibonacci_levels(candles["high"].max(), candles["low"].min())
+    fibo_levels = calculate_fibonacci_levels(candles["high"].max(), candles["low"].min())
 
-payload = {
-    "pair": pair,
-    "price": price,
-    "signal": signal,
-    "rsi": rsi.iloc[-1],
-    "macd": macd.iloc[-1],
-    "macd_signal": macd_signal.iloc[-1],
-    "stoch_rsi": stoch_rsi,
-    "bollinger_upper": boll_up.iloc[-1],
-    "bollinger_lower": boll_low.iloc[-1],
-    "pattern": pattern,
-    "trend": trend,
-    "liquidity": liquidity,
-    "support": support_resistance["support"],
-    "resistance": support_resistance["resistance"],
-    "news": news,
-    "new_high": bool(high_low_analysis["new_high"]),
-    "new_low": bool(high_low_analysis["new_low"]),
-    "atr": atr
-}
+    payload = {
+        "pair": pair,
+        "price": price,
+        "signal": signal,
+        "rsi": rsi.iloc[-1],
+        "macd": macd.iloc[-1],
+        "macd_signal": macd_signal.iloc[-1],
+        "stoch_rsi": stoch_rsi,
+        "bollinger_upper": boll_up.iloc[-1],
+        "bollinger_lower": boll_low.iloc[-1],
+        "pattern": pattern,
+        "trend": trend,
+        "liquidity": liquidity,
+        "support": support_resistance["support"],
+        "resistance": support_resistance["resistance"],
+        "news": news,
+        "new_high": bool(high_low_analysis["new_high"]),
+        "new_low": bool(high_low_analysis["new_low"]),
+        "atr": atr
+    }
 
-recent_trade_time = get_last_trade_time()
-time_since_last = datetime.utcnow() - recent_trade_time if recent_trade_time else timedelta(hours=999)
-allow_conditional_trade = time_since_last > timedelta(hours=2)
+    recent_trade_time = get_last_trade_time()
+    time_since_last = datetime.utcnow() - recent_trade_time if recent_trade_time else timedelta(hours=999)
+    allow_conditional_trade = time_since_last > timedelta(hours=2)
 
-gpt_feedback = analyze_with_gpt(payload)
-decision, tp, sl = parse_gpt_feedback(gpt_feedback)
+    gpt_feedback = analyze_with_gpt(payload)
+    decision, tp, sl = parse_gpt_feedback(gpt_feedback)
 
-if decision == "WAIT" and signal_score >= 6 and allow_conditional_trade:
-    decision = signal
-    gpt_feedback += "\n조건부 진입: 최근 2시간 거래 없음 + 6점 이상 조건 충족"
+    if decision == "WAIT" and signal_score >= 6 and allow_conditional_trade:
+        decision = signal
+        gpt_feedback += "\n조건부 진입: 최근 2시간 거래 없음 + 6점 이상 조건 충족"
 
-result = {}
-price_movements = []
-pnl = None
-if decision in ["BUY", "SELL"] and tp and sl:
-    units = 50000 if decision == "BUY" else -50000
-    digits = 5 if "EUR" in pair else 3
-    result = place_order(pair, units, tp, sl, digits)
+    result = {}
+    price_movements = []
+    pnl = None
+    if decision in ["BUY", "SELL"] and tp and sl:
+        units = 50000 if decision == "BUY" else -50000
+        digits = 5 if "EUR" in pair else 3
+        result = place_order(pair, units, tp, sl, digits)
 
-    executed_time = datetime.utcnow()
-    candles_post = get_candles(pair, "M30", 8)
-    price_movements = candles_post[["high", "low"]].to_dict("records")
+        executed_time = datetime.utcnow()
+        candles_post = get_candles(pair, "M30", 8)
+        price_movements = candles_post[["high", "low"]].to_dict("records")
 
-if decision in ["BUY", "SELL"] and isinstance(result, dict) and "order_placed" in result.get("status", ""):
-    if pnl is not None:
-        if pnl > 0:
-            if abs(tp - price) < abs(sl - price):
-                outcome_analysis = "성공: TP 우선 도달"
+    if decision in ["BUY", "SELL"] and isinstance(result, dict) and "order_placed" in result.get("status", ""):
+        if pnl is not None:
+            if pnl > 0:
+                if abs(tp - price) < abs(sl - price):
+                    outcome_analysis = "성공: TP 우선 도달"
+                else:
+                    outcome_analysis = "성공: 수익 실현"
+            elif pnl < 0:
+                if abs(sl - price) < abs(tp - price):
+                    outcome_analysis = "실패: SL 우선 터치"
+                else:
+                    outcome_analysis = "실패: 손실 발생"
             else:
-                outcome_analysis = "성공: 수익 실현"
-        elif pnl < 0:
-            if abs(sl - price) < abs(tp - price):
-                outcome_analysis = "실패: SL 우선 터치"
-            else:
-                outcome_analysis = "실패: 손실 발생"
+                outcome_analysis = "보류: 실현손익 미확정"
         else:
             outcome_analysis = "보류: 실현손익 미확정"
     else:
-        outcome_analysis = "보류: 실현손익 미확정"
-else:
-    outcome_analysis = "WAIT 또는 주문 미실행"
+        outcome_analysis = "WAIT 또는 주문 미실행"
 
-adjustment_suggestion = ""
-if outcome_analysis.startswith("실패"):
-    if abs(sl - price) < abs(tp - price):
-        adjustment_suggestion = "SL 터치 → SL 너무 타이트했을 수 있음, 다음 전략에서 완화 필요"
-    elif abs(tp - price) < abs(sl - price):
-        adjustment_suggestion = "TP 거의 닿았으나 실패 → TP 약간 보수적일 필요 있음"
+    adjustment_suggestion = ""
+    if outcome_analysis.startswith("실패"):
+        if abs(sl - price) < abs(tp - price):
+            adjustment_suggestion = "SL 터치 → SL 너무 타이트했을 수 있음, 다음 전략에서 완화 필요"
+        elif abs(tp - price) < abs(sl - price):
+            adjustment_suggestion = "TP 거의 닿았으나 실패 → TP 약간 보수적일 필요 있음"
 
-log_trade_result(
-pair, signal, decision, signal_score,
-"\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}",
-result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi, pattern, trend, fibo_levels,
-decision, news, gpt_feedback, alert_name, tp, sl, price, pnl,
-outcome_analysis, adjustment_suggestion, price_movements,
-result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi, pattern, trend, fibo_levels,
- atr=atr
-)
+    log_trade_result(
+    pair, signal, decision, signal_score,
+    "\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}",
+    result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi, pattern, trend, fibo_levels,
+    decision, news, gpt_feedback, alert_name, tp, sl, price, pnl,
+    outcome_analysis, adjustment_suggestion, price_movements,
+    result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi, pattern, trend, fibo_levels,
+     atr=atr
+    )
 
 
 
