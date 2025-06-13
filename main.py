@@ -145,17 +145,7 @@ ATR: {round(atr or 0, 5)}",
         result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi, pattern, trend, fibo_levels,
         decision, news, gpt_feedback, alert_name, tp, sl, price, pnl,
         outcome_analysis, adjustment_suggestion, price_movements
-    )
-    return {"결정": decision, "TP": tp, "SL": sl, "GPT응답": gpt_feedback}
-
-def get_last_trade_time():
-    return None
-
-def detect_support_resistance(candles, window=10):
-    highs = candles["high"].tail(window)
-    lows = candles["low"].tail(window)
-    return {
-        "support": round(lows.min(), 5),
+    ), 5),
         "resistance": round(highs.max(), 5)
     }
 
