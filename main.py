@@ -128,16 +128,25 @@ async def webhook(request: Request):
 
     gpt_feedback = analyze_with_gpt(payload)
     decision, tp, sl = parse_gpt_feedback(gpt_feedback)
-    # ✅ TP/SL 값이 없을 경우 기본 설정 (5% 수익 / 3% 손실)
+
+    
+    # ✅ TP/SL 값이 없을 경우 기본 설정 (30pip/20pip 기준)
     effective_decision = decision if decision in ["BUY", "SELL"] else signal
     if (tp is None or sl is None) and price is not None:
+        pip_value = 0.01 if "JPY" in pair else 0.0001
+        tp_pips = pip_value * 30
+        sl_pips = pip_value * 20
+
         if effective_decision == "BUY":
-            tp = round(price * 1.05, 5)
-            sl = round(price * 0.97, 5)
+            tp = round(price + tp_pips, 5)
+            sl = round(price - sl_pips, 5)
         elif effective_decision == "SELL":
-            tp = round(price * 0.95, 5)
-            sl = round(price * 1.03, 5)
-        gpt_feedback += "\n⚠️ TP/SL 추출 실패 → 기본값 적용 (TP: +5%, SL: -3%)"
+            tp = round(price - tp_pips, 5)
+            sl = round(price + sl_pips, 5)
+
+        gpt_feedback += "\n⚠️ TP/SL 추출 실패 → 기본값 적용 (TP: 30 pip, SL: 20 pip)"
+
+    
     should_execute = False
     if decision == "WAIT" and signal_score >= 4 and allow_conditional_trade:
         decision = signal
