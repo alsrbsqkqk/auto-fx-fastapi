@@ -37,8 +37,8 @@ if price is None:
             )
 
     
-    signal = data.get("signal")
-    alert_name = data.get("alert_name", "기본알림")
+signal = data.get("signal")
+alert_name = data.get("alert_name", "기본알림")
 
     candles = get_candles(pair, "M30", 200)
     if candles is None or candles.empty:
