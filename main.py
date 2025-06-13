@@ -41,23 +41,23 @@ signal = data.get("signal")
 alert_name = data.get("alert_name", "기본알림")
 
 candles = get_candles(pair, "M30", 200)
-    if candles is None or candles.empty:
-        return JSONResponse(content={"error": "캔들 데이터를 불러올 수 없음"}, status_code=400)
-    close = candles["close"]
-    rsi = calculate_rsi(close)
-    stoch_rsi_series = calculate_stoch_rsi(rsi)
-    stoch_rsi = stoch_rsi_series.dropna().iloc[-1] if not stoch_rsi_series.dropna().empty else 0
-    macd, macd_signal = calculate_macd(close)
-    boll_up, boll_mid, boll_low = calculate_bollinger_bands(close)
+if candles is None or candles.empty:
+    return JSONResponse(content={"error": "캔들 데이터를 불러올 수 없음"}, status_code=400)
+close = candles["close"]
+rsi = calculate_rsi(close)
+stoch_rsi_series = calculate_stoch_rsi(rsi)
+stoch_rsi = stoch_rsi_series.dropna().iloc[-1] if not stoch_rsi_series.dropna().empty else 0
+macd, macd_signal = calculate_macd(close)
+boll_up, boll_mid, boll_low = calculate_bollinger_bands(close)
 
-    pattern = detect_candle_pattern(candles)
-    trend = detect_trend(candles, rsi, boll_mid)
-    liquidity = estimate_liquidity(candles)
-    news = fetch_forex_news()
-    support_resistance = {
-        "support": candles["low"].min(),
-        "resistance": candles["high"].max()
-    }
+pattern = detect_candle_pattern(candles)
+trend = detect_trend(candles, rsi, boll_mid)
+liquidity = estimate_liquidity(candles)
+news = fetch_forex_news()
+support_resistance = {
+    "support": candles["low"].min(),
+    "resistance": candles["high"].max()
+}
     high_low_analysis = analyze_highs_lows(candles)
     atr = calculate_atr(candles).iloc[-1]
 
