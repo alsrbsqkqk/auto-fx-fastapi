@@ -174,7 +174,6 @@ async def webhook(request: Request):
         decision, news, gpt_feedback, alert_name, tp, sl, price, pnl,
         outcome_analysis, adjustment_suggestion, price_movements,
         result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi, pattern, trend, fibo_levels,
-        atr=atr
      )
     return JSONResponse(content={"status": "completed", "decision": decision})
 
