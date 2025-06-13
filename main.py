@@ -30,11 +30,11 @@ async def webhook(request: Request):
         numeric_match = re.search(r"\d+\.?\d*", str(price_raw))
         price = float(numeric_match.group()) if numeric_match else None
 
-if price is None:
-    return JSONResponse(
-        content={"error": "price 필드를 float으로 변환할 수 없습니다"},
-        status_code=400
-    )
+    if price is None:
+        return JSONResponse(
+            content={"error": "price 필드를 float으로 변환할 수 없습니다"},
+            status_code=400
+        )
 
     
 signal = data.get("signal")
