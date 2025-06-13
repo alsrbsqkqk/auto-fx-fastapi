@@ -316,14 +316,15 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
     client = gspread.authorize(creds)
     sheet = client.open("민균 FX trading result").sheet1
     now_atlanta = datetime.utcnow() - timedelta(hours=4)
+    price_movements = [p for p in price_movements if isinstance(p, dict) and 'high' in p and 'low' in p]
     row = [
         str(now_atlanta), pair, alert_name or "", signal, decision, score,
         safe_float(rsi), safe_float(macd), safe_float(stoch_rsi),
         pattern or "", trend or "", fibo.get("0.382", ""), fibo.get("0.618", ""),
         gpt_decision or "", news or "", notes, result or "미정", gpt_feedback or "",
         safe_float(price), safe_float(tp), safe_float(sl), safe_float(pnl),
-        "신고점" if isinstance(price_movements, list) and len(price_movements) > 1 and price_movements[-1]['high'] > max(p['high'] for p in price_movements[:-1]) else "",
-        "신저점" if isinstance(price_movements, list) and len(price_movements) > 1 and price_movements[-1]['low'] < min(p['low'] for p in price_movements[:-1]) else "",
+        "신고점" if isinstance(price_movements, list) and len(price_movements) > 1 and isinstance(price_movements[-1], dict) and 'high' in price_movements[-1] and price_movements[-1]['high'] > max(p['high'] for p in price_movements[:-1] if isinstance(p, dict) and 'high' in p) else "",
+        "신저점" if isinstance(price_movements, list) and len(price_movements) > 1 and isinstance(price_movements[-1], dict) and 'low' in price_movements[-1] and price_movements[-1]['low'] < min(p['low'] for p in price_movements[:-1] if isinstance(p, dict) and 'low' in p) else "",
         safe_float(atr)
     ]
     row.append(news)
