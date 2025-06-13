@@ -130,9 +130,9 @@ async def webhook(request: Request):
     decision, tp, sl = parse_gpt_feedback(gpt_feedback)
     # ✅ TP/SL 값이 없을 경우 기본 설정 (5% 수익 / 3% 손실)
     if (tp is None or sl is None) and price is not None:
-    tp = round(price * (1.05 if decision == "BUY" else 0.95), 5)
-    sl = round(price * (0.97 if decision == "BUY" else 1.03), 5)
-    gpt_feedback += "\n⚠️ GPT로부터 TP/SL 추출 실패 → 기본값 적용 (TP: +5%, SL: -3%)"
+        tp = round(price * (1.05 if decision == "BUY" else 0.95), 5)
+        sl = round(price * (0.97 if decision == "BUY" else 1.03), 5)
+        gpt_feedback += "\n⚠️ GPT로부터 TP/SL 추출 실패 → 기본값 적용 (TP: +5%, SL: -3%)"
 
     if decision == "WAIT" and signal_score >= 4 and allow_conditional_trade:
         decision = signal
@@ -293,12 +293,33 @@ def fetch_forex_news():
 def place_order(pair, units, tp, sl, digits):
     return {"status": "order_placed", "tp": tp, "sl": sl}
 
+import re
 def parse_gpt_feedback(text):
-    import re
+    decision = "WAIT"
+    tp = None
+    sl = None
+
     d = re.search(r"결정\s*[:：]?\s*(BUY|SELL|WAIT)", text.upper())
-    tp = re.search(r"TP\s*[:：]?\s*([\d.]+)", text.upper())
-    sl = re.search(r"SL\s*[:：]?\s*([\d.]+)", text.upper())
-    return d.group(1) if d else "WAIT", float(tp.group(1)) if tp else None, float(sl.group(1)) if sl else None
+    if d:
+        decision = d.group(1)
+
+    tp_match = re.search(r"TP\s*[=:：]?\s*([\d.]+)", text.upper())
+    if tp_match:
+        tp = float(tp_match.group(1))
+    else:
+        fallback_tp = re.search(r"TP[^\d]{0,10}([\d.]+)", text)
+        if fallback_tp:
+            tp = float(fallback_tp.group(1))
+
+    sl_match = re.search(r"SL\s*[=:：]?\s*([\d.]+)", text.upper())
+    if sl_match:
+        sl = float(sl_match.group(1))
+    else:
+        fallback_sl = re.search(r"SL[^\d]{0,10}([\d.]+)", text)
+        if fallback_sl:
+            sl = float(fallback_sl.group(1))
+
+    return decision, tp, sl
 
 def analyze_with_gpt(payload):
     headers = {"Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}", "Content-Type": "application/json"}
