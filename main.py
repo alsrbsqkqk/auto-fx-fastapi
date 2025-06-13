@@ -139,15 +139,14 @@ async def webhook(request: Request):
 
     log_trade_result(
     pair, signal, decision, signal_score,
-    "
-".join(reasons) + f"
-ATR: {round(atr or 0, 5)}",
+    "\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}",
     result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi, pattern, trend, fibo_levels,
     decision, news, gpt_feedback, alert_name, tp, sl, price, pnl,
     outcome_analysis, adjustment_suggestion, price_movements,
-    atr=atr
-)
-    }
+    result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi, pattern, trend, fibo_levels,
+     atr=atr
+    )
+    
 
 def analyze_highs_lows(candles, window=20):
     highs = candles['high'].tail(window)
