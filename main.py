@@ -146,8 +146,7 @@ ATR: {round(atr or 0, 5)}",
     decision, news, gpt_feedback, alert_name, tp, sl, price, pnl,
     outcome_analysis, adjustment_suggestion, price_movements,
     atr=atr
-)
-        "resistance": round(highs.max(), 5)
+), 5)
     }
 
 def analyze_highs_lows(candles, window=20):
