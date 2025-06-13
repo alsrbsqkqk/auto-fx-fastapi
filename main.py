@@ -170,17 +170,15 @@ def analyze_highs_lows(candles, window=20):
             adjustment_suggestion = "TP 거의 닿았으나 실패 → TP 약간 보수적일 필요 있음"
 
         log_trade_result(
-        return JSONResponse(content={"status": "completed", "decision": decision})
-    
-    pair, signal, decision, signal_score,
-    "\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}",
-    result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi, pattern, trend, fibo_levels,
-    decision, news, gpt_feedback, alert_name, tp, sl, price, pnl,
-    outcome_analysis, adjustment_suggestion, price_movements,
-    result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi, pattern, trend, fibo_levels,
-     atr=atr
-    )
-
+            pair, signal, decision, signal_score,
+            "\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}",
+            result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi, pattern, trend, fibo_levels,
+            decision, news, gpt_feedback, alert_name, tp, sl, price, pnl,
+            outcome_analysis, adjustment_suggestion, price_movements,
+            result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi, pattern, trend, fibo_levels,
+             atr=atr
+        )
+         return JSONResponse(content={"status": "completed", "decision": decision})
 
 
 def calculate_atr(candles, period=14):
