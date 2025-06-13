@@ -85,7 +85,18 @@ async def webhook(request: Request):
     if pattern in ["HAMMER", "BULLISH_ENGULFING"]:
         signal_score += 1
         reasons.append(f"캔들패턴: {pattern}")
+        
+def analyze_highs_lows(candles, window=20):
+    highs = candles['high'].tail(window)
+    lows = candles['low'].tail(window)
+    new_high = highs.iloc[-1] > highs.max()
+    new_low = lows.iloc[-1] < lows.min()
+    return {
+        "new_high": new_high,
+        "new_low": new_low
+    }
 
+    
     fibo_levels = calculate_fibonacci_levels(candles["high"].max(), candles["low"].min())
 
     payload = {
