@@ -410,8 +410,9 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
             print("❗ 신고점/신저점 계산 실패:", e)
 
     # ✅ Google Sheet 저장용 문자열로 변환
-    price_movements = json.dumps(filtered_movements, ensure_ascii=False)
-   
+    
+
+    filtered_movement_str = json.dumps(filtered_movements, ensure_ascii=False)
     row = [
       
         str(now_atlanta), pair, alert_name or "", signal, decision, score,
@@ -424,12 +425,17 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
         is_new_high,
         is_new_low,
         safe_float(atr)
+        news,
+        outcome_analysis or "",
+        adjustment_suggestion or "",
+        gpt_feedback or "",
+        filtered_movement_str
     ]
     row.append(news)
     row.append(outcome_analysis or "")
     row.append(adjustment_suggestion or "")
     row.append(gpt_feedback or "")
-    row.append(json.dumps(filtered_movements, ensure_ascii=False))
+
     clean_row = []
     for v in row:
         if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
