@@ -88,7 +88,7 @@ async def webhook(request: Request):
 
     fibo_levels = calculate_fibonacci_levels(candles["high"].max(), candles["low"].min())
 
-        payload = {
+    payload = {
         "pair": pair,
         "price": price,
         "signal": signal,
