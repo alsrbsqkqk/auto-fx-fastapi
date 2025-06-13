@@ -129,9 +129,9 @@ async def webhook(request: Request):
     gpt_feedback = analyze_with_gpt(payload)
     decision, tp, sl = parse_gpt_feedback(gpt_feedback)
 
-    if decision == "WAIT" and signal_score >= 5 and allow_conditional_trade:
+    if decision == "WAIT" and signal_score >= 4 and allow_conditional_trade:
         decision = signal
-        gpt_feedback += "\n조건부 진입: 최근 2시간 거래 없음 + 5점 이상 조건 충족"
+        gpt_feedback += "\n조건부 진입: 최근 2시간 거래 없음 + 4점 이상 조건 충족"
 
     result = {}
     price_movements = []
