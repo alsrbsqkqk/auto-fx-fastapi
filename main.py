@@ -14,7 +14,6 @@ from oauth2client.service_account import ServiceAccountCredentials
 app = FastAPI()
 
 OANDA_API_KEY = os.getenv("OANDA_API_KEY")
-print("✅ OPENAI_API_KEY:", os.getenv("OPENAI_API_KEY"))
 ACCOUNT_ID = os.getenv("ACCOUNT_ID")
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
