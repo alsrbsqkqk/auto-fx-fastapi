@@ -179,137 +179,149 @@ def analyze_highs_lows(candles, window=20):
     }
 
 def calculate_atr(candles, period=14):
-high_low = candles['high'] - candles['low']
-high_close = np.abs(candles['high'] - candles['close'].shift())
-low_close = np.abs(candles['low'] - candles['close'].shift())
-tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-atr = tr.rolling(window=period).mean()
-return atr
+    high_low = candles['high'] - candles['low']
+    high_close = np.abs(candles['high'] - candles['close'].shift())
+    low_close = np.abs(candles['low'] - candles['close'].shift())
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    atr = tr.rolling(window=period).mean()
+    return atr
 
 def calculate_fibonacci_levels(high, low):
-diff = high - low
-return {
-    "0.0": low,
-    "0.382": high - 0.382 * diff,
-    "0.618": high - 0.618 * diff,
-    "1.0": high
-}
+    diff = high - low
+    return {
+        "0.0": low,
+        "0.382": high - 0.382 * diff,
+        "0.618": high - 0.618 * diff,
+        "1.0": high
+    }
 
 def get_candles(pair, granularity, count):
-url = f"https://api-fxpractice.oanda.com/v3/instruments/{pair}/candles"
-headers = {"Authorization": f"Bearer {OANDA_API_KEY}"}
-params = {"granularity": granularity, "count": count, "price": "M"}
-r = requests.get(url, headers=headers, params=params)
-candles = r.json().get("candles", [])
+    url = f"https://api-fxpractice.oanda.com/v3/instruments/{pair}/candles"
+    headers = {"Authorization": f"Bearer {OANDA_API_KEY}"}
+    params = {"granularity": granularity, "count": count, "price": "M"}
+    r = requests.get(url, headers=headers, params=params)
+    candles = r.json().get("candles", [])
 
-if not candles:
+    if not candles:
+        return pd.DataFrame([
+            {"time": None, "open": None, "high": None, "low": None, "close": None, "volume": None}   
+        ])
     return pd.DataFrame([
-        {"time": None, "open": None, "high": None, "low": None, "close": None, "volume": None}   
+        {
+            "time": c["time"],
+            "open": float(c["mid"]["o"]),
+            "high": float(c["mid"]["h"]),
+            "low": float(c["mid"]["l"]),
+            "close": float(c["mid"]["c"]),
+            "volume": c.get("volume", 0)
+        }
+        for c in candles
     ])
 
 def calculate_rsi(series, period=14):
-delta = series.diff()
-gain = delta.clip(lower=0).rolling(window=period).mean()
-loss = -delta.clip(upper=0).rolling(window=period).mean()
-rs = gain / loss
-return 100 - (100 / (1 + rs))
+    delta = series.diff()
+    gain = delta.clip(lower=0).rolling(window=period).mean()
+    loss = -delta.clip(upper=0).rolling(window=period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
 
 def calculate_macd(series):
-ema12 = series.ewm(span=12).mean()
-ema26 = series.ewm(span=26).mean()
-macd = ema12 - ema26
-signal = macd.ewm(span=9).mean()
-return macd, signal
+    ema12 = series.ewm(span=12).mean()
+    ema26 = series.ewm(span=26).mean()
+    macd = ema12 - ema26
+    signal = macd.ewm(span=9).mean()
+    return macd, signal
 
 def calculate_stoch_rsi(rsi, period=14):
-min_rsi = rsi.rolling(window=period).min()
-max_rsi = rsi.rolling(window=period).max()
-return (rsi - min_rsi) / (max_rsi - min_rsi)
+    min_rsi = rsi.rolling(window=period).min()
+    max_rsi = rsi.rolling(window=period).max()
+    return (rsi - min_rsi) / (max_rsi - min_rsi)
 
 def calculate_bollinger_bands(series, window=20):
-mid = series.rolling(window=window).mean()
-std = series.rolling(window=window).std()
-upper = mid + 2 * std
-lower = mid - 2 * std
-return upper, mid, lower
+    mid = series.rolling(window=window).mean()
+    std = series.rolling(window=window).std()
+    upper = mid + 2 * std
+    lower = mid - 2 * std
+    return upper, mid, lower
 
 def detect_trend(candles, rsi, mid_band):
-close = candles["close"]
-ema20 = close.ewm(span=20).mean()
-ema50 = close.ewm(span=50).mean()
-if ema20.iloc[-1] > ema50.iloc[-1] and close.iloc[-1] > mid_band.iloc[-1]:
-    return "UPTREND"
-elif ema20.iloc[-1] < ema50.iloc[-1] and close.iloc[-1] < mid_band.iloc[-1]:
-    return "DOWNTREND"
-return "NEUTRAL"
+    close = candles["close"]
+    ema20 = close.ewm(span=20).mean()
+    ema50 = close.ewm(span=50).mean()
+    if ema20.iloc[-1] > ema50.iloc[-1] and close.iloc[-1] > mid_band.iloc[-1]:
+        return "UPTREND"
+    elif ema20.iloc[-1] < ema50.iloc[-1] and close.iloc[-1] < mid_band.iloc[-1]:
+        return "DOWNTREND"
+    return "NEUTRAL"
 
 def detect_candle_pattern(candles):
-return "NEUTRAL"
+    return "NEUTRAL"
 
 def estimate_liquidity(candles):
-return "좋음" if candles["volume"].tail(10).mean() > 100 else "낮음"
+    return "좋음" if candles["volume"].tail(10).mean() > 100 else "낮음"
 
 def fetch_forex_news():
-try:
-    response = requests.get("https://www.forexfactory.com/", timeout=5)
-    if "High Impact Expected" in response.text:
-        return "⚠️ 고위험 뉴스 존재"
-    return "🟢 뉴스 영향 적음"
-except:
-    return "❓ 뉴스 확인 실패"
+    try:
+        response = requests.get("https://www.forexfactory.com/", timeout=5)
+        if "High Impact Expected" in response.text:
+            return "⚠️ 고위험 뉴스 존재"
+        return "🟢 뉴스 영향 적음"
+    except:
+        return "❓ 뉴스 확인 실패"
 
 def place_order(pair, units, tp, sl, digits):
-return {"status": "order_placed", "tp": tp, "sl": sl}
+    return {"status": "order_placed", "tp": tp, "sl": sl}
 
 def parse_gpt_feedback(text):
-import re
-d = re.search(r"결정\s*[:：]?\s*(BUY|SELL|WAIT)", text.upper())
-tp = re.search(r"TP\s*[:：]?\s*([\d.]+)", text.upper())
-sl = re.search(r"SL\s*[:：]?\s*([\d.]+)", text.upper())
-return d.group(1) if d else "WAIT", float(tp.group(1)) if tp else None, float(sl.group(1)) if sl else None
+    import re
+    d = re.search(r"결정\s*[:：]?\s*(BUY|SELL|WAIT)", text.upper())
+    tp = re.search(r"TP\s*[:：]?\s*([\d.]+)", text.upper())
+    sl = re.search(r"SL\s*[:：]?\s*([\d.]+)", text.upper())
+    return d.group(1) if d else "WAIT", float(tp.group(1)) if tp else None, float(sl.group(1)) if sl else None
 
 def analyze_with_gpt(payload):
-headers = {"Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}", "Content-Type": "application/json"}
-messages = [
-    {"role": "system", "content": "너는 실전 FX 트레이딩 전략 조력자야. 아래 JSON 데이터를 기반으로 전략 리포트를 생성하고, 진입 판단(BUY, SELL, WAIT)과 TP, SL 값을 제시해줘."},
-    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}
-]
-body = {"model": "gpt-4", "messages": messages, "temperature": 0.3}
+    headers = {"Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}", "Content-Type": "application/json"}
+    messages = [
+        {"role": "system", "content": "너는 실전 FX 트레이딩 전략 조력자야. 아래 JSON 데이터를 기반으로 전략 리포트를 생성하고, 진입 판단(BUY, SELL, WAIT)과 TP, SL 값을 제시해줘."},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}
+    ]
+    body = {"model": "gpt-4", "messages": messages, "temperature": 0.3}
 
-try:
-    r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body)
-    result = r.json()
-    if "choices" in result:
-        return result["choices"][0]["message"]["content"]
-    else:
-        return f"[GPT ERROR] {result.get('error', {}).get('message', 'Unknown GPT response error')}"
-except Exception as e:
-    return f"[GPT EXCEPTION] {str(e)}"
+    try:
+        r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body)
+        result = r.json()
+        if "choices" in result:
+            return result["choices"][0]["message"]["content"]
+        else:
+            return f"[GPT ERROR] {result.get('error', {}).get('message', 'Unknown GPT response error')}"
+    except Exception as e:
+        return f"[GPT EXCEPTION] {str(e)}"
 
 def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None, macd=None, stoch_rsi=None, pattern=None, trend=None, fibo=None, gpt_decision=None, news=None, gpt_feedback=None, alert_name=None, tp=None, sl=None, entry=None, pnl=None, outcome_analysis=None, adjustment_suggestion=None, price_movements=None, atr=None):
-scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
-client = gspread.authorize(creds)
-sheet = client.open("민균 FX trading result").sheet1
-now_atlanta = datetime.utcnow() - timedelta(hours=4)
-row = [
-    str(now_atlanta), pair, alert_name or "", signal, decision, score, rsi or "", macd or "", stoch_rsi or "",
-    pattern or "", trend or "", fibo.get("0.382", ""), fibo.get("0.618", ""),
-    gpt_decision or "", news or "", notes, result or "미정", gpt_feedback or "",
-    entry or "", tp or "", sl or "", pnl or "",
-    "신고점" if price_movements and price_movements[-1]['high'] > max(p['high'] for p in price_movements[:-1]) else "",
-    "신저점" if price_movements and price_movements[-1]['low'] < min(p['low'] for p in price_movements[:-1]) else "",
-    f"ATR: {round(atr or 0, 5)}"
-]
-row.append(news)
-row.append(outcome_analysis or "")
-row.append(adjustment_suggestion or "")
-row.append(gpt_feedback or "")
-row.append(json.dumps(price_movements))
-sheet.append_row(row)
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
+    client = gspread.authorize(creds)
+    sheet = client.open("민균 FX trading result").sheet1
+    now_atlanta = datetime.utcnow() - timedelta(hours=4)
+    row = [
+        str(now_atlanta), pair, alert_name or "", signal, decision, score, rsi or "", macd or "", stoch_rsi or "",
+        pattern or "", trend or "", fibo.get("0.382", ""), fibo.get("0.618", ""),
+        gpt_decision or "", news or "", notes, result or "미정", gpt_feedback or "",
+        entry or "", tp or "", sl or "", pnl or "",
+        "신고점" if price_movements and price_movements[-1]['high'] > max(p['high'] for p in price_movements[:-1]) else "",
+        "신저점" if price_movements and price_movements[-1]['low'] < min(p['low'] for p in price_movements[:-1]) else "",
+        f"ATR: {round(atr or 0, 5)}"
+    ]
+    row.append(news)
+    row.append(outcome_analysis or "")
+    row.append(adjustment_suggestion or "")
+    row.append(gpt_feedback or "")
+    row.append(json.dumps(price_movements))
+    sheet.append_row(row)
+
 def get_last_trade_time():
-try:
-    with open("/tmp/last_trade_time.txt", "r") as f:
-        return datetime.fromisoformat(f.read().strip())
-except:
-    return None
+    try:
+        with open("/tmp/last_trade_time.txt", "r") as f:
+            return datetime.fromisoformat(f.read().strip())
+    except:
+        return None
