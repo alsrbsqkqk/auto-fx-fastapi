@@ -58,8 +58,8 @@ async def webhook(request: Request):
         "support": candles["low"].min(),
         "resistance": candles["high"].max()
         }
-
-
+    high_low_analysis = analyze_highs_lows(candles)
+    atr = calculate_atr(candles).iloc[-1]
 def analyze_highs_lows(candles, window=20):
     highs = candles['high'].tail(window)
     lows = candles['low'].tail(window)
@@ -69,9 +69,6 @@ def analyze_highs_lows(candles, window=20):
         "new_high": new_high,
         "new_low": new_low
     }
-
-high_low_analysis = analyze_highs_lows(candles)
-atr = calculate_atr(candles).iloc[-1]
 
 signal_score = 0
 reasons = []
