@@ -424,7 +424,7 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
         safe_float(price), safe_float(tp), safe_float(sl), safe_float(pnl),
         is_new_high,
         is_new_low,
-        safe_float(atr)
+        safe_float(atr),
         news,
         outcome_analysis or "",
         adjustment_suggestion or "",
