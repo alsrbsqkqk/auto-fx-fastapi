@@ -316,15 +316,33 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
     client = gspread.authorize(creds)
     sheet = client.open("민균 FX trading result").sheet1
     now_atlanta = datetime.utcnow() - timedelta(hours=4)
-    price_movements = [p for p in price_movements if isinstance(price_movements, list) and isinstance(p, dict) and isinstance(p.get('high', 0), (int, float, np.float64)) and isinstance(p.get('low', 0), (int, float, np.float64))]
+if isinstance(price_movements, list):
+    price_movements = [p for p in price_movements if isinstance(p, dict) and 'high' in p and 'low' in p and isinstance(p['high'], (int, float, np.float64)) and isinstance(p['low'], (int, float, np.float64))]
+else:    
+    price_movements = []
+is_new_high = ""
+is_new_low = ""
+if len(price_movements) > 1:
+    try:
+        highs = [p["high"] for p in price_movements[:-1] if isinstance(p, dict) and "high" in p]
+        lows = [p["low"] for p in price_movements[:-1] if isinstance(p, dict) and "low" in p]
+        last = price_movements[-1]
+        if isinstance(last, dict):
+            if "high" in last and highs and last["high"] > max(highs):
+                is_new_high = "신고점"
+            if "low" in last and lows and last["low"] < min(lows):
+                is_new_low = "신저점"
+    except Exception as e:
+        print("❗ 신고점/신저점 계산 실패:", e)
+
     row = [
         str(now_atlanta), pair, alert_name or "", signal, decision, score,
         safe_float(rsi), safe_float(macd), safe_float(stoch_rsi),
         pattern or "", trend or "", fibo.get("0.382", ""), fibo.get("0.618", ""),
         gpt_decision or "", news or "", notes, result or "미정", gpt_feedback or "",
         safe_float(price), safe_float(tp), safe_float(sl), safe_float(pnl),
-        "신고점" if isinstance(price_movements, list) and len(price_movements) > 1 and isinstance(price_movements[-1], dict) and 'high' in price_movements[-1] and price_movements[-1]['high'] > max(p['high'] for p in price_movements[:-1] if isinstance(p, dict) and 'high' in p) else "",
-        "신저점" if isinstance(price_movements, list) and len(price_movements) > 1 and isinstance(price_movements[-1], dict) and 'low' in price_movements[-1] and price_movements[-1]['low'] < min(p['low'] for p in price_movements[:-1] if isinstance(p, dict) and 'low' in p) else "",
+        is_new_high,
+        is_new_low,
         safe_float(atr)
     ]
     row.append(news)
