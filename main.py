@@ -34,8 +34,10 @@ def analyze_highs_lows(candles, window=20):
 
 @app.post("/webhook")
 async def webhook(request: Request):
+    print("✅ STEP 1: 웹훅 진입")
     data = json.loads(await request.body())
     pair = data.get("pair")
+    print(f"✅ STEP 2: 데이터 수신 완료 | pair: {pair}")
 
     price_raw = data.get("price")
     try:
@@ -44,6 +46,7 @@ async def webhook(request: Request):
         import re
         numeric_match = re.search(r"\d+\.?\d*", str(price_raw))
         price = float(numeric_match.group()) if numeric_match else None
+    print(f"✅ STEP 3: 가격 파싱 완료 | price: {price}")
 
     if price is None:
         return JSONResponse(
@@ -55,6 +58,7 @@ async def webhook(request: Request):
     alert_name = data.get("alert_name", "기본알림")
 
     candles = get_candles(pair, "M30", 200)
+    print("✅ STEP 4: 캔들 데이터 수신")
     if candles is None or candles.empty:
         return JSONResponse(content={"error": "캔들 데이터를 불러올 수 없음"}, status_code=400)
 
@@ -63,6 +67,7 @@ async def webhook(request: Request):
     stoch_rsi_series = calculate_stoch_rsi(rsi)
     stoch_rsi = stoch_rsi_series.dropna().iloc[-1] if not stoch_rsi_series.dropna().empty else 0
     macd, macd_signal = calculate_macd(close)
+    print(f"✅ STEP 5: 보조지표 계산 완료 | RSI: {rsi.iloc[-1]}")
     boll_up, boll_mid, boll_low = calculate_bollinger_bands(close)
 
     pattern = detect_candle_pattern(candles)
@@ -127,7 +132,9 @@ async def webhook(request: Request):
     allow_conditional_trade = time_since_last > timedelta(hours=2)
 
     gpt_feedback = analyze_with_gpt(payload)
+    print("✅ STEP 6: GPT 응답 수신 완료")
     decision, tp, sl = parse_gpt_feedback(gpt_feedback)
+    print(f"✅ STEP 7: GPT 해석 완료 | decision: {decision}, TP: {tp}, SL: {sl}")
 
     
     # ✅ TP/SL 값이 없을 경우 기본 설정 (30pip/20pip 기준)
@@ -442,6 +449,7 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
             clean_row.append("")
         else:
             clean_row.append(v)
+    print("✅ STEP 8: 시트 저장 직전", clean_row)
     sheet.append_row(clean_row)
 
 
