@@ -17,6 +17,17 @@ OANDA_API_KEY = os.getenv("OANDA_API_KEY")
 ACCOUNT_ID = os.getenv("ACCOUNT_ID")
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
+
+def analyze_highs_lows(candles, window=20):
+    highs = candles['high'].tail(window)
+    lows = candles['low'].tail(window)
+    new_high = highs.iloc[-1] > highs.max()
+    new_low = lows.iloc[-1] < lows.min()
+    return {
+        "new_high": new_high,
+        "new_low": new_low
+    }
+
 @app.post("/webhook")
 async def webhook(request: Request):
     data = json.loads(await request.body())
