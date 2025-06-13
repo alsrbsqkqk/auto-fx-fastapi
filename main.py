@@ -301,6 +301,14 @@ def analyze_with_gpt(payload):
             return f"[GPT ERROR] {result.get('error', {}).get('message', 'Unknown GPT response error')}"
     except Exception as e:
         return f"[GPT EXCEPTION] {str(e)}"
+        
+import math
+
+def safe_float(val):
+    if val is None or (isinstance(val, float) and (math.isnan(val) or math.isinf(val))):
+        return ""
+    return round(val, 5) if isinstance(val, float) else val
+
 
 def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None, macd=None, stoch_rsi=None, pattern=None, trend=None, fibo=None, gpt_decision=None, news=None, gpt_feedback=None, alert_name=None, tp=None, sl=None, entry=None, pnl=None, outcome_analysis=None, adjustment_suggestion=None, price_movements=None, atr=None):
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -309,13 +317,14 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
     sheet = client.open("민균 FX trading result").sheet1
     now_atlanta = datetime.utcnow() - timedelta(hours=4)
     row = [
-        str(now_atlanta), pair, alert_name or "", signal, decision, score, rsi or "", macd or "", stoch_rsi or "",
+        str(now_atlanta), pair, alert_name or "", signal, decision, score,
+        safe_float(rsi), safe_float(macd), safe_float(stoch_rsi),
         pattern or "", trend or "", fibo.get("0.382", ""), fibo.get("0.618", ""),
         gpt_decision or "", news or "", notes, result or "미정", gpt_feedback or "",
-        entry or "", tp or "", sl or "", pnl or "",
+        safe_float(price), safe_float(tp), safe_float(sl), safe_float(pnl),
         "신고점" if price_movements and price_movements[-1]['high'] > max(p['high'] for p in price_movements[:-1]) else "",
         "신저점" if price_movements and price_movements[-1]['low'] < min(p['low'] for p in price_movements[:-1]) else "",
-        f"ATR: {round(atr or 0, 5)}"
+        safe_float(atr)
     ]
     row.append(news)
     row.append(outcome_analysis or "")
