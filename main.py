@@ -129,9 +129,9 @@ async def webhook(request: Request):
     gpt_feedback = analyze_with_gpt(payload)
     decision, tp, sl = parse_gpt_feedback(gpt_feedback)
 
-    if decision == "WAIT" and signal_score >= 6 and allow_conditional_trade:
+    if decision == "WAIT" and signal_score >= 5 and allow_conditional_trade:
         decision = signal
-        gpt_feedback += "\n조건부 진입: 최근 2시간 거래 없음 + 6점 이상 조건 충족"
+        gpt_feedback += "\n조건부 진입: 최근 2시간 거래 없음 + 5점 이상 조건 충족"
 
     result = {}
     price_movements = []
@@ -322,8 +322,8 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
         pattern or "", trend or "", fibo.get("0.382", ""), fibo.get("0.618", ""),
         gpt_decision or "", news or "", notes, result or "미정", gpt_feedback or "",
         safe_float(price), safe_float(tp), safe_float(sl), safe_float(pnl),
-        "신고점" if price_movements and price_movements[-1]['high'] > max(p['high'] for p in price_movements[:-1]) else "",
-        "신저점" if price_movements and price_movements[-1]['low'] < min(p['low'] for p in price_movements[:-1]) else "",
+        "신고점" if isinstance(price_movements, list) and len(price_movements) > 1 and price_movements[-1]['high'] > max(p['high'] for p in price_movements[:-1]) else "",
+        "신저점" if isinstance(price_movements, list) and len(price_movements) > 1 and price_movements[-1]['low'] < min(p['low'] for p in price_movements[:-1]) else "",
         safe_float(atr)
     ]
     row.append(news)
