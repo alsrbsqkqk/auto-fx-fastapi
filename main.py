@@ -132,6 +132,17 @@ async def webhook(request: Request):
     if decision == "WAIT" and signal_score >= 4 and allow_conditional_trade:
         decision = signal
         gpt_feedback += "\n조건부 진입: 최근 2시간 거래 없음 + 4점 이상 조건 충족"
+        should_execute = True
+        
+    elif decision in ["BUY", "SELL"] and signal_score >= 4 and allow_conditional_trade:
+        should_execute = True
+        
+    if should_execute:
+        units = 50000 if decision == "BUY" else -50000
+        digits = 5 if "EUR" in pair else 3
+        result = place_order(pair, units, tp, sl, digits)
+        
+
 
     result = {}
     price_movements = []
