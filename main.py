@@ -375,20 +375,20 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
     sheet = client.open("민균 FX trading result").sheet1
     now_atlanta = datetime.utcnow() - timedelta(hours=4)
     if isinstance(price_movements, list):
-    price_movements = [
-        {
-            "high": float(p["high"]),
-            "low": float(p["low"])
-        }
-        for p in price_movements
-        if isinstance(p, dict)
-        and "high" in p and "low" in p
-        and isinstance(p["high"], (float, int)) and isinstance(p["low"], (float, int))
-        and not math.isnan(p["high"]) and not math.isnan(p["low"])
-        and not math.isinf(p["high"]) and not math.isinf(p["low"])
+        price_movements = [
+            {
+                "high": float(p["high"]),
+                "low": float(p["low"])
+            }
+            for p in price_movements
+            if isinstance(p, dict)
+            and "high" in p and "low" in p
+            and isinstance(p["high"], (float, int)) and isinstance(p["low"], (float, int))
+            and not math.isnan(p["high"]) and not math.isnan(p["low"])
+            and not math.isinf(p["high"]) and not math.isinf(p["low"])
         ]
 
-    else:    
+        else:    
         price_movements = []
     is_new_high = ""
     is_new_low = ""
