@@ -40,7 +40,7 @@ if price is None:
 signal = data.get("signal")
 alert_name = data.get("alert_name", "기본알림")
 
-    candles = get_candles(pair, "M30", 200)
+candles = get_candles(pair, "M30", 200)
     if candles is None or candles.empty:
         return JSONResponse(content={"error": "캔들 데이터를 불러올 수 없음"}, status_code=400)
     close = candles["close"]
