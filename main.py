@@ -37,7 +37,7 @@ async def webhook(request: Request):
     trend = detect_trend(candles, rsi, boll_mid)
     liquidity = estimate_liquidity(candles)
     news = fetch_forex_news()
-    support_resistance = detect_support_resistance(candles)
+    support_resistance = {
         "support": candles["low"].min(),
         "resistance": candles["high"].max()
     }
