@@ -387,8 +387,15 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
             and not math.isnan(p["high"]) and not math.isnan(p["low"])
             and not math.isinf(p["high"]) and not math.isinf(p["low"])
         ]
-    else:    
+    except Exception as e:
+        print("❗ price_movements 정제 실패:", e)
         price_movements = []
+
+        # ✅ 반드시 JSON 문자열로 변환
+        price_movements = json.dumps(price_movements, ensure_ascii=False)
+    else:
+        price_movements = "[]"
+    
     is_new_high = ""
     is_new_low = ""
     if len(price_movements) > 1:
