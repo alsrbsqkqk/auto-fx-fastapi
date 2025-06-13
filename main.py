@@ -21,7 +21,22 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 async def webhook(request: Request):
     data = json.loads(await request.body())
     pair = data.get("pair")
-    price = float(data.get("price"))
+
+    price_raw = data.get("price")
+    try:
+        price = float(price_raw)
+    except (TypeError, ValueError):
+        import re
+        numeric_match = re.search(r"\d+\.?\d*", str(price_raw))
+        price = float(numeric_match.group()) if numeric_match else None
+
+if price is None:
+    return JSONResponse(
+        content={"error": "price 필드를 float으로 변환할 수 없습니다"},
+        status_code=400
+        )
+
+    
     signal = data.get("signal")
     alert_name = data.get("alert_name", "기본알림")
 
