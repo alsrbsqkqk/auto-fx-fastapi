@@ -400,7 +400,14 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
     row.append(adjustment_suggestion or "")
     row.append(gpt_feedback or "")
     row.append(json.dumps(price_movements))
-    sheet.append_row(row)
+    clean_row = []
+    for v in row:
+        if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+            clean_row.append("")
+        else:
+            clean_row.append(v)
+    sheet.append_row(clean_row)
+
 
 def get_last_trade_time():
     try:
