@@ -316,12 +316,12 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
     client = gspread.authorize(creds)
     sheet = client.open("민균 FX trading result").sheet1
     now_atlanta = datetime.utcnow() - timedelta(hours=4)
-if isinstance(price_movements, list):
-    price_movements = [p for p in price_movements if isinstance(p, dict) and 'high' in p and 'low' in p and isinstance(p['high'], (int, float, np.float64)) and isinstance(p['low'], (int, float, np.float64))]
-else:    
-    price_movements = []
-is_new_high = ""
-is_new_low = ""
+    if isinstance(price_movements, list):
+        price_movements = [p for p in price_movements if isinstance(p, dict) and 'high' in p and 'low' in p and isinstance(p['high'], (int, float, np.float64)) and isinstance(p['low'], (int, float, np.float64))]
+    else:    
+        price_movements = []
+    is_new_high = ""
+    is_new_low = ""
 if len(price_movements) > 1:
     try:
         highs = [p["high"] for p in price_movements[:-1] if isinstance(p, dict) and "high" in p]
