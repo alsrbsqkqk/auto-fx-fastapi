@@ -196,19 +196,6 @@ def close_profitable_positions(threshold=30):
 
     
 
-    result = {}
-    price_movements = []
-    pnl = None
-    if decision in ["BUY", "SELL"] and tp and sl:
-        units = 50000 if decision == "BUY" else -50000
-        digits = 5 if "EUR" in pair else 3
-        result = place_order(pair, units, tp, sl, digits)
-        print("✅ STEP 9: 주문 결과 확인 |", result)
-
-        executed_time = datetime.utcnow()
-        candles_post = get_candles(pair, "M30", 8)
-        price_movements = candles_post[["high", "low"]].to_dict("records")
-
     if decision in ["BUY", "SELL"] and isinstance(result, dict) and "order_placed" in result.get("status", ""):
         if pnl is not None:
             if pnl > 0:
