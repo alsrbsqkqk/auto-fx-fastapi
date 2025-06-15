@@ -35,6 +35,7 @@ def analyze_highs_lows(candles, window=20):
 @app.post("/webhook")
 async def webhook(request: Request):
     print("✅ STEP 1: 웹훅 진입")
+    close_profitable_positions(threshold=30)
     data = json.loads(await request.body())
     pair = data.get("pair")
     print(f"✅ STEP 2: 데이터 수신 완료 | pair: {pair}")
@@ -170,7 +171,30 @@ async def webhook(request: Request):
         digits = 5 if "EUR" in pair else 3
         print(f"[DEBUG] 조건 충족 → 실제 주문 실행: {pair}, units={units}, tp={tp}, sl={sl}, digits={digits}")
         result = place_order(pair, units, tp, sl, digits)
+
+def close_profitable_positions(threshold=30):
+    url_positions = f"https://api-fxpractice.oanda.com/v3/accounts/{ACCOUNT_ID}/openPositions"
+    headers = {"Authorization": f"Bearer {OANDA_API_KEY}"}
+    
+    try:
+        res = requests.get(url_positions, headers=headers)
+        res.raise_for_status()
+        positions = res.json().get("positions", [])
         
+        for p in positions:
+            instrument = p["instrument"]
+            pl = float(p.get("unrealizedPL", 0))
+            
+            if pl >= threshold:
+                print(f"💰 {instrument} 포지션 수익 ${pl} → 자동 청산 시도")
+                close_url = f"https://api-fxpractice.oanda.com/v3/accounts/{ACCOUNT_ID}/positions/{instrument}/close"
+                data = {"longUnits": "ALL", "shortUnits": "ALL"}
+                close_res = requests.put(close_url, headers=headers, json=data)
+                print(f"✅ {instrument} 청산 결과:", close_res.json())
+    except Exception as e:
+        print("❌ 포지션 확인 또는 청산 실패:", e)
+
+    
 
     result = {}
     price_movements = []
