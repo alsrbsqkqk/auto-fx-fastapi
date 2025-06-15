@@ -135,6 +135,12 @@ async def webhook(request: Request):
     print("✅ STEP 6: GPT 응답 수신 완료")
     decision, tp, sl = parse_gpt_feedback(gpt_feedback)
     print(f"✅ STEP 7: GPT 해석 완료 | decision: {decision}, TP: {tp}, SL: {sl}")
+   
+    
+    # ❌ GPT가 WAIT이면 주문하지 않음
+    if decision == "WAIT":
+        print("🚫 GPT 판단: WAIT → 주문 실행하지 않음")
+        return JSONResponse(content={"status": "WAIT", "message": "GPT가 WAIT 판단"})
 
     
     # ✅ TP/SL 값이 없을 경우 기본 설정 (30pip/20pip 기준)
@@ -503,7 +509,7 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
 
 
 
-    print("✅ STEP 8: 시트 저장 직전", clean_row)
+    #print("✅ STEP 8: 시트 저장 직전", clean_row)
     for idx, val in enumerate(clean_row):
          if isinstance(val, (dict, list)):
             print(f"❌ [오류] clean_row[{idx}]에 dict 또는 list가 남아 있음 → {val}")
