@@ -35,7 +35,6 @@ def analyze_highs_lows(candles, window=20):
 @app.post("/webhook")
 async def webhook(request: Request):
     print("✅ STEP 1: 웹훅 진입")
-    close_profitable_positions(threshold=30)
     data = json.loads(await request.body())
     pair = data.get("pair")
     print(f"✅ STEP 2: 데이터 수신 완료 | pair: {pair}")
@@ -142,8 +141,8 @@ async def webhook(request: Request):
     effective_decision = decision if decision in ["BUY", "SELL"] else signal
     if (tp is None or sl is None) and price is not None:
         pip_value = 0.01 if "JPY" in pair else 0.0001
-        tp_pips = pip_value * 15
-        sl_pips = pip_value * 10
+        tp_pips = pip_value * 30
+        sl_pips = pip_value * 20
 
         if effective_decision == "BUY":
             tp = round(price + tp_pips, 5)
@@ -171,30 +170,20 @@ async def webhook(request: Request):
         digits = 5 if "EUR" in pair else 3
         print(f"[DEBUG] 조건 충족 → 실제 주문 실행: {pair}, units={units}, tp={tp}, sl={sl}, digits={digits}")
         result = place_order(pair, units, tp, sl, digits)
-
-def close_profitable_positions(threshold=30):
-    url_positions = f"https://api-fxpractice.oanda.com/v3/accounts/{ACCOUNT_ID}/openPositions"
-    headers = {"Authorization": f"Bearer {OANDA_API_KEY}"}
-    
-    try:
-        res = requests.get(url_positions, headers=headers)
-        res.raise_for_status()
-        positions = res.json().get("positions", [])
         
-        for p in positions:
-            instrument = p["instrument"]
-            pl = float(p.get("unrealizedPL", 0))
-            
-            if pl >= threshold:
-                print(f"💰 {instrument} 포지션 수익 ${pl} → 자동 청산 시도")
-                close_url = f"https://api-fxpractice.oanda.com/v3/accounts/{ACCOUNT_ID}/positions/{instrument}/close"
-                data = {"longUnits": "ALL", "shortUnits": "ALL"}
-                close_res = requests.put(close_url, headers=headers, json=data)
-                print(f"✅ {instrument} 청산 결과:", close_res.json())
-    except Exception as e:
-        print("❌ 포지션 확인 또는 청산 실패:", e)
 
-    
+    result = {}
+    price_movements = []
+    pnl = None
+    if decision in ["BUY", "SELL"] and tp and sl:
+        units = 50000 if decision == "BUY" else -50000
+        digits = 5 if "EUR" in pair else 3
+        result = place_order(pair, units, tp, sl, digits)
+        print("✅ STEP 9: 주문 결과 확인 |", result)
+
+        executed_time = datetime.utcnow()
+        candles_post = get_candles(pair, "M30", 8)
+        price_movements = candles_post[["high", "low"]].to_dict("records")
 
     if decision in ["BUY", "SELL"] and isinstance(result, dict) and "order_placed" in result.get("status", ""):
         if pnl is not None:
@@ -386,7 +375,7 @@ def parse_gpt_feedback(text):
 def analyze_with_gpt(payload):
     headers = {"Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}", "Content-Type": "application/json"}
     messages = [
-        {"role": "system", "content": "너는 실전 FX 트레이딩 전략 조력자야. 아래 JSON 데이터를 기반으로 전략 리포트를 생성하고, 이 전략은 보통 1,2시간 내에 종료하기를 목표로 하며, 적은 금액 몇십불이어도 짧은 기간에 수익을 내는것이 목표야.  진입 판단(BUY, SELL, WAIT)과 TP, SL 값을 제시해줘."},
+        {"role": "system", "content": "너는 실전 FX 트레이딩 전략 조력자야. 아래 JSON 데이터를 기반으로 전략 리포트를 생성하고, 진입 판단(BUY, SELL, WAIT)과 TP, SL 값을 제시해줘."},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}
     ]
     body = {"model": "gpt-4", "messages": messages, "temperature": 0.3}
@@ -514,7 +503,7 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
 
 
 
-    # print("✅ STEP 8: 시트 저장 직전", clean_row)
+    print("✅ STEP 8: 시트 저장 직전", clean_row)
     for idx, val in enumerate(clean_row):
          if isinstance(val, (dict, list)):
             print(f"❌ [오류] clean_row[{idx}]에 dict 또는 list가 남아 있음 → {val}")
