@@ -59,6 +59,13 @@ async def webhook(request: Request):
 
     candles = get_candles(pair, "M30", 200)
     print("✅ STEP 4: 캔들 데이터 수신")
+    # ✅ 최근 10봉 기준으로 지지선/저항선 다시 설정
+    candles_recent = candles.tail(10)
+    support_resistance = {
+        "support": candles_recent["low"].min(),
+        "resistance": candles_recent["high"].max()
+    }
+    
     if candles is None or candles.empty:
         return JSONResponse(content={"error": "캔들 데이터를 불러올 수 없음"}, status_code=400)
 
@@ -419,7 +426,7 @@ def parse_gpt_feedback(text):
 def analyze_with_gpt(payload):
     headers = {"Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}", "Content-Type": "application/json"}
     messages = [
-        {"role": "system", "content": "너는 실전 FX 트레이딩 전략 조력자야. (1)아래 JSON 데이터를 기반으로 전략 리포트를 생성하고, 진입 판단(BUY, SELL, WAIT)과 TP, SL 값을 제시해줘. (2)거래는 기본 1~2시간 내에 청산하는것을 목표로 너무 TP,SL을 멀리 떨어지지 않게 10~15PIP이내로 설정하자 (tp:sl 2:1비율) (3)항상 중요하게 명심할껀, 최근 한시간 차트 10봉이내로 지지선(Support)과 저항선(Resistance)을 고려해서 TP/SL 설정하자, 그리고 그 서포트와 지지선에서 TP/SL이 너무 멀거나 가까우면 조정해. 지표가 과매수/과매도 상태일 땐, SL을 좀 더 넉넉히 잡아도 괜찮아. (4)분석할땐 캔들의 추세뿐만 아니라, 보조 지표들의 추세&흐름도 같이 파악해.  (5)그리고 너의 분석의 마지막은 항상 진입판단: BUY/SELL/WAIT 이라고 명료하게 보여줘 저 형식으로 (6) SL와 TP도 명료하게 범위가 아니고 제안 값으로 보여줘"},
+        {"role": "system", "content": "너는 실전 FX 트레이딩 전략 조력자야. (1)아래 JSON 데이터를 기반으로 전략 리포트를 생성하고, 진입 판단(BUY, SELL, WAIT)과 TP, SL 값을 제시해줘. (2)거래는 기본 1~2시간 내에 청산하는것을 목표로 너무 TP,SL을 멀리 떨어지지 않게 10~15PIP이내로 설정하자 (tp:sl 2:1비율) (3)지지선(support)과 저항선(resistance)은 최근 1시간봉 기준 마지막 10봉에서의 고점/저점 기준으로 이미 계산되었고, 아래 데이터에 포함되어 있다. 그러니 분석 시에는 반드시 이 숫자만 기준으로 판단해라. 그 외 고점/저점은 무시해라. (4)분석할땐 캔들의 추세뿐만 아니라, 보조 지표들의 추세&흐름도 같이 파악해.  (5)그리고 너의 분석의 마지막은 항상 진입판단: BUY/SELL/WAIT 이라고 명료하게 보여줘 저 형식으로 (6) SL와 TP도 명료하게 범위가 아니고 제안 값으로 보여줘"},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}
     ]
     body = {"model": "gpt-4", "messages": messages, "temperature": 0.3}
