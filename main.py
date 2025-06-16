@@ -165,12 +165,12 @@ async def webhook(request: Request):
         return JSONResponse(content={"status": "WAIT", "message": "GPT가 WAIT 판단"})
 
     
-    # ✅ TP/SL 값이 없을 경우 기본 설정 (30pip/20pip 기준)
+    # ✅ TP/SL 값이 없을 경우 기본 설정 (15pip/10pip 기준)
     effective_decision = decision if decision in ["BUY", "SELL"] else signal
     if (tp is None or sl is None) and price is not None:
         pip_value = 0.01 if "JPY" in pair else 0.0001
-        tp_pips = pip_value * 30
-        sl_pips = pip_value * 20
+        tp_pips = pip_value * 15
+        sl_pips = pip_value * 10
 
         if effective_decision == "BUY":
             tp = round(price + tp_pips, 5)
@@ -179,7 +179,7 @@ async def webhook(request: Request):
             tp = round(price - tp_pips, 5)
             sl = round(price + sl_pips, 5)
 
-        gpt_feedback += "\n⚠️ TP/SL 추출 실패 → 기본값 적용 (TP: 30 pip, SL: 20 pip)"
+        gpt_feedback += "\n⚠️ TP/SL 추출 실패 → 기본값 적용 (TP: 15 pip, SL: 10 pip)"
 
     
     should_execute = False
@@ -195,7 +195,7 @@ async def webhook(request: Request):
         
     if should_execute:
         units = 50000 if decision == "BUY" else -50000
-        digits = 5 if any(ccy in pair for ccy in ["EUR", "GBP", "AUD", "NZD"]) else 3
+        digits = 3 if pair.endswith("JPY") else 5
         print(f"[DEBUG] 조건 충족 → 실제 주문 실행: {pair}, units={units}, tp={tp}, sl={sl}, digits={digits}")
         result = place_order(pair, units, tp, sl, digits)
         
@@ -205,7 +205,7 @@ async def webhook(request: Request):
     pnl = None
     if decision in ["BUY", "SELL"] and tp and sl:
         units = 50000 if decision == "BUY" else -50000
-        digits = 5 if any(ccy in pair for ccy in ["EUR", "GBP", "AUD", "NZD"]) else 3
+        digits = 3 if pair.endswith("JPY") else 5
         result = place_order(pair, units, tp, sl, digits)
         print("✅ STEP 9: 주문 결과 확인 |", result)
 
