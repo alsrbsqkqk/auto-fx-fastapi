@@ -382,22 +382,31 @@ def parse_gpt_feedback(text):
     tp = None
     sl = None
 
-    # 결정 추출
-    d = re.search(r"결정\s*[:：]?\s*(BUY|SELL|WAIT)", text.upper())
-    if d:
-        decision = d.group(1)
+    # 💡 다양한 표현에 대응하도록 확장
+    decision_patterns = [
+        r"(결정|진입\s*판단|신호|방향)\s*(은|:|：)?\s*['\"]?(BUY|SELL|WAIT)['\"]?",
+        r"진입\s*방향\s*(은|:|：)?\s*['\"]?(BUY|SELL|WAIT)['\"]?",
+        r"판단\s*(은|:|：)?\s*['\"]?(BUY|SELL|WAIT)['\"]?",
+    ]
 
-    # TP/SL 포함된 문장에서 마지막 숫자 추출
-    tp_line = next((line for line in text.splitlines() if "TP" in line.upper()), "")
-    sl_line = next((line for line in text.splitlines() if "SL" in line.upper()), "")
+    for pat in decision_patterns:
+        d = re.search(pat, text.upper())
+        if d:
+            decision = d.group(3)
+            break
 
-    tp_matches = re.findall(r"([\d.]{4,})", tp_line)
-    sl_matches = re.findall(r"([\d.]{4,})", sl_line)
-    
+    # TP/SL 숫자 추출 - 가장 마지막 등장하는 수치 사용
+    tp_line = next((line for line in text.splitlines() if "TP" in line.upper() or "목표" in line), "")
+    sl_line = next((line for line in text.splitlines() if "SL" in line.upper() or "손절" in line), "")
+
+    tp_matches = re.findall(r"[\d.]{4,}", tp_line)
+    sl_matches = re.findall(r"[\d.]{4,}", sl_line)
+
     if tp_matches:
         tp = float(tp_matches[-1])
     if sl_matches:
         sl = float(sl_matches[-1])
+
     return decision, tp, sl
     
 def analyze_with_gpt(payload):
