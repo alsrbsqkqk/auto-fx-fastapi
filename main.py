@@ -382,7 +382,7 @@ def parse_gpt_feedback(text):
     tp = None
     sl = None
 
-    # 💡 다양한 표현에 대응하도록 확장
+    # ✅ 명확한 판단 패턴 탐색 (정규식 우선)
     decision_patterns = [
         r"(결정|진입\s*판단|신호|방향)\s*(은|:|：)?\s*['\"]?(BUY|SELL|WAIT)['\"]?",
         r"진입\s*방향\s*(은|:|：)?\s*['\"]?(BUY|SELL|WAIT)['\"]?",
@@ -395,7 +395,14 @@ def parse_gpt_feedback(text):
             decision = d.group(3)
             break
 
-    # TP/SL 숫자 추출 - 가장 마지막 등장하는 수치 사용
+    # ✅ fallback: "BUY" 또는 "SELL" 단독 등장 시 인식
+    if decision == "WAIT":
+        if "BUY" in text.upper() and "SELL" not in text.upper():
+            decision = "BUY"
+        elif "SELL" in text.upper() and "BUY" not in text.upper():
+            decision = "SELL"
+
+    # ✅ TP/SL 추출 (가장 마지막 숫자 사용)
     tp_line = next((line for line in text.splitlines() if "TP" in line.upper() or "목표" in line), "")
     sl_line = next((line for line in text.splitlines() if "SL" in line.upper() or "손절" in line), "")
 
