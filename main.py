@@ -3,6 +3,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 import os
 import requests
+from fastapi_utils.tasks import repeat_every
 import json
 import pandas as pd
 from datetime import datetime, timedelta
@@ -12,6 +13,12 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 app = FastAPI()
+@app.on_event("startup")
+@repeat_every(seconds=60, logger=None)
+def monitor_open_positions():
+    trades = get_all_open_trades()
+    for trade in trades:
+        check_and_close_if_profit_exceeds(trade, threshold=30)
 
 OANDA_API_KEY = os.getenv("OANDA_API_KEY")
 ACCOUNT_ID = os.getenv("ACCOUNT_ID")
@@ -433,7 +440,26 @@ def analyze_with_gpt(payload):
             return f"[GPT ERROR] {result.get('error', {}).get('message', 'Unknown GPT response error')}"
     except Exception as e:
         return f"[GPT EXCEPTION] {str(e)}"
-        
+
+def get_all_open_trades():
+    url = f"https://api-fxpractice.oanda.com/v3/accounts/{ACCOUNT_ID}/openTrades"
+    r = requests.get(url, headers={"Authorization": f"Bearer {OANDA_API_KEY}"})
+    return r.json().get("trades", []) if r.status_code == 200 else []
+
+def check_and_close_if_profit_exceeds(trade, threshold=30):
+    unrealized_pl = float(trade.get("unrealizedPL", "0"))
+    trade_id = trade.get("id")
+    if unrealized_pl >= threshold:
+        print(f"✅ $30 이상 수익 → 포지션 청산: {trade_id}")
+        close_url = f"https://api-fxpractice.oanda.com/v3/accounts/{ACCOUNT_ID}/trades/{trade_id}/close"
+        resp = requests.put(close_url, headers={"Authorization": f"Bearer {OANDA_API_KEY}"})
+        if resp.status_code == 200:
+            print(f"🟢 청산 완료: {trade_id}")
+        else:
+            print(f"❌ 청산 실패: {resp.text}")
+
+
+
 import math
 
 def safe_float(val):
