@@ -514,7 +514,6 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
          if isinstance(val, (dict, list)):
             print(f"❌ [오류] clean_row[{idx}]에 dict 또는 list가 남아 있음 → {val}")
     
-    sheet.append_row(clean_row)
     for idx, val in enumerate(clean_row):
         if isinstance(val, (dict, list)):
             print(f"❌ [디버그] clean_row[{idx}]는 dict 또는 list → {val}")
