@@ -3,7 +3,6 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 import os
 import requests
-from fastapi_utils.tasks import repeat_every
 import json
 import pandas as pd
 from datetime import datetime, timedelta
@@ -13,12 +12,6 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 app = FastAPI()
-@app.on_event("startup")
-@repeat_every(seconds=60, logger=None)
-def monitor_open_positions():
-    trades = get_all_open_trades()
-    for trade in trades:
-        check_and_close_if_profit_exceeds(trade, threshold=30)
 
 OANDA_API_KEY = os.getenv("OANDA_API_KEY")
 ACCOUNT_ID = os.getenv("ACCOUNT_ID")
@@ -426,7 +419,7 @@ def parse_gpt_feedback(text):
 def analyze_with_gpt(payload):
     headers = {"Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}", "Content-Type": "application/json"}
     messages = [
-        {"role": "system", "content": "너는 실전 FX 트레이딩 전략 조력자야. (1)아래 JSON 데이터를 기반으로 전략 리포트를 생성하고, 진입 판단(BUY, SELL, WAIT)과 TP, SL 값을 제시해줘.(2)거래는 기본 1~2시간 내에 청산하는것을 목표로 너무 TP,SL을 멀리 떨어지지 않게 10~15PIP이내로 설정하자 (tp:sl 2:1비율) (3)단기간 매매 전략이기 때문에, 최근 한시간 차트 15봉이내로 지지선(Support)과 저항선(Resistance)을 고려해서 설정하자, 그리고 그 서포트와 지지선에서 TP/SL이 너무 멀거나 가까우면 조정해. (4)지표가 과매수/과매도 상태일 땐, SL을 좀 더 넉넉히 잡아도 괜찮아 (항상 tp와 sl는 범위 말고, 명료하게 말해줘). (5)그리고 분석할땐 캔들의 추세뿐만 아니라, 보조 지표들의 추세&흐름도 같이 파악해. (6)그리고 너의 분석의 마지막은 항상 진입판단: BUY/SELL/WAIT 이라고 명료하게 보여줘 저 형식으로"},
+        {"role": "system", "content": "너는 실전 FX 트레이딩 전략 조력자야. 아래 JSON 데이터를 기반으로 전략 리포트를 생성하고, 진입 판단(BUY, SELL, WAIT)과 TP, SL 값을 제시해줘.그리고 거래는 기본 1~2시간 내에 청산하는것을 목표로 너무 TP,SL을 멀리 떨어지지 않게 10~15PIP이내로 설정하자 (tp:sl 2:1비율) 그것을 감안해서 최근 한시간 차트 10봉이내로 지지선(Support)과 저항선(Resistance)을 고려해서 설정하자, 그리고 그 서포트와 지지선에서 TP/SL이 너무 멀거나 가까우면 조정해. 지표가 과매수/과매도 상태일 땐, SL을 좀 더 넉넉히 잡아도 괜찮아. 그리고 분석할땐 캔들의 추세뿐만 아니라, 보조 지표들의 추세&흐름도 같이 파악해.  그리고 너의 분석의 마지막은 항상 진입판단: BUY/SELL/WAIT 이라고 명료하게 보여줘 저 형식으로"},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}
     ]
     body = {"model": "gpt-4", "messages": messages, "temperature": 0.3}
@@ -440,26 +433,7 @@ def analyze_with_gpt(payload):
             return f"[GPT ERROR] {result.get('error', {}).get('message', 'Unknown GPT response error')}"
     except Exception as e:
         return f"[GPT EXCEPTION] {str(e)}"
-
-def get_all_open_trades():
-    url = f"https://api-fxpractice.oanda.com/v3/accounts/{ACCOUNT_ID}/openTrades"
-    r = requests.get(url, headers={"Authorization": f"Bearer {OANDA_API_KEY}"})
-    return r.json().get("trades", []) if r.status_code == 200 else []
-
-def check_and_close_if_profit_exceeds(trade, threshold=30):
-    unrealized_pl = float(trade.get("unrealizedPL", "0"))
-    trade_id = trade.get("id")
-    if unrealized_pl >= threshold:
-        print(f"✅ $30 이상 수익 → 포지션 청산: {trade_id}")
-        close_url = f"https://api-fxpractice.oanda.com/v3/accounts/{ACCOUNT_ID}/trades/{trade_id}/close"
-        resp = requests.put(close_url, headers={"Authorization": f"Bearer {OANDA_API_KEY}"})
-        if resp.status_code == 200:
-            print(f"🟢 청산 완료: {trade_id}")
-        else:
-            print(f"❌ 청산 실패: {resp.text}")
-
-
-
+        
 import math
 
 def safe_float(val):
