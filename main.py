@@ -140,6 +140,20 @@ async def webhook(request: Request):
     # ❌ GPT가 WAIT이면 주문하지 않음
     if decision == "WAIT":
         print("🚫 GPT 판단: WAIT → 주문 실행하지 않음")
+        # 시트 기록도 남기기
+        outcome_analysis = "WAIT 또는 주문 미실행"
+        adjustment_suggestion = ""
+        print(f"✅ STEP 10: 전략 요약 저장 호출 | decision: {decision}, TP: {tp}, SL: {sl}")
+        log_trade_result(
+            pair, signal, decision, signal_score,
+            "\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}",
+            {}, rsi.iloc[-1], macd.iloc[-1], stoch_rsi,
+            pattern, trend, fibo_levels, decision, news, gpt_feedback,
+            alert_name, tp, sl, price, None,
+            outcome_analysis, adjustment_suggestion, [],
+            atr
+        )
+        
         return JSONResponse(content={"status": "WAIT", "message": "GPT가 WAIT 판단"})
 
     
@@ -223,7 +237,7 @@ async def webhook(request: Request):
         "\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}",
         result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi,
         pattern, trend, fibo_levels, decision, news, gpt_feedback,
-        alert_name, tp, sl, price, pnl,
+        alert_name, tp, sl, price, pnl, None,
         outcome_analysis, adjustment_suggestion, price_movements,
         atr
          )
