@@ -10,6 +10,7 @@ import openai
 import numpy as np
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+import math # math 모듈 추가 임포트
 
 app = FastAPI()
 
@@ -49,6 +50,7 @@ async def webhook(request: Request):
     print(f"✅ STEP 3: 가격 파싱 완료 | price: {price}")
 
     if price is None:
+        print("❌ price 필드를 float으로 변환할 수 없습니다. 요청 중단.")
         return JSONResponse(
             content={"error": "price 필드를 float으로 변환할 수 없습니다"},
             status_code=400
@@ -59,6 +61,11 @@ async def webhook(request: Request):
 
     candles = get_candles(pair, "M30", 250)
     print("✅ STEP 4: 캔들 데이터 수신")
+    
+    if candles is None or candles.empty:
+        print("❌ 캔들 데이터를 불러올 수 없습니다. 요청 중단.")
+        return JSONResponse(content={"error": "캔들 데이터를 불러올 수 없음"}, status_code=400)
+
     # ✅ 최근 10봉 기준으로 지지선/저항선 다시 설정
     candles_recent = candles.tail(10)
     support_resistance = {
@@ -66,43 +73,63 @@ async def webhook(request: Request):
         "resistance": candles_recent["high"].max()
     }
     
-    if candles is None or candles.empty:
-        return JSONResponse(content={"error": "캔들 데이터를 불러올 수 없음"}, status_code=400)
-
     close = candles["close"]
 
-    if len(close.dropna()) < 20:
-    print("❌ close 데이터 부족 → RSI 계산 실패 예상")
-    rsi = calculate_rsi(close)
-    stoch_rsi_series = calculate_stoch_rsi(rsi)
-    stoch_rsi = stoch_rsi_series.dropna().iloc[-1] if not stoch_rsi_series.dropna().empty else 0
-    macd, macd_signal = calculate_macd(close)
-    print(f"✅ STEP 5: 보조지표 계산 완료 | RSI: {rsi.iloc[-1]}")
-    boll_up, boll_mid, boll_low = calculate_bollinger_bands(close)
+    # 지표 계산 변수 초기화
+    rsi = pd.Series([np.nan])
+    stoch_rsi_series = pd.Series([np.nan])
+    stoch_rsi = 0
+    macd = pd.Series([np.nan])
+    macd_signal = pd.Series([np.nan])
+    boll_up = pd.Series([np.nan])
+    boll_mid = pd.Series([np.nan])
+    boll_low = pd.Series([np.nan])
+    atr = np.nan # ATR 초기화
 
+    if len(close.dropna()) < 20: # 최소 20봉의 유효한 close 데이터 필요
+        print("❌ close 데이터 부족 (20봉 미만) → 지표 계산 실패 예상. NaN 또는 0으로 설정.")
+    else:
+        rsi = calculate_rsi(close)
+        # RSI가 NaN일 경우 Stoch RSI 계산 방지
+        if not rsi.dropna().empty:
+            stoch_rsi_series = calculate_stoch_rsi(rsi)
+            stoch_rsi = stoch_rsi_series.dropna().iloc[-1] if not stoch_rsi_series.dropna().empty else 0
+        else:
+            print("❌ RSI 계산 실패로 Stoch RSI 계산 건너_")
+
+        macd, macd_signal = calculate_macd(close)
+        boll_up, boll_mid, boll_low = calculate_bollinger_bands(close)
+        atr = calculate_atr(candles).iloc[-1] if not calculate_atr(candles).dropna().empty else np.nan
+
+    print(f"✅ STEP 5: 보조지표 계산 완료 | RSI: {rsi.iloc[-1] if not rsi.empty and not np.isnan(rsi.iloc[-1]) else 'N/A'}")
+    
     pattern = detect_candle_pattern(candles)
-    trend = detect_trend(candles, rsi, boll_mid)
+    # Boll_mid가 NaN일 수 있으므로 유효성 검사 추가
+    current_boll_mid = boll_mid.iloc[-1] if not boll_mid.empty and not np.isnan(boll_mid.iloc[-1]) else np.nan
+    trend = detect_trend(candles, rsi, boll_mid if not boll_mid.empty else pd.Series([np.nan])) # 유효하지 않은 경우 np.nan 포함 Series 전달
     liquidity = estimate_liquidity(candles)
     news = fetch_forex_news()
-    support_resistance = {
-        "support": candles["low"].min(),
-        "resistance": candles["high"].max()
-    }
+    
+    # support_resistance는 이미 위에서 recent 10봉 기준으로 설정됨.
+    # 기존 코드에서 전역 high/low로 다시 덮어쓰는 부분 제거 (또는 의도한 바에 따라 조절)
+    # support_resistance = {
+    #     "support": candles["low"].min(),
+    #     "resistance": candles["high"].max()
+    # }
 
     high_low_analysis = analyze_highs_lows(candles)
-    atr = calculate_atr(candles).iloc[-1]
     fibo_levels = calculate_fibonacci_levels(candles["high"].max(), candles["low"].min())
 
     payload = {
         "pair": pair,
         "price": price,
         "signal": signal,
-        "rsi": rsi.iloc[-1],
-        "macd": macd.iloc[-1],
-        "macd_signal": macd_signal.iloc[-1],
+        "rsi": rsi.iloc[-1] if not rsi.empty else np.nan,
+        "macd": macd.iloc[-1] if not macd.empty else np.nan,
+        "macd_signal": macd_signal.iloc[-1] if not macd_signal.empty else np.nan,
         "stoch_rsi": stoch_rsi,
-        "bollinger_upper": boll_up.iloc[-1],
-        "bollinger_lower": boll_low.iloc[-1],
+        "bollinger_upper": boll_up.iloc[-1] if not boll_up.empty else np.nan,
+        "bollinger_lower": boll_low.iloc[-1] if not boll_low.empty else np.nan,
         "pattern": pattern,
         "trend": trend,
         "liquidity": liquidity,
@@ -113,192 +140,188 @@ async def webhook(request: Request):
         "new_low": bool(high_low_analysis["new_low"]),
         "atr": atr
     }
+    
     signal_score = 0
     reasons = []
+
+    # BUY 신호 점수 계산
     if signal == "BUY":
-        try:
-            if not np.isnan(rsi.iloc[-1]) and rsi.iloc[-1] < 45:
-                signal_score += 2
-                reasons.append("RSI < 45")
-        except Exception as e:
-            reasons.append(f"RSI 계산 실패: {e}")
+        if not rsi.empty and not np.isnan(rsi.iloc[-1]) and rsi.iloc[-1] < 45:
+            signal_score += 2
+            reasons.append("RSI < 45")
+        else:
+            reasons.append("RSI 조건 미달 또는 계산 실패")
 
-        try:
-            if not np.isnan(macd.iloc[-1]) and not np.isnan(macd_signal.iloc[-1]) and macd.iloc[-1] > macd_signal.iloc[-1]:
-                signal_score += 2
-                reasons.append("MACD 골든크로스")
-        except Exception as e:
-            reasons.append(f"MACD 계산 실패: {e}")
+        if not macd.empty and not macd_signal.empty and not np.isnan(macd.iloc[-1]) and not np.isnan(macd_signal.iloc[-1]) and macd.iloc[-1] > macd_signal.iloc[-1]:
+            signal_score += 2
+            reasons.append("MACD 골든크로스")
+        else:
+            reasons.append("MACD 조건 미달 또는 계산 실패")
 
-        try:
-            stoch_valid = stoch_rsi_series.dropna()
-            if not stoch_valid.empty:
-                stoch_last = stoch_valid.iloc[-1]
-                if stoch_last > 0.5:
-                    signal_score += 1
-                    reasons.append("Stoch RSI 상승 모멘텀")
+        if not stoch_rsi_series.dropna().empty:
+            stoch_last = stoch_rsi_series.dropna().iloc[-1]
+            if stoch_last > 0.5:
+                signal_score += 1
+                reasons.append("Stoch RSI 상승 모멘텀")
             else:
-                reasons.append("Stoch RSI 값 부족 → 점수 제외")
-        except Exception as e:
-            reasons.append(f"Stoch RSI 계산 실패: {e}")
+                reasons.append("Stoch RSI 상승 모멘텀 아님")
+        else:
+            reasons.append("Stoch RSI 값 부족 → 점수 제외")
 
         if trend == "UPTREND":
             signal_score += 1
             reasons.append("상승 추세")
+        else:
+            reasons.append("상승 추세 아님")
 
+    # SELL 신호 점수 계산
     elif signal == "SELL":
-        try:
-            if not np.isnan(rsi.iloc[-1]) and rsi.iloc[-1] > 55:
-                signal_score += 2
-                reasons.append("RSI > 55")
-        except Exception as e:
-            reasons.append(f"RSI 계산 실패: {e}")
+        if not rsi.empty and not np.isnan(rsi.iloc[-1]) and rsi.iloc[-1] > 55:
+            signal_score += 2
+            reasons.append("RSI > 55")
+        else:
+            reasons.append("RSI 조건 미달 또는 계산 실패")
 
-        try:
-            if not np.isnan(macd.iloc[-1]) and not np.isnan(macd_signal.iloc[-1]) and macd.iloc[-1] < macd_signal.iloc[-1]:
-                signal_score += 2
-                reasons.append("MACD 데드크로스")
-        except Exception as e:
-            reasons.append(f"MACD 계산 실패: {e}")
+        if not macd.empty and not macd_signal.empty and not np.isnan(macd.iloc[-1]) and not np.isnan(macd_signal.iloc[-1]) and macd.iloc[-1] < macd_signal.iloc[-1]:
+            signal_score += 2
+            reasons.append("MACD 데드크로스")
+        else:
+            reasons.append("MACD 조건 미달 또는 계산 실패")
 
-        try:
-            stoch_valid = stoch_rsi_series.dropna()
-            if not stoch_valid.empty:
-                stoch_last = stoch_valid.iloc[-1]
-                if stoch_last < 0.5:
-                    signal_score += 1
-                    reasons.append("Stoch RSI 하락 모멘텀")
+        if not stoch_rsi_series.dropna().empty:
+            stoch_last = stoch_rsi_series.dropna().iloc[-1]
+            if stoch_last < 0.5:
+                signal_score += 1
+                reasons.append("Stoch RSI 하락 모멘텀")
             else:
-                reasons.append("Stoch RSI 값 부족 → 점수 제외")
-        except Exception as e:
-            reasons.append(f"Stoch RSI 계산 실패: {e}")
+                reasons.append("Stoch RSI 하락 모멘텀 아님")
+        else:
+            reasons.append("Stoch RSI 값 부족 → 점수 제외")
 
+        if trend == "DOWNTREND":
+            signal_score += 1
+            reasons.append("하락 추세")
+        else:
+            reasons.append("하락 추세 아님")
 
-            
+    
     gpt_feedback = "GPT 분석 생략: 점수 미달"
     decision, tp, sl = "WAIT", None, None
 
     if signal_score >= 3:
         gpt_feedback = analyze_with_gpt(payload)
         print("✅ STEP 6: GPT 응답 수신 완료")
-        decision, _, _ = parse_gpt_feedback(gpt_feedback)  # ✅ TP/SL 무시
+        decision, _, _ = parse_gpt_feedback(gpt_feedback)  # TP/SL은 GPT 무시, 고정값 적용
+        
         # 📌 TP/SL은 무조건 고정값으로 설정
-        pip_value = 0.01 if "JPY" in pair else 0.0001
-        tp = round(price + pip_value * 15, 5) if decision == "BUY" else round(price - pip_value * 15, 5)
-        sl = round(price - pip_value * 10, 5) if decision == "BUY" else round(price + pip_value * 10, 5)
+        # price가 None이 아닐 경우에만 계산 (price None 체크는 이미 위에서 함)
+        if price is not None:
+            pip_value = 0.01 if "JPY" in pair else 0.0001
+            tp = round(price + pip_value * 15, 5) if decision == "BUY" else round(price - pip_value * 15, 5)
+            sl = round(price - pip_value * 10, 5) if decision == "BUY" else round(price + pip_value * 10, 5)
+        else:
+            print("⚠️ 가격(price)이 유효하지 않아 TP/SL 고정값 설정 불가능.")
+
         gpt_feedback += "\n⚠️ TP/SL은 GPT 무시, 고정값 적용 (15pip / 10pip)"
         
     else:
         print("🚫 GPT 분석 생략: 점수 3점 미만")
     
-    
     print(f"✅ STEP 7: GPT 해석 완료 | decision: {decision}, TP: {tp}, SL: {sl}")
    
-    
     # ❌ GPT가 WAIT이면 주문하지 않음
     if decision == "WAIT":
         print("🚫 GPT 판단: WAIT → 주문 실행하지 않음")
-        # 시트 기록도 남기기
         outcome_analysis = "WAIT 또는 주문 미실행"
         adjustment_suggestion = ""
         print(f"✅ STEP 10: 전략 요약 저장 호출 | decision: {decision}, TP: {tp}, SL: {sl}")
         log_trade_result(
             pair, signal, decision, signal_score,
-            "\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}",
-            {}, rsi.iloc[-1], macd.iloc[-1], stoch_rsi,
+            "\n".join(reasons) + f"\nATR: {round(atr or 0, 5) if not np.isnan(atr) else 'N/A'}",
+            {}, rsi.iloc[-1] if not rsi.empty else np.nan, 
+            macd.iloc[-1] if not macd.empty else np.nan, 
+            stoch_rsi,
             pattern, trend, fibo_levels, decision, news, gpt_feedback,
-            alert_name, tp, sl, price, None,
+            alert_name, tp, sl, price, None, # pnl은 여전히 None
             outcome_analysis, adjustment_suggestion, [],
             atr
         )
-        
         return JSONResponse(content={"status": "WAIT", "message": "GPT가 WAIT 판단"})
 
-    
-    # ✅ TP/SL 값이 없을 경우 기본 설정 (15pip/10pip 기준)
-    effective_decision = decision if decision in ["BUY", "SELL"] else signal
-    if (tp is None or sl is None) and price is not None:
-        pip_value = 0.01 if "JPY" in pair else 0.0001
-        tp_pips = pip_value * 15
-        sl_pips = pip_value * 10
-
-        if effective_decision == "BUY":
-            tp = round(price + tp_pips, 5)
-            sl = round(price - sl_pips, 5)
-        elif effective_decision == "SELL":
-            tp = round(price - tp_pips, 5)
-            sl = round(price + sl_pips, 5)
-
-        gpt_feedback += "\n⚠️ TP/SL 추출 실패 → 기본값 적용 (TP: 15 pip, SL: 10 pip)"
-
-    
+    # --- 주문 실행 로직 통합 및 정리 ---
     should_execute = False
+    allow_conditional_trade = False # ✅ 이 변수를 명시적으로 정의 (현재는 비활성 상태)
+    # 이 부분에 last_trade_time을 가져와 allow_conditional_trade를 True로 설정하는 로직 추가 가능
+
     # 1️⃣ 기본 진입 조건: GPT가 BUY/SELL 판단 + 점수 3점 이상
     if decision in ["BUY", "SELL"] and signal_score >= 3:
         should_execute = True
-
-    # 2️⃣ 조건부 진입: 최근 2시간 거래 없으면 점수 4점 미만이어도 진입 허용
-    elif allow_conditional_trade:
-        decision = signal
+    # 2️⃣ 조건부 진입: 최근 2시간 거래 없으면 점수 4점 미만이어도 진입 허용 (allow_conditional_trade가 True일 때)
+    # 현재 allow_conditional_trade = False 이므로 이 블록은 실행되지 않음
+    elif allow_conditional_trade and decision in ["BUY", "SELL"]: 
         gpt_feedback += "\n⚠️ 조건부 진입: 최근 2시간 거래 없음 → 점수 기준 완화"
         should_execute = True
-        
-    if should_execute:
+
+    result = {} # result 초기화
+    price_movements = []
+    pnl = None # PnL 조회 로직 추가 필요
+
+    if should_execute and tp is not None and sl is not None: # TP/SL이 유효할 때만 주문 시도
         units = 100000 if decision == "BUY" else -100000
         digits = 3 if pair.endswith("JPY") else 5
         print(f"[DEBUG] 조건 충족 → 실제 주문 실행: {pair}, units={units}, tp={tp}, sl={sl}, digits={digits}")
         result = place_order(pair, units, tp, sl, digits)
-        
-
-    result = {}
-    price_movements = []
-    pnl = None
-    if decision in ["BUY", "SELL"] and tp and sl:
-        units = 100000 if decision == "BUY" else -100000
-        digits = 3 if pair.endswith("JPY") else 5
-        result = place_order(pair, units, tp, sl, digits)
         print("✅ STEP 9: 주문 결과 확인 |", result)
 
-        executed_time = datetime.utcnow()
-        candles_post = get_candles(pair, "M30", 8)
-        price_movements = candles_post[["high", "low"]].to_dict("records")
+        # 여기에 실제 PnL을 조회하는 로직 (예: OANDA 포지션 조회 API) 추가 필요
+        # pnl = get_current_pnl(ACCOUNT_ID, pair)
 
-    if decision in ["BUY", "SELL"] and isinstance(result, dict) and "order_placed" in result.get("status", ""):
-        if pnl is not None:
-            if pnl > 0:
-                if abs(tp - price) < abs(sl - price):
-                    outcome_analysis = "성공: TP 우선 도달"
-                else:
-                    outcome_analysis = "성공: 수익 실현"
-            elif pnl < 0:
-                if abs(sl - price) < abs(tp - price):
-                    outcome_analysis = "실패: SL 우선 터치"
-                else:
-                    outcome_analysis = "실패: 손실 발생"
-            else:
-                outcome_analysis = "보류: 실현손익 미확정"
-        else:
-            outcome_analysis = "보류: 실현손익 미확정"
+        executed_time = datetime.utcnow() # 이 변수는 현재 사용되지 않음
+        candles_post = get_candles(pair, "M30", 8) # 거래 후 캔들 데이터 수집
+        price_movements = candles_post[["high", "low"]].to_dict("records")
     else:
-        outcome_analysis = "WAIT 또는 주문 미실행"
+        print("🚫 최종 판단: 주문 미실행 (조건 불충족 또는 TP/SL 미설정)")
+        result = {"status": "order_skipped", "message": "주문 조건 불충족 또는 TP/SL 없음"} # 결과에 스킵 정보 추가
+
+    # PnL이 계산되거나, 주문이 실행되었을 때 outcome_analysis 설정
+    if should_execute and isinstance(result, dict) and "order_placed" in result.get("status", ""):
+        # PnL 로직이 추가되었다면 이 부분을 활성화
+        # if pnl is not None:
+        #     if pnl > 0:
+        #         outcome_analysis = "성공: 수익 실현"
+        #     elif pnl < 0:
+        #         outcome_analysis = "실패: 손실 발생"
+        #     else:
+        #         outcome_analysis = "보류: 실현손익 0"
+        # else:
+        #     outcome_analysis = "보류: 실현손익 미확정"
+        outcome_analysis = "주문 실행됨 (PnL 미확정)" # PnL 로직이 없으므로 임시 설정
+    else:
+        outcome_analysis = "WAIT 또는 주문 미실행" # GPT WAIT 또는 should_execute가 False일 경우
 
     adjustment_suggestion = ""
     if outcome_analysis.startswith("실패"):
-        if abs(sl - price) < abs(tp - price):
-            adjustment_suggestion = "SL 터치 → SL 너무 타이트했을 수 있음, 다음 전략에서 완화 필요"
-        elif abs(tp - price) < abs(sl - price):
-            adjustment_suggestion = "TP 거의 닿았으나 실패 → TP 약간 보수적일 필요 있음"
+        if sl is not None and tp is not None and price is not None: # 유효한 값일 때만 비교
+            if abs(sl - price) < abs(tp - price):
+                adjustment_suggestion = "SL 터치 → SL 너무 타이트했을 수 있음, 다음 전략에서 완화 필요"
+            elif abs(tp - price) < abs(sl - price):
+                adjustment_suggestion = "TP 거의 닿았으나 실패 → TP 약간 보수적일 필요 있음"
+        else:
+            adjustment_suggestion = "손절/익절 분석 불가 (TP/SL/Price 미정)"
             
     print(f"✅ STEP 10: 전략 요약 저장 호출 | decision: {decision}, TP: {tp}, SL: {sl}")
     log_trade_result(
         pair, signal, decision, signal_score,
-        "\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}",
-        result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi,
+        "\n".join(reasons) + f"\nATR: {round(atr or 0, 5) if not np.isnan(atr) else 'N/A'}",
+        result, 
+        rsi.iloc[-1] if not rsi.empty else np.nan, 
+        macd.iloc[-1] if not macd.empty else np.nan, 
+        stoch_rsi,
         pattern, trend, fibo_levels, decision, news, gpt_feedback,
-        alert_name, tp, sl, price, pnl, None,
+        alert_name, tp, sl, price, pnl, # pnl은 None으로 전달
         outcome_analysis, adjustment_suggestion, price_movements,
         atr
-         )
+    )
     return JSONResponse(content={"status": "completed", "decision": decision})
 
 
@@ -327,10 +350,11 @@ def get_candles(pair, granularity, count):
     candles = r.json().get("candles", [])
 
     if not candles:
-        return pd.DataFrame([
-            {"time": None, "open": None, "high": None, "low": None, "close": None, "volume": None}   
-        ])
-    return pd.DataFrame([
+        print(f"⚠️ {pair} 캔들 데이터 없음.")
+        # 빈 DataFrame 대신 None을 반환하여 상위 호출자에서 처리하도록 함
+        return None 
+    
+    df = pd.DataFrame([
         {
             "time": c["time"],
             "open": float(c["mid"]["o"]),
@@ -341,32 +365,65 @@ def get_candles(pair, granularity, count):
         }
         for c in candles
     ])
+    # 시간 필드를 datetime 객체로 변환 (필요시)
+    df['time'] = pd.to_datetime(df['time'])
+    return df
 
 def calculate_rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0).rolling(window=period).mean()
     loss = -delta.clip(upper=0).rolling(window=period).mean()
+    
+    # RSI 계산 시 0으로 나누기 방지
     rs = gain / loss
+    # loss가 0인 경우 rs가 무한대(inf)가 될 수 있으므로 처리
+    rs.replace([np.inf, -np.inf], np.nan, inplace=True) 
+    
     rsi = 100 - (100 / (1 + rs))
-    print("✅ RSI tail:", rsi.tail(5))  # ✅ 추가
+    
+    # 만약 gain이 0이고 loss도 0인 경우 rsi는 50으로 간주 (변동 없을 때)
+    if gain.isnull().all() and loss.isnull().all():
+        rsi = pd.Series([50.0] * len(series), index=series.index)
+    elif gain.isnull().all(): # loss만 있을 때
+        rsi = pd.Series([0.0] * len(series), index=series.index)
+    elif loss.isnull().all(): # gain만 있을 때
+        rsi = pd.Series([100.0] * len(series), index=series.index)
+
+    print("✅ RSI tail:", rsi.tail(5))
     return rsi
 
 def calculate_macd(series):
-    ema12 = series.ewm(span=12).mean()
-    ema26 = series.ewm(span=26).mean()
+    ema12 = series.ewm(span=12, adjust=False).mean() # adjust=False for classic EMA
+    ema26 = series.ewm(span=26, adjust=False).mean()
     macd = ema12 - ema26
-    signal = macd.ewm(span=9).mean()
+    signal = macd.ewm(span=9, adjust=False).mean()
     return macd, signal
 
 def calculate_stoch_rsi(rsi, period=14):
-    print("✅ [입력된 RSI tail]", rsi.tail(5))  # ✅ 추가
+    print("✅ [입력된 RSI tail]", rsi.tail(5))
+    
+    # RSI 시리즈에 NaN이 많으면 min/max 계산 불가. dropna() 후 충분한 데이터가 있는지 확인
+    if rsi.dropna().empty or len(rsi.dropna()) < period:
+        print(f"⚠️ Stoch RSI 계산을 위한 RSI 데이터 부족: 유효 데이터 {len(rsi.dropna())}개 (최소 {period}개 필요)")
+        return pd.Series([np.nan] * len(rsi), index=rsi.index)
+
     min_rsi = rsi.rolling(window=period).min()
     max_rsi = rsi.rolling(window=period).max()
-    stoch_rsi = (rsi - min_rsi) / (max_rsi - min_rsi)
-    print("✅ [Stoch RSI 계산 결과 tail]", stoch_rsi.tail(5))  # ✅ 추가
+    
+    # 분모가 0이 되는 경우 방지 (max_rsi == min_rsi)
+    denominator = (max_rsi - min_rsi)
+    stoch_rsi = (rsi - min_rsi) / denominator
+    stoch_rsi.replace([np.inf, -np.inf], np.nan, inplace=True) # 무한대 값 제거
+    stoch_rsi.fillna(0.5, inplace=True) # 분모 0으로 인한 NaN은 0.5로 대체 (중립)
+
+    print("✅ [Stoch RSI 계산 결과 tail]", stoch_rsi.tail(5))
     return stoch_rsi
 
 def calculate_bollinger_bands(series, window=20):
+    if len(series.dropna()) < window:
+        print(f"⚠️ 볼린저 밴드 계산을 위한 데이터 부족: 유효 데이터 {len(series.dropna())}개 (최소 {window}개 필요)")
+        return pd.Series([np.nan]*len(series)), pd.Series([np.nan]*len(series)), pd.Series([np.nan]*len(series))
+        
     mid = series.rolling(window=window).mean()
     std = series.rolling(window=window).std()
     upper = mid + 2 * std
@@ -375,8 +432,17 @@ def calculate_bollinger_bands(series, window=20):
 
 def detect_trend(candles, rsi, mid_band):
     close = candles["close"]
-    ema20 = close.ewm(span=20).mean()
-    ema50 = close.ewm(span=50).mean()
+    # EMA 계산 시에도 데이터 부족 고려
+    if len(close.dropna()) < 50: # EMA50 필요
+        return "NEUTRAL"
+
+    ema20 = close.ewm(span=20, adjust=False).mean()
+    ema50 = close.ewm(span=50, adjust=False).mean()
+
+    # 지표 값들이 유효한지 확인
+    if np.isnan(ema20.iloc[-1]) or np.isnan(ema50.iloc[-1]) or np.isnan(close.iloc[-1]) or np.isnan(mid_band.iloc[-1]):
+        return "NEUTRAL"
+
     if ema20.iloc[-1] > ema50.iloc[-1] and close.iloc[-1] > mid_band.iloc[-1]:
         return "UPTREND"
     elif ema20.iloc[-1] < ema50.iloc[-1] and close.iloc[-1] < mid_band.iloc[-1]:
@@ -384,18 +450,29 @@ def detect_trend(candles, rsi, mid_band):
     return "NEUTRAL"
 
 def detect_candle_pattern(candles):
+    # 실제 캔들 패턴 분석 로직을 여기에 추가
+    # 현재는 항상 "NEUTRAL"을 반환
     return "NEUTRAL"
 
 def estimate_liquidity(candles):
-    return "좋음" if candles["volume"].tail(10).mean() > 100 else "낮음"
+    if candles.empty or "volume" not in candles.columns:
+        return "확인불가"
+    # 최근 10봉의 volume 데이터가 충분한지 확인
+    recent_volumes = candles["volume"].tail(10).dropna()
+    if recent_volumes.empty:
+        return "낮음" # 데이터 없으면 유동성 낮다고 판단
+    return "좋음" if recent_volumes.mean() > 100 else "낮음"
 
 def fetch_forex_news():
     try:
         response = requests.get("https://www.forexfactory.com/", timeout=5)
+        # 응답 상태 코드 확인
+        response.raise_for_status() 
         if "High Impact Expected" in response.text:
             return "⚠️ 고위험 뉴스 존재"
         return "🟢 뉴스 영향 적음"
-    except:
+    except requests.exceptions.RequestException as e:
+        print(f"❗ 뉴스 확인 실패: {e}")
         return "❓ 뉴스 확인 실패"
 
 def place_order(pair, units, tp, sl, digits):
@@ -422,12 +499,11 @@ def place_order(pair, units, tp, sl, digits):
 
     try:
         response = requests.post(url, headers=headers, json=data)
-        response.raise_for_status()
-        return response.json()
+        response.raise_for_status() # HTTP 오류 발생 시 예외
+        return {"status": "order_placed", "response": response.json()} # 응답 객체 대신 상태와 JSON 포함
     except requests.exceptions.RequestException as e:
+        print(f"❌ OANDA 주문 실패: {e}")
         return {"status": "error", "message": str(e)}
-
-import re
 
 
 def parse_gpt_feedback(text):
@@ -465,9 +541,15 @@ def parse_gpt_feedback(text):
     sl_matches = re.findall(r"[\d.]{4,}", sl_line)
 
     if tp_matches:
-        tp = float(tp_matches[-1])
+        try:
+            tp = float(tp_matches[-1])
+        except ValueError:
+            tp = None # float 변환 실패 시 None
     if sl_matches:
-        sl = float(sl_matches[-1])
+        try:
+            sl = float(sl_matches[-1])
+        except ValueError:
+            sl = None # float 변환 실패 시 None
 
     return decision, tp, sl
     
@@ -480,35 +562,41 @@ def analyze_with_gpt(payload):
     body = {"model": "gpt-4", "messages": messages, "temperature": 0.3}
 
     try:
-        r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body)
+        r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body, timeout=30) # 타임아웃 추가
         result = r.json()
         if "choices" in result:
             return result["choices"][0]["message"]["content"]
         else:
-            return f"[GPT ERROR] {result.get('error', {}).get('message', 'Unknown GPT response error')}"
+            error_message = result.get('error', {}).get('message', 'Unknown GPT response error')
+            print(f"❌ GPT 응답 오류: {error_message}")
+            return f"[GPT ERROR] {error_message}"
+    except requests.exceptions.Timeout:
+        print("❌ GPT API 요청 타임아웃 발생.")
+        return "[GPT EXCEPTION] GPT API 요청 타임아웃"
     except Exception as e:
+        print(f"❌ GPT API 호출 중 예외 발생: {str(e)}")
         return f"[GPT EXCEPTION] {str(e)}"
         
-import math
-
 def safe_float(val):
     try:
-        if val is None:
+        if val is None or pd.isna(val): # Pandas NaN도 처리하도록 추가
             return ""
         val = float(val)
         if math.isnan(val) or math.isinf(val):
             return ""
         return round(val, 5)
-    except:
+    except (ValueError, TypeError): # 변환 실패 시 처리
         return ""
 
 
-def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None, macd=None, stoch_rsi=None, pattern=None, trend=None, fibo=None, gpt_decision=None, news=None, gpt_feedback=None, alert_name=None, tp=None, sl=None, entry=None, price=None, pnl=None, outcome_analysis=None, adjustment_suggestion=None, price_movements=None, atr=None):
+def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None, macd=None, stoch_rsi=None, pattern=None, trend=None, fibo=None, gpt_decision=None, news=None, gpt_feedback=None, alert_name=None, tp=None, sl=None, price=None, pnl=None, outcome_analysis=None, adjustment_suggestion=None, price_movements=None, atr=None):
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
     client = gspread.authorize(creds)
     sheet = client.open("민균 FX trading result").sheet1
     now_atlanta = datetime.utcnow() - timedelta(hours=4)
+    
+    filtered_movements = []
     if isinstance(price_movements, list):
         try:
             filtered_movements = [
@@ -520,75 +608,74 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
                 if isinstance(p, dict)
                 and "high" in p and "low" in p
                 and isinstance(p["high"], (float, int)) and isinstance(p["low"], (float, int))
-                and not math.isnan(p["high"]) and not math.isnan(p["low"])
-                and not math.isinf(p["high"]) and not math.isinf(p["low"])
+                and not math.isnan(p["high"]) and not math.isinf(p["high"])
+                and not math.isnan(p["low"]) and not math.isinf(p["low"])
             ]
         except Exception as e:
             print("❗ price_movements 정제 실패:", e)
             filtered_movements = []
-    else:
-        filtered_movements = []
-
+    
     # ✅ 분석용 filtered_movements로 신고점/신저점 판단
     is_new_high = ""
     is_new_low = ""
-    if len(filtered_movements) > 1:
+    if len(filtered_movements) > 1: # 최소 2개 이상의 캔들이 있어야 비교 가능
         try:
-            highs = [p["high"] for p in filtered_movements[:-1]]
-            lows = [p["low"] for p in filtered_movements[:-1]]
-            last = filtered_movements[-1]
-            if "high" in last and highs and last["high"] > max(highs):
+            highs_for_analysis = [p["high"] for p in filtered_movements[:-1]] # 마지막 캔들 제외한 과거 고점들
+            lows_for_analysis = [p["low"] for p in filtered_movements[:-1]]   # 마지막 캔들 제외한 과거 저점들
+            last_candle_data = filtered_movements[-1] # 마지막 캔들 데이터
+
+            if highs_for_analysis and "high" in last_candle_data and last_candle_data["high"] > max(highs_for_analysis):
                 is_new_high = "신고점"
-            if "low" in last and lows and last["low"] < min(lows):
+            if lows_for_analysis and "low" in last_candle_data and last_candle_data["low"] < min(lows_for_analysis):
                 is_new_low = "신저점"
         except Exception as e:
-            print("❗ 신고점/신저점 계산 실패:", e)
+            print(f"❗ 신고점/신저점 계산 실패: {e}")
 
     # ✅ Google Sheet 저장용 문자열로 변환
-    
-
-    filtered_movement_str = ", ".join([
-        f"H: {round(p['high'], 5)} / L: {round(p['low'], 5)}"
-        for p in filtered_movements[-5:]
-        if isinstance(p, dict) and "high" in p and "low" in p
-    ])
-
-
-    try:
-        filtered_movement_str = ", ".join([
-            f"H: {round(p['high'], 5)} / L: {round(p['low'], 5)}"
-            for p in filtered_movements[-5:]
-            if isinstance(p, dict) and "high" in p and "low" in p and
-               isinstance(p['high'], (float, int)) and isinstance(p['low'], (float, int)) and
-               not math.isnan(p['high']) and not math.isnan(p['low']) and
-               not math.isinf(p['high']) and not math.isinf(p['low'])
-        ])
-    except Exception as e:
-        print("❌ filtered_movement_str 변환 실패:", e)
-        filtered_movement_str = "error_in_conversion"
-    
-        if not filtered_movement_str:
-            filtered_movement_str = "no_data"
-   
+    filtered_movement_str = "no_data" # 기본값 설정
+    if filtered_movements: # filtered_movements가 비어있지 않은 경우에만 변환 시도
+        try:
+            filtered_movement_str = ", ".join([
+                f"H: {safe_float(p['high'])} / L: {safe_float(p['low'])}"
+                for p in filtered_movements[-5:] # 최근 5개만 로깅
+            ])
+        except Exception as e:
+            print("❌ filtered_movement_str 변환 실패:", e)
+            filtered_movement_str = "error_in_conversion"
+        
     row = [
-      
-        str(now_atlanta), pair, alert_name or "", signal, decision, score,
-        safe_float(rsi), safe_float(macd), safe_float(stoch_rsi),
-        pattern or "", trend or "", fibo.get("0.382", ""), fibo.get("0.618", ""),
-        gpt_decision or "", news or "", notes,
+        str(now_atlanta), 
+        pair, 
+        alert_name or "", 
+        signal, 
+        decision, 
+        score,
+        safe_float(rsi), 
+        safe_float(macd), 
+        safe_float(stoch_rsi),
+        pattern or "", 
+        trend or "", 
+        safe_float(fibo.get("0.382", "")), 
+        safe_float(fibo.get("0.618", "")),
+        gpt_decision or "", 
+        news or "", 
+        notes,
         json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else (result or "미정"),
         gpt_feedback or "",        
-        safe_float(price), safe_float(tp), safe_float(sl), safe_float(pnl),
-        is_new_high,
-        is_new_low,
+        safe_float(price), 
+        safe_float(tp), 
+        safe_float(sl), 
+        safe_float(pnl),
+        is_new_high, # 수정된 신고점
+        is_new_low,  # 수정된 신저점
         safe_float(atr),
-        news,
-        outcome_analysis or "",
+        outcome_analysis or "", # news를 여기로 옮김 (기존 news 인자 삭제)
         adjustment_suggestion or "",
-        gpt_feedback or "",
+        gpt_feedback or "", # gpt_feedback 중복 제거, 이미 위에서 전달됨
         filtered_movement_str
     ]
 
+    # Google Sheets에 dict/list가 직접 들어가는 것을 방지
     clean_row = []
     for v in row:
         if isinstance(v, (dict, list)):
@@ -597,31 +684,34 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
             clean_row.append("")
         else:
             clean_row.append(v)
-
-
-
-
-
-    print("✅ STEP 8: 시트 저장 직전", clean_row)
-    for idx, val in enumerate(clean_row):
-         if isinstance(val, (dict, list)):
-            print(f"❌ [오류] clean_row[{idx}]에 dict 또는 list가 남아 있음 → {val}")
     
-    for idx, val in enumerate(clean_row):
-        if isinstance(val, (dict, list)):
-            print(f"❌ [디버그] clean_row[{idx}]는 dict 또는 list → {val}")
-    print(f"🧪 최종 clean_row 길이: {len(clean_row)}")
+    # Google Sheet의 열 개수와 맞지 않을 경우를 대비하여 디버깅 정보 추가
+    print(f"✅ STEP 8: 시트 저장 직전. 최종 clean_row 길이: {len(clean_row)}")
+    # for idx, val in enumerate(clean_row):
+    #     print(f"  [{idx}]: {type(val).__name__} - {val}") # 모든 값의 타입과 내용 출력 (디버깅용)
+
 
     try:
         sheet.append_row(clean_row)
+        print("✅ STEP 11: 시트 저장 완료")
     except Exception as e:
         print("❌ Google Sheet append_row 실패:", e)
-        print("🧨 clean_row 전체 내용:\n", clean_row)
+        print("🧨 clean_row 전체 내용 (오류 발생 시):\n", clean_row)
 
 
 def get_last_trade_time():
+    # Render 환경에서 /tmp는 휘발성이므로, 이 함수를 실제 사용하려면 영구 저장소 (예: Google Sheet, DB) 필요
     try:
-        with open("/tmp/last_trade_time.txt", "r") as f:
-            return datetime.fromisoformat(f.read().strip())
-    except:
+        # 파일이 없으면 에러가 나므로, 파일 존재 여부 확인 후 읽기
+        if os.path.exists("/tmp/last_trade_time.txt"):
+            with open("/tmp/last_trade_time.txt", "r") as f:
+                return datetime.fromisoformat(f.read().strip())
         return None
+    except Exception as e:
+        print(f"❗ last_trade_time.txt 읽기 실패: {e}")
+        return None
+
+# FastAPI 애플리케이션 실행 (uvicorn main:app --host 0.0.0.0 --port 8000)
+# if __name__ == "__main__":
+#     import uvicorn
+#     uvicorn.run(app, host="0.0.0.0", port=8000)
