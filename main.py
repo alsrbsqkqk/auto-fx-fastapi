@@ -18,6 +18,45 @@ OANDA_API_KEY = os.getenv("OANDA_API_KEY")
 ACCOUNT_ID = os.getenv("ACCOUNT_ID")
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
+# Google Sheet 설정 (환경 변수 또는 직접 정의)
+GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "민균 FX trading result")
+STRATEGY_SETTINGS_SHEET_NAME = os.getenv("STRATEGY_SETTINGS_SHEET_NAME", "StrategySettings") # 새로운 설정 시트 이름
+
+# Google Sheet 인증 정보
+def get_google_sheet_client():
+    """Google Sheet API 클라이언트를 인증하고 반환합니다."""
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
+    client = gspread.authorize(creds)
+    return client
+
+def get_strategy_settings():
+    """Google Sheet에서 전략 설정을 읽어옵니다."""
+    client = get_google_sheet_client()
+    try:
+        # 스프레드시트와 특정 시트를 엽니다.
+        settings_sheet = client.open(GOOGLE_SHEET_NAME).worksheet(STRATEGY_SETTINGS_SHEET_NAME)
+        # B1 셀에서 최소 시그널 점수를 읽어온다고 가정 (A1: MIN_SIGNAL_SCORE, B1: 실제 값)
+        min_signal_score_str = settings_sheet.acell('B1').value 
+        print(f"✅ 설정 시트에서 MIN_SIGNAL_SCORE 값 읽음: {min_signal_score_str}")
+        
+        try:
+            min_signal_score = int(min_signal_score_str)
+        except (ValueError, TypeError):
+            print(f"⚠️ MIN_SIGNAL_SCORE 값 '{min_signal_score_str}'이 숫자가 아닙니다. 기본값 3을 사용합니다.")
+            min_signal_score = 3 # 유효하지 않은 값일 경우 기본값
+            
+        return {"min_signal_score": min_signal_score}
+    except gspread.exceptions.SpreadsheetNotFound:
+        print(f"⚠️ Google Sheet '{GOOGLE_SHEET_NAME}'를 찾을 수 없습니다. 기본 설정을 사용합니다.")
+        return {"min_signal_score": 3}
+    except gspread.exceptions.WorksheetNotFound:
+        print(f"⚠️ 설정 시트 '{STRATEGY_SETTINGS_SHEET_NAME}'를 찾을 수 없습니다. 기본 설정을 사용합니다.")
+        return {"min_signal_score": 3}
+    except Exception as e:
+        print(f"❌ 전략 설정 로딩 중 오류 발생: {e}. 기본 설정을 사용합니다.")
+        return {"min_signal_score": 3}
+
 
 def analyze_highs_lows(candles, window=20):
     highs = candles['high'].tail(window).dropna()
@@ -26,8 +65,9 @@ def analyze_highs_lows(candles, window=20):
     if highs.empty or lows.empty:
         return {"new_high": False, "new_low": False}
 
-    new_high = highs.iloc[-1] > highs.max()
-    new_low = lows.iloc[-1] < lows.min()
+    # 현재 캔들의 고점/저점을 이전 캔들들과 비교
+    new_high = highs.iloc[-1] > highs.iloc[:-1].max() if len(highs) > 1 else False
+    new_low = lows.iloc[-1] < lows.iloc[:-1].min() if len(lows) > 1 else False
     return {
         "new_high": new_high,
         "new_low": new_low
@@ -95,13 +135,13 @@ async def webhook(request: Request):
             stoch_rsi_series = calculate_stoch_rsi(rsi)
             stoch_rsi = stoch_rsi_series.dropna().iloc[-1] if not stoch_rsi_series.dropna().empty else 0
         else:
-            print("❌ RSI 계산 실패로 Stoch RSI 계산 건너_")
+            print("❌ RSI 계산 실패로 Stoch RSI 계산 건너뜀.")
 
         macd, macd_signal = calculate_macd(close)
         boll_up, boll_mid, boll_low = calculate_bollinger_bands(close)
         atr = calculate_atr(candles).iloc[-1] if not calculate_atr(candles).dropna().empty else np.nan
 
-    print(f"✅ STEP 5: 보조지표 계산 완료 | RSI: {rsi.iloc[-1] if not rsi.empty and not np.isnan(rsi.iloc[-1]) else 'N/A'}")
+    print(f"✅ STEP 5: 보조지표 계산 완료 | RSI: {safe_float(rsi.iloc[-1])}")
     
     pattern = detect_candle_pattern(candles)
     # Boll_mid가 NaN일 수 있으므로 유효성 검사 추가
@@ -110,13 +150,6 @@ async def webhook(request: Request):
     liquidity = estimate_liquidity(candles)
     news = fetch_forex_news()
     
-    # support_resistance는 이미 위에서 recent 10봉 기준으로 설정됨.
-    # 기존 코드에서 전역 high/low로 다시 덮어쓰는 부분 제거 (또는 의도한 바에 따라 조절)
-    # support_resistance = {
-    #     "support": candles["low"].min(),
-    #     "resistance": candles["high"].max()
-    # }
-
     high_low_analysis = analyze_highs_lows(candles)
     fibo_levels = calculate_fibonacci_levels(candles["high"].max(), candles["low"].min())
 
@@ -124,21 +157,21 @@ async def webhook(request: Request):
         "pair": pair,
         "price": price,
         "signal": signal,
-        "rsi": rsi.iloc[-1] if not rsi.empty else np.nan,
-        "macd": macd.iloc[-1] if not macd.empty else np.nan,
-        "macd_signal": macd_signal.iloc[-1] if not macd_signal.empty else np.nan,
-        "stoch_rsi": stoch_rsi,
-        "bollinger_upper": boll_up.iloc[-1] if not boll_up.empty else np.nan,
-        "bollinger_lower": boll_low.iloc[-1] if not boll_low.empty else np.nan,
+        "rsi": safe_float(rsi.iloc[-1]),
+        "macd": safe_float(macd.iloc[-1]),
+        "macd_signal": safe_float(macd_signal.iloc[-1]),
+        "stoch_rsi": safe_float(stoch_rsi),
+        "bollinger_upper": safe_float(boll_up.iloc[-1]),
+        "bollinger_lower": safe_float(boll_low.iloc[-1]),
         "pattern": pattern,
         "trend": trend,
         "liquidity": liquidity,
-        "support": support_resistance["support"],
-        "resistance": support_resistance["resistance"],
+        "support": safe_float(support_resistance["support"]),
+        "resistance": safe_float(support_resistance["resistance"]),
         "news": news,
         "new_high": bool(high_low_analysis["new_high"]),
         "new_low": bool(high_low_analysis["new_low"]),
-        "atr": atr
+        "atr": safe_float(atr)
     }
     
     signal_score = 0
@@ -205,10 +238,15 @@ async def webhook(request: Request):
             reasons.append("하락 추세 아님")
 
     
+    # ✅ 동적으로 가져온 최소 시그널 점수 사용
+    strategy_settings = get_strategy_settings()
+    min_signal_score_threshold = strategy_settings.get("min_signal_score", 3) # 기본값 3
+    print(f"✅ MIN_SIGNAL_SCORE (설정 시트에서 불러옴): {min_signal_score_threshold}")
+
     gpt_feedback = "GPT 분석 생략: 점수 미달"
     decision, tp, sl = "WAIT", None, None
 
-    if signal_score >= 3:
+    if signal_score >= min_signal_score_threshold: # ✅ 동적으로 조정된 임계값 적용
         gpt_feedback = analyze_with_gpt(payload)
         print("✅ STEP 6: GPT 응답 수신 완료")
         decision, _, _ = parse_gpt_feedback(gpt_feedback)  # TP/SL은 GPT 무시, 고정값 적용
@@ -217,15 +255,24 @@ async def webhook(request: Request):
         # price가 None이 아닐 경우에만 계산 (price None 체크는 이미 위에서 함)
         if price is not None:
             pip_value = 0.01 if "JPY" in pair else 0.0001
-            tp = round(price + pip_value * 15, 5) if decision == "BUY" else round(price - pip_value * 15, 5)
-            sl = round(price - pip_value * 10, 5) if decision == "BUY" else round(price + pip_value * 10, 5)
+            # TP/SL 계산 후 반올림
+            raw_tp = price + pip_value * 15 if decision == "BUY" else price - pip_value * 15
+            raw_sl = price - pip_value * 10 if decision == "BUY" else price + pip_value * 10
+            
+            # JPY 통화쌍은 소수점 0자리, 그 외는 5자리
+            if "JPY" in pair:
+                tp = round(raw_tp)
+                sl = round(raw_sl)
+            else:
+                tp = round(raw_tp, 5)
+                sl = round(raw_sl, 5)
         else:
             print("⚠️ 가격(price)이 유효하지 않아 TP/SL 고정값 설정 불가능.")
 
         gpt_feedback += "\n⚠️ TP/SL은 GPT 무시, 고정값 적용 (15pip / 10pip)"
         
     else:
-        print("🚫 GPT 분석 생략: 점수 3점 미만")
+        print(f"🚫 GPT 분석 생략: 점수 {signal_score}점 (최소 {min_signal_score_threshold}점 미만)")
     
     print(f"✅ STEP 7: GPT 해석 완료 | decision: {decision}, TP: {tp}, SL: {sl}")
    
@@ -237,10 +284,10 @@ async def webhook(request: Request):
         print(f"✅ STEP 10: 전략 요약 저장 호출 | decision: {decision}, TP: {tp}, SL: {sl}")
         log_trade_result(
             pair, signal, decision, signal_score,
-            "\n".join(reasons) + f"\nATR: {round(atr or 0, 5) if not np.isnan(atr) else 'N/A'}",
-            {}, rsi.iloc[-1] if not rsi.empty else np.nan, 
-            macd.iloc[-1] if not macd.empty else np.nan, 
-            stoch_rsi,
+            "\n".join(reasons) + f"\nATR: {safe_float(atr)}",
+            {}, safe_float(rsi.iloc[-1]), 
+            safe_float(macd.iloc[-1]), 
+            safe_float(stoch_rsi),
             pattern, trend, fibo_levels, decision, news, gpt_feedback,
             alert_name, tp, sl, price, None, # pnl은 여전히 None
             outcome_analysis, adjustment_suggestion, [],
@@ -253,8 +300,8 @@ async def webhook(request: Request):
     allow_conditional_trade = False # ✅ 이 변수를 명시적으로 정의 (현재는 비활성 상태)
     # 이 부분에 last_trade_time을 가져와 allow_conditional_trade를 True로 설정하는 로직 추가 가능
 
-    # 1️⃣ 기본 진입 조건: GPT가 BUY/SELL 판단 + 점수 3점 이상
-    if decision in ["BUY", "SELL"] and signal_score >= 3:
+    # 1️⃣ 기본 진입 조건: GPT가 BUY/SELL 판단 + 점수 (동적 임계값) 이상
+    if decision in ["BUY", "SELL"] and signal_score >= min_signal_score_threshold: # ✅ 동적 임계값 적용
         should_execute = True
     # 2️⃣ 조건부 진입: 최근 2시간 거래 없으면 점수 4점 미만이어도 진입 허용 (allow_conditional_trade가 True일 때)
     # 현재 allow_conditional_trade = False 이므로 이 블록은 실행되지 않음
@@ -268,7 +315,9 @@ async def webhook(request: Request):
 
     if should_execute and tp is not None and sl is not None: # TP/SL이 유효할 때만 주문 시도
         units = 100000 if decision == "BUY" else -100000
-        digits = 3 if pair.endswith("JPY") else 5
+        # digits는 OANDA API 요청에 필요하지만, TP/SL은 이미 위에서 반올림됨
+        digits = 3 if pair.endswith("JPY") else 5 # 이 값은 OANDA에 전달되는 값의 소수점 자릿수 결정 (여기서는 라운딩에 사용)
+
         print(f"[DEBUG] 조건 충족 → 실제 주문 실행: {pair}, units={units}, tp={tp}, sl={sl}, digits={digits}")
         result = place_order(pair, units, tp, sl, digits)
         print("✅ STEP 9: 주문 결과 확인 |", result)
@@ -278,7 +327,8 @@ async def webhook(request: Request):
 
         executed_time = datetime.utcnow() # 이 변수는 현재 사용되지 않음
         candles_post = get_candles(pair, "M30", 8) # 거래 후 캔들 데이터 수집
-        price_movements = candles_post[["high", "low"]].to_dict("records")
+        if candles_post is not None: # 캔들 데이터가 있을 경우에만 처리
+            price_movements = candles_post[["high", "low"]].to_dict("records")
     else:
         print("🚫 최종 판단: 주문 미실행 (조건 불충족 또는 TP/SL 미설정)")
         result = {"status": "order_skipped", "message": "주문 조건 불충족 또는 TP/SL 없음"} # 결과에 스킵 정보 추가
@@ -312,11 +362,11 @@ async def webhook(request: Request):
     print(f"✅ STEP 10: 전략 요약 저장 호출 | decision: {decision}, TP: {tp}, SL: {sl}")
     log_trade_result(
         pair, signal, decision, signal_score,
-        "\n".join(reasons) + f"\nATR: {round(atr or 0, 5) if not np.isnan(atr) else 'N/A'}",
+        "\n".join(reasons) + f"\nATR: {safe_float(atr)}",
         result, 
-        rsi.iloc[-1] if not rsi.empty else np.nan, 
-        macd.iloc[-1] if not macd.empty else np.nan, 
-        stoch_rsi,
+        safe_float(rsi.iloc[-1]), 
+        safe_float(macd.iloc[-1]), 
+        safe_float(stoch_rsi),
         pattern, trend, fibo_levels, decision, news, gpt_feedback,
         alert_name, tp, sl, price, pnl, # pnl은 None으로 전달
         outcome_analysis, adjustment_suggestion, price_movements,
@@ -382,11 +432,12 @@ def calculate_rsi(series, period=14):
     rsi = 100 - (100 / (1 + rs))
     
     # 만약 gain이 0이고 loss도 0인 경우 rsi는 50으로 간주 (변동 없을 때)
+    # gain 또는 loss가 모두 NaN인 경우 (데이터 부족)에도 NaN 유지
     if gain.isnull().all() and loss.isnull().all():
-        rsi = pd.Series([50.0] * len(series), index=series.index)
-    elif gain.isnull().all(): # loss만 있을 때
+        rsi = pd.Series([np.nan] * len(series), index=series.index) # 데이터 부족 시 np.nan
+    elif gain.isnull().all(): # loss만 있을 때 (즉, 계속 하락만 한 경우)
         rsi = pd.Series([0.0] * len(series), index=series.index)
-    elif loss.isnull().all(): # gain만 있을 때
+    elif loss.isnull().all(): # gain만 있을 때 (즉, 계속 상승만 한 경우)
         rsi = pd.Series([100.0] * len(series), index=series.index)
 
     print("✅ RSI tail:", rsi.tail(5))
@@ -440,7 +491,8 @@ def detect_trend(candles, rsi, mid_band):
     ema50 = close.ewm(span=50, adjust=False).mean()
 
     # 지표 값들이 유효한지 확인
-    if np.isnan(ema20.iloc[-1]) or np.isnan(ema50.iloc[-1]) or np.isnan(close.iloc[-1]) or np.isnan(mid_band.iloc[-1]):
+    # mid_band가 Series이고 비어있을 수 있으므로 .empty 체크 추가
+    if np.isnan(ema20.iloc[-1]) or np.isnan(ema50.iloc[-1]) or np.isnan(close.iloc[-1]) or (mid_band is not None and not mid_band.empty and np.isnan(mid_band.iloc[-1])):
         return "NEUTRAL"
 
     if ema20.iloc[-1] > ema50.iloc[-1] and close.iloc[-1] > mid_band.iloc[-1]:
@@ -489,10 +541,10 @@ def place_order(pair, units, tp, sl, digits):
             "type": "MARKET",
             "positionFill": "DEFAULT",
             "takeProfitOnFill": {
-                "price": str(round(tp, digits))
+                "price": str(tp) # TP/SL은 이미 라운딩 처리됨
             },
             "stopLossOnFill": {
-                "price": str(round(sl, digits))
+                "price": str(sl) # TP/SL은 이미 라운딩 처리됨
             }
         }
     }
@@ -578,23 +630,20 @@ def analyze_with_gpt(payload):
         return f"[GPT EXCEPTION] {str(e)}"
         
 def safe_float(val):
+    """값을 안전하게 float으로 변환하고, NaN/Inf 처리 후 반올림합니다."""
     try:
-        if val is None or pd.isna(val): # Pandas NaN도 처리하도록 추가
+        if val is None or pd.isna(val) or (isinstance(val, (float, np.float64)) and (math.isnan(val) or math.isinf(val))):
             return ""
         val = float(val)
-        if math.isnan(val) or math.isinf(val):
-            return ""
         return round(val, 5)
-    except (ValueError, TypeError): # 변환 실패 시 처리
+    except (ValueError, TypeError): 
         return ""
 
 
 def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None, macd=None, stoch_rsi=None, pattern=None, trend=None, fibo=None, gpt_decision=None, news=None, gpt_feedback=None, alert_name=None, tp=None, sl=None, price=None, pnl=None, outcome_analysis=None, adjustment_suggestion=None, price_movements=None, atr=None):
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
-    client = gspread.authorize(creds)
-    sheet = client.open("민균 FX trading result").sheet1
-    now_atlanta = datetime.utcnow() - timedelta(hours=4)
+    client = get_google_sheet_client() # 클라이언트 재사용
+    sheet = client.open(GOOGLE_SHEET_NAME).sheet1 # 메인 시트 (Sheet1)
+    now_atlanta = datetime.utcnow() - timedelta(hours=4) # 애틀랜타 시간 (UTC-4)
     
     filtered_movements = []
     if isinstance(price_movements, list):
@@ -620,13 +669,14 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
     is_new_low = ""
     if len(filtered_movements) > 1: # 최소 2개 이상의 캔들이 있어야 비교 가능
         try:
-            highs_for_analysis = [p["high"] for p in filtered_movements[:-1]] # 마지막 캔들 제외한 과거 고점들
-            lows_for_analysis = [p["low"] for p in filtered_movements[:-1]]   # 마지막 캔들 제외한 과거 저점들
-            last_candle_data = filtered_movements[-1] # 마지막 캔들 데이터
+            # 마지막 캔들 제외한 과거 데이터의 최대/최소
+            highs_past = [p["high"] for p in filtered_movements[:-1]] 
+            lows_past = [p["low"] for p in filtered_movements[:-1]]   
+            last_candle_data = filtered_movements[-1] # 현재 캔들 데이터
 
-            if highs_for_analysis and "high" in last_candle_data and last_candle_data["high"] > max(highs_for_analysis):
+            if highs_past and "high" in last_candle_data and last_candle_data["high"] > max(highs_past):
                 is_new_high = "신고점"
-            if lows_for_analysis and "low" in last_candle_data and last_candle_data["low"] < min(lows_for_analysis):
+            if lows_past and "low" in last_candle_data and last_candle_data["low"] < min(lows_past):
                 is_new_low = "신저점"
         except Exception as e:
             print(f"❗ 신고점/신저점 계산 실패: {e}")
@@ -658,7 +708,7 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
         safe_float(fibo.get("0.382", "")), 
         safe_float(fibo.get("0.618", "")),
         gpt_decision or "", 
-        news or "", 
+        news or "", # news 위치 변경
         notes,
         json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else (result or "미정"),
         gpt_feedback or "",        
@@ -666,13 +716,12 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
         safe_float(tp), 
         safe_float(sl), 
         safe_float(pnl),
-        is_new_high, # 수정된 신고점
-        is_new_low,  # 수정된 신저점
+        is_new_high, 
+        is_new_low,  
         safe_float(atr),
-        outcome_analysis or "", # news를 여기로 옮김 (기존 news 인자 삭제)
+        outcome_analysis or "", 
         adjustment_suggestion or "",
-        gpt_feedback or "", # gpt_feedback 중복 제거, 이미 위에서 전달됨
-        filtered_movement_str
+        filtered_movement_str # gpt_feedback 중복 제거, 여기에 가격 움직임
     ]
 
     # Google Sheets에 dict/list가 직접 들어가는 것을 방지
@@ -687,8 +736,8 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
     
     # Google Sheet의 열 개수와 맞지 않을 경우를 대비하여 디버깅 정보 추가
     print(f"✅ STEP 8: 시트 저장 직전. 최종 clean_row 길이: {len(clean_row)}")
-    # for idx, val in enumerate(clean_row):
-    #     print(f"  [{idx}]: {type(val).__name__} - {val}") # 모든 값의 타입과 내용 출력 (디버깅용)
+    # for idx, val in enumerate(clean_row): # 디버깅용 주석 처리
+    #     print(f"  [{idx}]: {type(val).__name__} - {val}")
 
 
     try:
