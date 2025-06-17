@@ -70,6 +70,9 @@ async def webhook(request: Request):
         return JSONResponse(content={"error": "캔들 데이터를 불러올 수 없음"}, status_code=400)
 
     close = candles["close"]
+
+    if len(close.dropna()) < 20:
+    print("❌ close 데이터 부족 → RSI 계산 실패 예상")
     rsi = calculate_rsi(close)
     stoch_rsi_series = calculate_stoch_rsi(rsi)
     stoch_rsi = stoch_rsi_series.dropna().iloc[-1] if not stoch_rsi_series.dropna().empty else 0
@@ -344,7 +347,9 @@ def calculate_rsi(series, period=14):
     gain = delta.clip(lower=0).rolling(window=period).mean()
     loss = -delta.clip(upper=0).rolling(window=period).mean()
     rs = gain / loss
-    return 100 - (100 / (1 + rs))
+    rsi = 100 - (100 / (1 + rs))
+    print("✅ RSI tail:", rsi.tail(5))  # ✅ 추가
+    return rsi
 
 def calculate_macd(series):
     ema12 = series.ewm(span=12).mean()
@@ -354,9 +359,12 @@ def calculate_macd(series):
     return macd, signal
 
 def calculate_stoch_rsi(rsi, period=14):
+    print("✅ [입력된 RSI tail]", rsi.tail(5))  # ✅ 추가
     min_rsi = rsi.rolling(window=period).min()
     max_rsi = rsi.rolling(window=period).max()
-    return (rsi - min_rsi) / (max_rsi - min_rsi)
+    stoch_rsi = (rsi - min_rsi) / (max_rsi - min_rsi)
+    print("✅ [Stoch RSI 계산 결과 tail]", stoch_rsi.tail(5))  # ✅ 추가
+    return stoch_rsi
 
 def calculate_bollinger_bands(series, window=20):
     mid = series.rolling(window=window).mean()
