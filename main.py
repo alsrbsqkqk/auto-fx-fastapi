@@ -11,6 +11,7 @@ import numpy as np
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import math # math 모듈 추가 임포트
+import re   # re 모듈 추가 임포트 (parse_gpt_feedback에서 사용)
 
 app = FastAPI()
 
@@ -218,6 +219,7 @@ async def webhook(request: Request):
         if not macd.empty and not macd_signal.empty and not np.isnan(macd.iloc[-1]) and not np.isnan(macd_signal.iloc[-1]) and macd.iloc[-1] < macd_signal.iloc[-1]:
             signal_score += 2
             reasons.append("MACD 데드크로스")
+            
         else:
             reasons.append("MACD 조건 미달 또는 계산 실패")
 
@@ -245,11 +247,13 @@ async def webhook(request: Request):
 
     gpt_feedback = "GPT 분석 생략: 점수 미달"
     decision, tp, sl = "WAIT", None, None
+    gpt_decision = "WAIT" # gpt_decision 초기화
 
     if signal_score >= min_signal_score_threshold: # ✅ 동적으로 조정된 임계값 적용
         gpt_feedback = analyze_with_gpt(payload)
         print("✅ STEP 6: GPT 응답 수신 완료")
-        decision, _, _ = parse_gpt_feedback(gpt_feedback)  # TP/SL은 GPT 무시, 고정값 적용
+        gpt_decision, _, _ = parse_gpt_feedback(gpt_feedback) # GPT의 raw decision 저장
+        decision = gpt_decision # 시스템의 최종 결정도 GPT 판단과 일치시킴
         
         # 📌 TP/SL은 무조건 고정값으로 설정
         # price가 None이 아닐 경우에만 계산 (price None 체크는 이미 위에서 함)
@@ -275,20 +279,20 @@ async def webhook(request: Request):
         print(f"🚫 GPT 분석 생략: 점수 {signal_score}점 (최소 {min_signal_score_threshold}점 미만)")
     
     print(f"✅ STEP 7: GPT 해석 완료 | decision: {decision}, TP: {tp}, SL: {sl}")
-   
+    
     # ❌ GPT가 WAIT이면 주문하지 않음
     if decision == "WAIT":
         print("🚫 GPT 판단: WAIT → 주문 실행하지 않음")
         outcome_analysis = "WAIT 또는 주문 미실행"
         adjustment_suggestion = ""
-        print(f"✅ STEP 10: 전략 요약 저장 호출 | decision: {decision}, TP: {tp}, SL: {sl}")
+        
         log_trade_result(
             pair, signal, decision, signal_score,
             "\n".join(reasons) + f"\nATR: {safe_float(atr)}",
             {}, safe_float(rsi.iloc[-1]), 
             safe_float(macd.iloc[-1]), 
             safe_float(stoch_rsi),
-            pattern, trend, fibo_levels, decision, news, gpt_feedback,
+            pattern, trend, fibo_levels, gpt_decision, news, gpt_feedback, # gpt_decision 추가
             alert_name, tp, sl, price, None, # pnl은 여전히 None
             outcome_analysis, adjustment_suggestion, [],
             atr
@@ -367,7 +371,7 @@ async def webhook(request: Request):
         safe_float(rsi.iloc[-1]), 
         safe_float(macd.iloc[-1]), 
         safe_float(stoch_rsi),
-        pattern, trend, fibo_levels, decision, news, gpt_feedback,
+        pattern, trend, fibo_levels, gpt_decision, news, gpt_feedback, # gpt_decision 추가
         alert_name, tp, sl, price, pnl, # pnl은 None으로 전달
         outcome_analysis, adjustment_suggestion, price_movements,
         atr
@@ -641,8 +645,8 @@ def safe_float(val):
 
 
 def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None, macd=None, stoch_rsi=None, pattern=None, trend=None, fibo=None, gpt_decision=None, news=None, gpt_feedback=None, alert_name=None, tp=None, sl=None, price=None, pnl=None, outcome_analysis=None, adjustment_suggestion=None, price_movements=None, atr=None):
-    client = get_google_sheet_client() # 클라이언트 재사용
-    sheet = client.open(GOOGLE_SHEET_NAME).sheet1 # 메인 시트 (Sheet1)
+    client = get_google_sheet_client()
+    sheet = client.open(GOOGLE_SHEET_NAME).sheet1
     now_atlanta = datetime.utcnow() - timedelta(hours=4) # 애틀랜타 시간 (UTC-4)
     
     filtered_movements = []
@@ -664,67 +668,68 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
             print("❗ price_movements 정제 실패:", e)
             filtered_movements = []
     
-    # ✅ 분석용 filtered_movements로 신고점/신저점 판단
-    is_new_high = ""
-    is_new_low = ""
+    # ✅ 분석용 filtered_movements로 신고점/신저점 판단 및 문자열 변환
+    is_new_high_str = ""
+    is_new_low_str = ""
     if len(filtered_movements) > 1: # 최소 2개 이상의 캔들이 있어야 비교 가능
         try:
             # 마지막 캔들 제외한 과거 데이터의 최대/최소
-            highs_past = [p["high"] for p in filtered_movements[:-1]] 
+            highs_past = [p["high"] for p in filtered_movements[:-1]]  
             lows_past = [p["low"] for p in filtered_movements[:-1]]   
             last_candle_data = filtered_movements[-1] # 현재 캔들 데이터
 
             if highs_past and "high" in last_candle_data and last_candle_data["high"] > max(highs_past):
-                is_new_high = "신고점"
+                is_new_high_str = "신고점"
             if lows_past and "low" in last_candle_data and last_candle_data["low"] < min(lows_past):
-                is_new_low = "신저점"
+                is_new_low_str = "신저점"
         except Exception as e:
             print(f"❗ 신고점/신저점 계산 실패: {e}")
 
-    # ✅ Google Sheet 저장용 문자열로 변환
-    filtered_movement_str = "no_data" # 기본값 설정
-    if filtered_movements: # filtered_movements가 비어있지 않은 경우에만 변환 시도
+    # ✅ 8봉 가격 흐름 문자열 (컬럼명 '최근 8봉 가격 흐름'에 매핑)
+    filtered_movement_str_for_sheet = "no_data"
+    if filtered_movements:
         try:
-            filtered_movement_str = ", ".join([
-                f"H: {safe_float(p['high'])} / L: {safe_float(p['low'])}"
-                for p in filtered_movements[-5:] # 최근 5개만 로깅
+            filtered_movement_str_for_sheet = ", ".join([
+                f"H:{safe_float(p['high'])}/L:{safe_float(p['low'])}"
+                for p in filtered_movements[-8:] # 최근 8개 캔들만 로깅 (8봉 가격 흐름 컬럼)
             ])
         except Exception as e:
-            print("❌ filtered_movement_str 변환 실패:", e)
-            filtered_movement_str = "error_in_conversion"
-        
+            print("❌ 8봉 가격 흐름 문자열 변환 실패:", e)
+            filtered_movement_str_for_sheet = "error_in_conversion"
+            
     row = [
-        str(now_atlanta), 
-        pair, 
-        alert_name or "", 
-        signal, 
-        decision, 
-        score,
-        safe_float(rsi), 
-        safe_float(macd), 
-        safe_float(stoch_rsi),
-        pattern or "", 
-        trend or "", 
-        safe_float(fibo.get("0.382", "")), 
-        safe_float(fibo.get("0.618", "")),
-        gpt_decision or "", 
-        news or "", # news 위치 변경
-        notes,
-        json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else (result or "미정"),
-        gpt_feedback or "",        
-        safe_float(price), 
-        safe_float(tp), 
-        safe_float(sl), 
-        safe_float(pnl),
-        is_new_high, 
-        is_new_low,  
-        safe_float(atr),
-        outcome_analysis or "", 
-        adjustment_suggestion or "",
-        filtered_movement_str # gpt_feedback 중복 제거, 여기에 가격 움직임
+        str(now_atlanta),                              # 1. 타임스탬프
+        pair,                                          # 2. 종목
+        alert_name or "",                              # 3. 알림명
+        signal,                                        # 4. 신호
+        decision,                                      # 5. GPT 최종 결정
+        score,                                         # 6. 점수
+        safe_float(rsi),                               # 7. RSI
+        safe_float(macd),                              # 8. MACD
+        safe_float(stoch_rsi),                         # 9. Stoch RSI
+        pattern or "",                                 # 10. 캔들 패턴
+        trend or "",                                   # 11. 추세
+        safe_float(fibo.get("0.382", "")),             # 12. FIBO 0.382
+        safe_float(fibo.get("0.618", "")),             # 13. FIBO 0.618
+        gpt_decision or "",                            # 14. GPT 원본 판단 (GPT의 직접적인 BUY/SELL/WAIT)
+        news or "",                                    # 15. 뉴스 요약 (fetch_forex_news 결과)
+        notes,                                         # 16. 조건 요약 (signal_score 이유)
+        json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else (result or "미정"), # 17. OANDA 주문 결과
+        gpt_feedback or "",                            # 18. GPT 상세 분석 (GPT가 제공하는 전체 분석 리포트 내용)
+        safe_float(price),                             # 19. 진입가
+        safe_float(tp),                                # 20. Take Profit
+        safe_float(sl),                                # 21. Stop Loss
+        safe_float(pnl),                               # 22. 실현 손익 (현재는 None, PnL 구현 필요)
+        is_new_high_str,                               # 23. 신고점
+        is_new_low_str,                                # 24. 신저점
+        safe_float(atr),                               # 25. ATR
+        outcome_analysis or "",                        # 26. 거래 성과 분석
+        adjustment_suggestion or "",                   # 27. 전략 조정 제안
+        gpt_feedback or "",                            # 28. GPT 리포트 전문 (18번과 동일한 내용이 들어갈 수 있음)
+        filtered_movement_str_for_sheet,               # 29. 최근 8봉 가격 흐름
+        ""                                             # 30. 미사용/비고 (빈 문자열로 30개 컬럼 맞춤)
     ]
-
-    # Google Sheets에 dict/list가 직접 들어가는 것을 방지
+    
     clean_row = []
     for v in row:
         if isinstance(v, (dict, list)):
@@ -733,13 +738,8 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
             clean_row.append("")
         else:
             clean_row.append(v)
-    
-    # Google Sheet의 열 개수와 맞지 않을 경우를 대비하여 디버깅 정보 추가
+            
     print(f"✅ STEP 8: 시트 저장 직전. 최종 clean_row 길이: {len(clean_row)}")
-    # for idx, val in enumerate(clean_row): # 디버깅용 주석 처리
-    #     print(f"  [{idx}]: {type(val).__name__} - {val}")
-
-
     try:
         sheet.append_row(clean_row)
         print("✅ STEP 11: 시트 저장 완료")
@@ -750,8 +750,8 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
 
 def get_last_trade_time():
     # Render 환경에서 /tmp는 휘발성이므로, 이 함수를 실제 사용하려면 영구 저장소 (예: Google Sheet, DB) 필요
+    # 현재는 사용되지 않으며, 실제 구현 시 Google Sheet에서 마지막 거래 시간을 읽어오도록 수정 필요
     try:
-        # 파일이 없으면 에러가 나므로, 파일 존재 여부 확인 후 읽기
         if os.path.exists("/tmp/last_trade_time.txt"):
             with open("/tmp/last_trade_time.txt", "r") as f:
                 return datetime.fromisoformat(f.read().strip())
