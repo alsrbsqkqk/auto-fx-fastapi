@@ -150,7 +150,7 @@ async def webhook(request: Request):
     if signal_score >= 3:
         gpt_feedback = analyze_with_gpt(payload)
         print("✅ STEP 6: GPT 응답 수신 완료")
-        decision, tp, sl = parse_gpt_feedback(gpt_feedback)
+        decision, _, _ = parse_gpt_feedback(gpt_feedback)  # ✅ TP/SL 무시
     else:
         print("🚫 GPT 분석 생략: 점수 3점 미만")
     
