@@ -140,10 +140,6 @@ async def webhook(request: Request):
             signal_score += 1
             reasons.append("하락 추세")
             
-    recent_trade_time = get_last_trade_time()
-    time_since_last = datetime.utcnow() - recent_trade_time if recent_trade_time else timedelta(hours=999)
-    allow_conditional_trade = time_since_last > timedelta(hours=2)
-
     gpt_feedback = "GPT 분석 생략: 점수 미달"
     decision, tp, sl = "WAIT", None, None
 
