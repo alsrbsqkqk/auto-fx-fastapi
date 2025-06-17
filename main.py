@@ -113,31 +113,60 @@ async def webhook(request: Request):
     signal_score = 0
     reasons = []
     if signal == "BUY":
-        if rsi.iloc[-1] < 45:
-            signal_score += 2
-            reasons.append("RSI < 45")
-        if macd.iloc[-1] > macd_signal.iloc[-1]:
-            signal_score += 2
-            reasons.append("MACD 골든크로스")
-        if stoch_rsi > 0.5:
-            signal_score += 1
-            reasons.append("Stoch RSI 상승 모멘텀")
+        try:
+            if not np.isnan(rsi.iloc[-1]) and rsi.iloc[-1] < 45:
+                signal_score += 2
+                reasons.append("RSI < 45")
+        except Exception as e:
+            reasons.append(f"RSI 계산 실패: {e}")
+
+        try:
+            if not np.isnan(macd.iloc[-1]) and not np.isnan(macd_signal.iloc[-1]) and macd.iloc[-1] > macd_signal.iloc[-1]:
+                signal_score += 2
+                reasons.append("MACD 골든크로스")
+        except Exception as e:
+            reasons.append(f"MACD 계산 실패: {e}")
+
+        try:
+            stoch_last_buy = stoch_rsi_series.dropna().iloc[-1]
+            if stoch_last_buy > 0.5:
+                signal_score += 1
+                reasons.append("Stoch RSI 상승 모멘텀")
+        except Exception as e:
+            reasons.append(f"Stoch RSI 계산 실패: {e}")
+
         if trend == "UPTREND":
             signal_score += 1
             reasons.append("상승 추세")
+
     elif signal == "SELL":
-        if rsi.iloc[-1] > 55:
-            signal_score += 2
-            reasons.append("RSI > 55")
-        if macd.iloc[-1] < macd_signal.iloc[-1]:
-            signal_score += 2
-            reasons.append("MACD 데드크로스")
-        if stoch_rsi < 0.5:
-            signal_score += 1
-            reasons.append("Stoch RSI 과매도")
+        try:
+            if not np.isnan(rsi.iloc[-1]) and rsi.iloc[-1] > 55:
+                signal_score += 2
+                reasons.append("RSI > 55")
+        except Exception as e:
+            reasons.append(f"RSI 계산 실패: {e}")
+
+        try:
+            if not np.isnan(macd.iloc[-1]) and not np.isnan(macd_signal.iloc[-1]) and macd.iloc[-1] < macd_signal.iloc[-1]:
+                signal_score += 2
+                reasons.append("MACD 데드크로스")
+        except Exception as e:
+            reasons.append(f"MACD 계산 실패: {e}")
+
+        try:
+            stoch_last_sell = stoch_rsi_series.dropna().iloc[-1]
+            if stoch_last_sell < 0.5:
+                signal_score += 1
+                reasons.append("Stoch RSI 하락 모멘텀")
+        except Exception as e:
+            reasons.append(f"Stoch RSI 계산 실패: {e}")
+
         if trend == "DOWNTREND":
             signal_score += 1
             reasons.append("하락 추세")
+
+
             
     gpt_feedback = "GPT 분석 생략: 점수 미달"
     decision, tp, sl = "WAIT", None, None
