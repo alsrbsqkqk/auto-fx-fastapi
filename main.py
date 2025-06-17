@@ -113,27 +113,26 @@ async def webhook(request: Request):
     signal_score = 0
     reasons = []
     if signal == "BUY":
-        if rsi.iloc[-1] < 40:
+        if rsi.iloc[-1] < 45:
             signal_score += 2
-            reasons.append("RSI < 40")
+            reasons.append("RSI < 45")
         if macd.iloc[-1] > macd_signal.iloc[-1]:
             signal_score += 2
             reasons.append("MACD 골든크로스")
-        if stoch_rsi > 0.8:
+        if stoch_rsi > 0.5:
             signal_score += 1
-            reasons.append("Stoch RSI 과열")
+            reasons.append("Stoch RSI 상승 모멘텀")
         if trend == "UPTREND":
             signal_score += 1
             reasons.append("상승 추세")
-
     elif signal == "SELL":
-        if rsi.iloc[-1] > 60:
+        if rsi.iloc[-1] > 55:
             signal_score += 2
-            reasons.append("RSI > 60")
+            reasons.append("RSI > 55")
         if macd.iloc[-1] < macd_signal.iloc[-1]:
             signal_score += 2
             reasons.append("MACD 데드크로스")
-        if stoch_rsi < 0.2:
+        if stoch_rsi < 0.5:
             signal_score += 1
             reasons.append("Stoch RSI 과매도")
         if trend == "DOWNTREND":
@@ -198,8 +197,8 @@ async def webhook(request: Request):
 
     
     should_execute = False
-    # 1️⃣ 기본 진입 조건: GPT가 BUY/SELL 판단 + 점수 4점 이상
-    if decision in ["BUY", "SELL"] and signal_score >= 4:
+    # 1️⃣ 기본 진입 조건: GPT가 BUY/SELL 판단 + 점수 3점 이상
+    if decision in ["BUY", "SELL"] and signal_score >= 3:
         should_execute = True
 
     # 2️⃣ 조건부 진입: 최근 2시간 거래 없으면 점수 4점 미만이어도 진입 허용
