@@ -57,7 +57,7 @@ async def webhook(request: Request):
     signal = data.get("signal")
     alert_name = data.get("alert_name", "기본알림")
 
-    candles = get_candles(pair, "M30", 200)
+    candles = get_candles(pair, "M30", 250)
     print("✅ STEP 4: 캔들 데이터 수신")
     # ✅ 최근 10봉 기준으로 지지선/저항선 다시 설정
     candles_recent = candles.tail(10)
@@ -128,10 +128,14 @@ async def webhook(request: Request):
             reasons.append(f"MACD 계산 실패: {e}")
 
         try:
-            stoch_last_buy = stoch_rsi_series.dropna().iloc[-1]
-            if stoch_last_buy > 0.5:
-                signal_score += 1
-                reasons.append("Stoch RSI 상승 모멘텀")
+            stoch_valid = stoch_rsi_series.dropna()
+            if not stoch_valid.empty:
+                stoch_last = stoch_valid.iloc[-1]
+                if stoch_last > 0.5:
+                    signal_score += 1
+                    reasons.append("Stoch RSI 상승 모멘텀")
+            else:
+                reasons.append("Stoch RSI 값 부족 → 점수 제외")
         except Exception as e:
             reasons.append(f"Stoch RSI 계산 실패: {e}")
 
@@ -155,16 +159,16 @@ async def webhook(request: Request):
             reasons.append(f"MACD 계산 실패: {e}")
 
         try:
-            stoch_last_sell = stoch_rsi_series.dropna().iloc[-1]
-            if stoch_last_sell < 0.5:
-                signal_score += 1
-                reasons.append("Stoch RSI 하락 모멘텀")
+            stoch_valid = stoch_rsi_series.dropna()
+            if not stoch_valid.empty:
+                stoch_last = stoch_valid.iloc[-1]
+                if stoch_last < 0.5:
+                    signal_score += 1
+                    reasons.append("Stoch RSI 하락 모멘텀")
+            else:
+                reasons.append("Stoch RSI 값 부족 → 점수 제외")
         except Exception as e:
             reasons.append(f"Stoch RSI 계산 실패: {e}")
-
-        if trend == "DOWNTREND":
-            signal_score += 1
-            reasons.append("하락 추세")
 
 
             
