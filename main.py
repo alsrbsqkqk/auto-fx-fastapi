@@ -112,27 +112,33 @@ async def webhook(request: Request):
     }
     signal_score = 0
     reasons = []
-    if rsi.iloc[-1] < 30:
-        signal_score += 2
-        reasons.append("RSI < 30")
-    if macd.iloc[-1] > macd_signal.iloc[-1]:
-        signal_score += 2
-        reasons.append("MACD 골든크로스")
-    if stoch_rsi > 0.8:
-        signal_score += 1
-        reasons.append("Stoch RSI 과열")
-    if trend == "UPTREND" and signal == "BUY":
-        signal_score += 1
-        reasons.append("추세 상승 + 매수 일치")
-    if trend == "DOWNTREND" and signal == "SELL":
-        signal_score += 1
-        reasons.append("추세 하락 + 매도 일치")
-    if liquidity == "좋음":
-        signal_score += 1
-        reasons.append("유동성 좋음")
-    if pattern in ["HAMMER", "BULLISH_ENGULFING"]:
-        signal_score += 1
-        reasons.append(f"캔들패턴: {pattern}")
+    if signal == "BUY":
+        if rsi.iloc[-1] < 40:
+            signal_score += 2
+            reasons.append("RSI < 40")
+        if macd.iloc[-1] > macd_signal.iloc[-1]:
+            signal_score += 2
+            reasons.append("MACD 골든크로스")
+        if stoch_rsi > 0.8:
+            signal_score += 1
+            reasons.append("Stoch RSI 과열")
+        if trend == "UPTREND":
+            signal_score += 1
+            reasons.append("상승 추세")
+
+    elif signal == "SELL":
+        if rsi.iloc[-1] > 60:
+            signal_score += 2
+            reasons.append("RSI > 60")
+        if macd.iloc[-1] < macd_signal.iloc[-1]:
+            signal_score += 2
+            reasons.append("MACD 데드크로스")
+        if stoch_rsi < 0.2:
+            signal_score += 1
+            reasons.append("Stoch RSI 과매도")
+        if trend == "DOWNTREND":
+            signal_score += 1
+            reasons.append("하락 추세")
             
     recent_trade_time = get_last_trade_time()
     time_since_last = datetime.utcnow() - recent_trade_time if recent_trade_time else timedelta(hours=999)
@@ -201,7 +207,7 @@ async def webhook(request: Request):
         should_execute = True
         
     if should_execute:
-        units = 50000 if decision == "BUY" else -50000
+        units = 100000 if decision == "BUY" else -100000
         digits = 3 if pair.endswith("JPY") else 5
         print(f"[DEBUG] 조건 충족 → 실제 주문 실행: {pair}, units={units}, tp={tp}, sl={sl}, digits={digits}")
         result = place_order(pair, units, tp, sl, digits)
@@ -211,7 +217,7 @@ async def webhook(request: Request):
     price_movements = []
     pnl = None
     if decision in ["BUY", "SELL"] and tp and sl:
-        units = 50000 if decision == "BUY" else -50000
+        units = 100000 if decision == "BUY" else -100000
         digits = 3 if pair.endswith("JPY") else 5
         result = place_order(pair, units, tp, sl, digits)
         print("✅ STEP 9: 주문 결과 확인 |", result)
