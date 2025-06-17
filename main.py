@@ -151,6 +151,12 @@ async def webhook(request: Request):
         gpt_feedback = analyze_with_gpt(payload)
         print("✅ STEP 6: GPT 응답 수신 완료")
         decision, _, _ = parse_gpt_feedback(gpt_feedback)  # ✅ TP/SL 무시
+        # 📌 TP/SL은 무조건 고정값으로 설정
+        pip_value = 0.01 if "JPY" in pair else 0.0001
+        tp = round(price + pip_value * 15, 5) if decision == "BUY" else round(price - pip_value * 15, 5)
+        sl = round(price - pip_value * 10, 5) if decision == "BUY" else round(price + pip_value * 10, 5)
+        gpt_feedback += "\n⚠️ TP/SL은 GPT 무시, 고정값 적용 (15pip / 10pip)"
+        
     else:
         print("🚫 GPT 분석 생략: 점수 3점 미만")
     
