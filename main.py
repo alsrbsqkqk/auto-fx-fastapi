@@ -11,27 +11,6 @@ import numpy as np
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-app = FastAPI()
-
-OANDA_API_KEY = os.getenv("OANDA_API_KEY")
-ACCOUNT_ID = os.getenv("ACCOUNT_ID")
-openai.api_key = os.getenv("OPENAI_API_KEY")
-
-
-def analyze_highs_lows(candles, window=20):
-    highs = candles['high'].tail(window).dropna()
-    lows = candles['low'].tail(window).dropna()
-
-    if highs.empty or lows.empty:
-        return {"new_high": False, "new_low": False}
-
-    new_high = highs.iloc[-1] > highs.max()
-    new_low = lows.iloc[-1] < lows.min()
-    return {
-        "new_high": new_high,
-        "new_low": new_low
-    }
-
     def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, liquidity, pattern):
         signal_score = 0
         reasons = []
@@ -76,6 +55,26 @@ def analyze_highs_lows(candles, window=20):
 
     return signal_score, reasons
 
+app = FastAPI()
+
+OANDA_API_KEY = os.getenv("OANDA_API_KEY")
+ACCOUNT_ID = os.getenv("ACCOUNT_ID")
+openai.api_key = os.getenv("OPENAI_API_KEY")
+
+
+def analyze_highs_lows(candles, window=20):
+    highs = candles['high'].tail(window).dropna()
+    lows = candles['low'].tail(window).dropna()
+
+    if highs.empty or lows.empty:
+        return {"new_high": False, "new_low": False}
+
+    new_high = highs.iloc[-1] > highs.max()
+    new_low = lows.iloc[-1] < lows.min()
+    return {
+        "new_high": new_high,
+        "new_low": new_low
+    }
 
 @app.post("/webhook")
 async def webhook(request: Request):
