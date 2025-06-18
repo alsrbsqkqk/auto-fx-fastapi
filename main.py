@@ -141,7 +141,7 @@ async def webhook(request: Request):
     gpt_feedback = "GPT 분석 생략: 점수 미달"
     decision, tp, sl = "WAIT", None, None
 
-    if signal_score >= 3:
+    if signal_score >= 4:
         gpt_feedback = analyze_with_gpt(payload)
         print("✅ STEP 6: GPT 응답 수신 완료")
         decision, tp, sl = parse_gpt_feedback(gpt_feedback)
@@ -195,9 +195,8 @@ async def webhook(request: Request):
         should_execute = True
 
     # 2️⃣ 조건부 진입: 최근 2시간 거래 없으면 점수 4점 미만이어도 진입 허용
-    elif allow_conditional_trade:
-        decision = signal
-        gpt_feedback += "\n⚠️ 조건부 진입: 최근 2시간 거래 없음 → 점수 기준 완화"
+    elif allow_conditional_trade and signal_score >= 4 and decision in ["BUY", "SELL"]:
+        gpt_feedback += "\n⚠️ 조건부 진입: 최근 2시간 거래 없음 → 4점 이상 기준 만족하여 진입 허용"
         should_execute = True
         
     if should_execute:
