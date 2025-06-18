@@ -311,9 +311,8 @@ def get_candles(pair, granularity, count):
     candles = r.json().get("candles", [])
 
     if not candles:
-        return pd.DataFrame([
-            {"time": None, "open": None, "high": None, "low": None, "close": None, "volume": None}   
-        ])
+        return pd.DataFrame(columns=["time", "open", "high", "low", "close", "volume"])
+         
     return pd.DataFrame([
         {
             "time": c["time"],
@@ -363,7 +362,13 @@ def detect_trend(candles, rsi, mid_band):
     return "NEUTRAL"
 
 def detect_candle_pattern(candles):
+    if candles is None or candles.empty:
+        return "NEUTRAL"
+
     last = candles.iloc[-1]
+    if pd.isna(last['open']) or pd.isna(last['close']) or pd.isna(last['high']) or pd.isna(last['low']):
+        return "NEUTRAL"
+
     body = abs(last['close'] - last['open'])
     upper_wick = last['high'] - max(last['close'], last['open'])
     lower_wick = min(last['close'], last['open']) - last['low']
