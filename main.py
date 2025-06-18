@@ -502,17 +502,6 @@ def estimate_liquidity(candles):
         return "낮음" # 데이터 없으면 유동성 낮다고 판단
     return "좋음" if recent_volumes.mean() > 100 else "낮음"
 
-def fetch_forex_news():
-    try:
-        response = requests.get("https://www.forexfactory.com/", timeout=5)
-        # 응답 상태 코드 확인
-        response.raise_for_status() 
-        if "High Impact Expected" in response.text:
-            return "⚠️ 고위험 뉴스 존재"
-        return "🟢 뉴스 영향 적음"
-    except requests.exceptions.RequestException as e:
-        print(f"❗ 뉴스 확인 실패: {e}")
-        return "❓ 뉴스 확인 실패"
 
 def place_order(pair, units, tp, sl, digits):
     url = f"https://api-fxpractice.oanda.com/v3/accounts/{ACCOUNT_ID}/orders"
