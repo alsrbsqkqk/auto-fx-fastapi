@@ -121,16 +121,20 @@ async def webhook(request: Request):
 
     candles = get_candles(pair, "M30", 250)
     print("✅ STEP 4: 캔들 데이터 수신")
-    # ✅ 최근 10봉 기준으로 지지선/저항선 다시 설정
+    
+    # --- 이 부분이 중요합니다! candles가 유효한지 먼저 확인합니다. ---
+    if candles is None or candles.empty:
+        print("❌ 캔들 데이터를 불러올 수 없습니다. 요청 중단.")
+        return JSONResponse(content={"error": "캔들 데이터를 불러올 수 없음"}, status_code=400)
+    # --- 여기까지 확인 ---
+
+    # ✅ 최근 10봉 기준으로 지지선/저항선 다시 설정 (이제 candles가 None일 걱정 없음)
     candles_recent = candles.tail(10)
     support_resistance = {
         "support": candles_recent["low"].min(),
         "resistance": candles_recent["high"].max()
     }
     
-    if candles is None or candles.empty:
-        return JSONResponse(content={"error": "캔들 데이터를 불러올 수 없음"}, status_code=400)
-
     close = candles["close"]
 
     if len(close.dropna()) < 20:
