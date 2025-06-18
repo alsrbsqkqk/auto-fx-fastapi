@@ -345,14 +345,15 @@ def calculate_atr(candles, window=14):
     atr = tr.ewm(span=window, adjust=False).mean()
     return atr.iloc[-1]
 
-# --- 스프레드시트 기록 함수 (인자 및 row 구성 수정) ---
+# --- 스프레드시트 기록 함수 (최종 수정 버전) ---
 def log_trade_result(
     trade_time, pair, tradingview_signal, decision, signal_score,
-    reasons, result, rsi, macd, stoch_rsi,
-    bollinger_upper, bollinger_lower, # Boll Bands 인자 추가
+    result, # 'reasons' 인자 제거됨
+    rsi, macd, stoch_rsi,
+    bollinger_upper, bollinger_lower, # Boll Bands 인자
     pattern, trend, liquidity, support, resistance, news,
     gpt_feedback, # gpt_feedback 위치 조정
-    alert_name, tp, sl, price, pnl, notes, # notes 인자 추가
+    alert_name, tp, sl, price, pnl, notes, # notes 인자
     outcome_analysis, adjustment_suggestion, price_movements_str, # price_movements_str 인자
     atr
 ):
@@ -363,12 +364,11 @@ def log_trade_result(
     try:
         trade_time_str = trade_time.strftime("%Y-%m-%d %H:%M:%S")
 
-        # pnl (손익) 값 유효성 검사 및 float 변환
         if pnl is not None:
             try:
                 pnl = float(pnl)
             except ValueError:
-                pnl = None # float 변환 실패 시 None
+                pnl = None
 
         # 안전하게 float 값 처리 (NaN, None, 비숫자 문자열 등 처리)
         def safe_float(value):
@@ -388,6 +388,7 @@ def log_trade_result(
             tradingview_signal,                                # 2: TradingView 신호
             decision,                                          # 3: 최종 결정 (BUY/SELL/WAIT)
             signal_score,                                      # 4: 신호 점수
+            # reasons 필드 제거 (GPT feedback이 핵심 정보로 대체)
             f"RSI: {round(rsi, 2) if not math.isnan(rsi) else 'N/A'}", # 5: RSI
             f"MACD: {round(macd, 5) if not math.isnan(macd) else 'N/A'}", # 6: MACD
             f"StochRSI: {round(stoch_rsi, 5) if not math.isnan(stoch_rsi) else 'N/A'}", # 7: StochRSI
@@ -400,7 +401,6 @@ def log_trade_result(
             safe_float(resistance),                            # 14: 저항선
             news,                                              # 15: 뉴스 영향
             
-            # --- result (주문 결과) 처리 ---
             json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else str(result or ""), # 16: 주문 결과 (JSON 문자열 또는 문자열)
             
             gpt_feedback or "",                                # 17: GPT 분석 결과 (GPT가 제공한 원본 피드백)
@@ -467,12 +467,13 @@ async def webhook(request: Request):
         # 모든 지표 관련 인자를 NaN 또는 기본값으로 넘깁니다.
         log_trade_result(
             trade_time, pair, data.get("signal", "N/A"), "WAIT", 0,
-            ["가격 파싱 실패"], {}, float('nan'), float('nan'), float('nan'),
+            {}, # result (빈 딕셔너리) <-- reasons 제거 후 위치 조정
+            float('nan'), float('nan'), float('nan'), # rsi, macd, stoch_rsi
             float('nan'), float('nan'), # bollinger_upper, bollinger_lower
-            "N/A", "N/A", "N/A", float('nan'), float('nan'), "가격 파싱 실패",
-            "[DECISION]: WAIT\nAnalysis: 가격 파싱 실패로 분석 불가.",
-            data.get("alert_name", "N/A"), float('nan'), float('nan'), float('nan'), None, "가격 파싱 오류",
-            "가격 파싱 오류", "가격 데이터 확인 필요", "", float('nan') # price_movements_str, atr
+            "N/A", "N/A", "N/A", float('nan'), float('nan'), "가격 파싱 실패", # pattern, trend, liquidity, support, resistance, news
+            "[DECISION]: WAIT\nAnalysis: 가격 파싱 실패로 분석 불가.", # gpt_feedback
+            data.get("alert_name", "N/A"), float('nan'), float('nan'), float('nan'), None, "가격 파싱 오류", # alert_name, tp, sl, price, pnl, notes
+            "가격 파싱 오류", "가격 데이터 확인 필요", "", float('nan') # outcome_analysis, adjustment_suggestion, price_movements_str, atr
         )
         return JSONResponse(content={"status": "error", "message": "유효하지 않은 가격"})
 
@@ -527,7 +528,8 @@ async def webhook(request: Request):
         # 캔들 데이터가 없어서 처리 중단 시에도 스프레드시트에 기록
         log_trade_result(
             trade_time, pair, signal, "WAIT", 0,
-            ["캔들 데이터 없음"], {}, latest_rsi, latest_macd, latest_stoch_k,
+            {}, # result (빈 딕셔너리)
+            latest_rsi, latest_macd, latest_stoch_k, # rsi, macd, stoch_rsi
             latest_bollinger_upper, latest_bollinger_lower, # NaN 값으로 전달
             pattern, trend, liquidity, fibo_levels.get("support", float('nan')), fibo_levels.get("resistance", float('nan')), news_impact,
             "[DECISION]: WAIT\nAnalysis: 캔들 데이터를 불러올 수 없어 분석을 진행할 수 없습니다.",
@@ -618,35 +620,34 @@ async def webhook(request: Request):
 
     print(f"✅ STEP 10: 전략 요약 저장 호출 | decision: {decision}, TP: {tp}, SL: {sl}")
     log_trade_result(
-        trade_time,                       # 0 trade_time
-        pair,                             # 1 pair
-        signal,                           # 2 tradingview_signal
-        decision,                         # 3 decision (from GPT)
-        0,                                # 4 signal_score (임시 0, TradingView 신호 점수 필요시 추가)
-        [],                               # 5 reasons (reasons는 log_trade_result 내부에서 사용되므로 여기서는 빈 리스트 또는 적절한 값)
-        result,                           # 6 result (order execution info)
-        latest_rsi,                       # 7 rsi
-        latest_macd,                      # 8 macd
-        latest_stoch_k,                   # 9 stoch_rsi
-        latest_bollinger_upper,           # 10 bollinger_upper
-        latest_bollinger_lower,           # 11 bollinger_lower
-        pattern,                          # 12 pattern
-        trend,                            # 13 trend
-        liquidity,                        # 14 liquidity
-        fibo_levels.get("support", float('nan')), # 15 support
-        fibo_levels.get("resistance", float('nan')), # 16 resistance
-        news_impact,                      # 17 news
-        gpt_feedback,                     # 18 gpt_feedback
-        alert_name,                       # 19 alert_name
-        tp,                               # 20 tp
-        sl,                               # 21 sl
-        price,                            # 22 price (current)
-        pnl,                              # 23 pnl
-        "알림 완료",                     # 24 notes ("알림 완료" 기본값)
-        outcome_analysis,                 # 25 outcome_analysis
-        adjustment_suggestion,            # 26 adjustment_suggestion
-        price_movements_str,              # 27 price_movements_str
-        atr_val                           # 28 atr
+        trade_time,                       # trade_time
+        pair,                             # pair
+        signal,                           # tradingview_signal
+        decision,                         # decision (from GPT)
+        0,                                # signal_score (임시 0, TradingView 신호 점수 필요시 추가)
+        result,                           # result (order execution info)
+        latest_rsi,                       # rsi
+        latest_macd,                      # macd
+        latest_stoch_k,                   # stoch_rsi
+        latest_bollinger_upper,           # bollinger_upper
+        latest_bollinger_lower,           # bollinger_lower
+        pattern,                          # pattern
+        trend,                            # trend
+        liquidity,                        # liquidity
+        fibo_levels.get("support", float('nan')), # support
+        fibo_levels.get("resistance", float('nan')), # resistance
+        news_impact,                      # news
+        gpt_feedback,                     # gpt_feedback
+        alert_name,                       # alert_name
+        tp,                               # tp
+        sl,                               # sl
+        price,                            # price (current)
+        pnl,                              # pnl
+        "알림 완료",                     # notes ("알림 완료" 기본값)
+        outcome_analysis,                 # outcome_analysis
+        adjustment_suggestion,            # adjustment_suggestion
+        price_movements_str,              # price_movements_str
+        atr_val                           # atr
     )
     
     return JSONResponse(content={"status": "completed", "decision": decision})
