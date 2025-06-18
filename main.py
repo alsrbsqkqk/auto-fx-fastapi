@@ -78,7 +78,7 @@ def analyze_highs_lows(candles, window=20):
 @app.post("/webhook")
 async def webhook(request: Request):
     print("✅ STEP 1: 웹훅 진입")
-        try:
+     try:
         raw_body = await request.body()
         print(f"DEBUG: 수신된 웹훅 Raw Body: {raw_body.decode('utf-8')}") # 웹훅 원본 내용 로그
         data = json.loads(raw_body)
