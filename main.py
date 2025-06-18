@@ -565,7 +565,7 @@ def analyze_with_gpt(payload):
         {"role": "system", "content": """You are an expert forex trader AI. Analyze the provided market data and indicators to provide a trading decision (BUY, SELL, or WAIT) for the given currency pair.
         Always start your response with [DECISION]: BUY/SELL/WAIT.
         Then, provide a detailed analysis explaining your decision based on the provided indicators and market context.
-        If you decide BUY or SELL, suggest a Take Profit (TP) and Stop Loss (SL) level in pips.
+        If you decide BUY or SELL, suggest a Take Profit (TP) and Stop Loss (SL) level in pips. 너의 모든 분석은 한글로 답변해.
         Consider these factors:
         - Signal: The initial signal (BUY/SELL) from TradingView.
         - Price: Current market price.
