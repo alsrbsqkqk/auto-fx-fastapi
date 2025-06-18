@@ -115,8 +115,8 @@ async def webhook(request: Request):
     trend, signal, liquidity, pattern
     )
     def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, liquidity, pattern):
-    signal_score = 0
-    reasons = []
+        signal_score = 0
+        reasons = []
 
     if rsi < 30:
         if pattern in ["HAMMER", "BULLISH_ENGULFING"]:
