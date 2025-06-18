@@ -381,6 +381,12 @@ def log_trade_result(
             except (ValueError, TypeError):
                 return float('nan') # 에러 발생 시 NaN 반환
 
+        # 지표 값을 문자열로 포맷팅하는 헬퍼 함수
+        def format_indicator(value, decimal_places=2):
+            if isinstance(value, (float, int)) and not math.isnan(value) and not math.isinf(value):
+                return str(round(value, decimal_places))
+            return "N/A" # NaN, Inf, None 등 유효하지 않은 값 처리
+
         # 스프레드시트에 기록될 행 데이터 구성 (순서 매우 중요)
         row = [
             trade_time_str,                                    # 0: 거래 시간
@@ -388,32 +394,31 @@ def log_trade_result(
             tradingview_signal,                                # 2: TradingView 신호
             decision,                                          # 3: 최종 결정 (BUY/SELL/WAIT)
             signal_score,                                      # 4: 신호 점수
-            # reasons 필드 제거 (GPT feedback이 핵심 정보로 대체)
-            f"RSI: {round(rsi, 2) if not math.isnan(rsi) else 'N/A'}", # 5: RSI
-            f"MACD: {round(macd, 5) if not math.isnan(macd) else 'N/A'}", # 6: MACD
-            f"StochRSI: {round(stoch_rsi, 5) if not math.isnan(stoch_rsi) else 'N/A'}", # 7: StochRSI
-            f"BOLL U: {round(bollinger_upper, 5) if not math.isnan(bollinger_upper) else 'N/A'}", # 8: Boll_Upper
-            f"BOLL L: {round(bollinger_lower, 5) if not math.isnan(bollinger_lower) else 'N/A'}", # 9: Boll_Lower
+            f"RSI: {format_indicator(rsi, 2)}",                # 5: RSI
+            f"MACD: {format_indicator(macd, 5)}",              # 6: MACD
+            f"StochRSI: {format_indicator(stoch_rsi, 5)}",     # 7: StochRSI
+            f"BOLL U: {format_indicator(bollinger_upper, 5)}", # 8: Boll_Upper
+            f"BOLL L: {format_indicator(bollinger_lower, 5)}", # 9: Boll_Lower
             pattern,                                           # 10: 패턴
             trend,                                             # 11: 트렌드
             liquidity,                                         # 12: 유동성
-            safe_float(support),                               # 13: 지지선
-            safe_float(resistance),                            # 14: 저항선
+            format_indicator(safe_float(support), 5),          # 13: 지지선
+            format_indicator(safe_float(resistance), 5),       # 14: 저항선
             news,                                              # 15: 뉴스 영향
             
             json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else str(result or ""), # 16: 주문 결과 (JSON 문자열 또는 문자열)
             
             gpt_feedback or "",                                # 17: GPT 분석 결과 (GPT가 제공한 원본 피드백)
             alert_name,                                        # 18: 알림 이름
-            safe_float(tp),                                    # 19: TP
-            safe_float(sl),                                    # 20: SL
-            safe_float(price),                                 # 21: 현재 가격
-            safe_float(pnl),                                   # 22: 실현 손익 (PNL)
+            format_indicator(safe_float(tp), 5),               # 19: TP
+            format_indicator(safe_float(sl), 5),               # 20: SL
+            format_indicator(safe_float(price), 5),            # 21: 현재 가격
+            format_indicator(safe_float(pnl), 2),              # 22: 실현 손익 (PNL)
             notes or "",                                       # 23: 비고 (Notes)
             outcome_analysis or "",                            # 24: 결과 분석 (내부 로직)
             adjustment_suggestion or "",                       # 25: 조정 제안
             price_movements_str,                               # 26: 가격 변동 (JSON 문자열)
-            safe_float(atr)                                    # 27: ATR
+            format_indicator(safe_float(atr), 5)               # 27: ATR
         ]
 
         # 모든 요소를 스프레드시트가 인식할 수 있는 문자열 또는 숫자 형식으로 변환 (강제 변환)
@@ -467,7 +472,7 @@ async def webhook(request: Request):
         # 모든 지표 관련 인자를 NaN 또는 기본값으로 넘깁니다.
         log_trade_result(
             trade_time, pair, data.get("signal", "N/A"), "WAIT", 0,
-            {}, # result (빈 딕셔너리) <-- reasons 제거 후 위치 조정
+            {}, # result (빈 딕셔너리)
             float('nan'), float('nan'), float('nan'), # rsi, macd, stoch_rsi
             float('nan'), float('nan'), # bollinger_upper, bollinger_lower
             "N/A", "N/A", "N/A", float('nan'), float('nan'), "가격 파싱 실패", # pattern, trend, liquidity, support, resistance, news
@@ -651,6 +656,7 @@ async def webhook(request: Request):
     )
     
     return JSONResponse(content={"status": "completed", "decision": decision})
+
 
 
 
