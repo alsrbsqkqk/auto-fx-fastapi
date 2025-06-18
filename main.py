@@ -78,8 +78,22 @@ def analyze_highs_lows(candles, window=20):
 @app.post("/webhook")
 async def webhook(request: Request):
     print("✅ STEP 1: 웹훅 진입")
-    data = json.loads(await request.body())
-    pair = data.get("pair")
+        try:
+        raw_body = await request.body()
+        print(f"DEBUG: 수신된 웹훅 Raw Body: {raw_body.decode('utf-8')}") # 웹훅 원본 내용 로그
+        data = json.loads(raw_body)
+    except json.JSONDecodeError as e:
+        print(f"❌ JSON 파싱 실패: {e} | Raw Body 내용: {raw_body.decode('utf-8')}")
+        return JSONResponse(
+            content={"error": f"유효하지 않은 JSON 페이로드: {e}"},
+            status_code=400
+        )
+    except Exception as e:
+        print(f"❌ 웹훅 요청 처리 중 예상치 못한 초기 오류 발생: {e}")
+        return JSONResponse(
+            content={"error": f"웹훅 처리 중 예상치 못한 오류: {e}"},
+            status_code=400
+        )
     print(f"✅ STEP 2: 데이터 수신 완료 | pair: {pair}")
 
     price_raw = data.get("price")
