@@ -110,29 +110,53 @@ async def webhook(request: Request):
         "new_low": bool(high_low_analysis["new_low"]),
         "atr": atr
     }
+    signal_score, reasons = score_signal_with_filters(
+    rsi.iloc[-1], macd.iloc[-1], macd_signal.iloc[-1], stoch_rsi,
+    trend, signal, liquidity, pattern
+    )
+    def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, liquidity, pattern):
     signal_score = 0
     reasons = []
-    if rsi.iloc[-1] < 30:
-        signal_score += 2
-        reasons.append("RSI < 30")
-    if macd.iloc[-1] > macd_signal.iloc[-1]:
+
+    if rsi < 30:
+        if pattern in ["HAMMER", "BULLISH_ENGULFING"]:
+            signal_score += 2
+            reasons.append("RSI < 30 + 캔들 패턴 확인")
+        else:
+            reasons.append("RSI < 30 but 캔들 패턴 없음 → 관망")
+
+    if rsi > 70:
+        if pattern in ["SHOOTING_STAR", "BEARISH_ENGULFING"]:
+            signal_score += 2
+            reasons.append("RSI > 70 + 캔들 패턴 확인")
+        else:
+            reasons.append("RSI > 70 but 캔들 패턴 없음 → 관망")
+
+    if macd > macd_signal:
         signal_score += 2
         reasons.append("MACD 골든크로스")
+
     if stoch_rsi > 0.8:
         signal_score += 1
         reasons.append("Stoch RSI 과열")
+
     if trend == "UPTREND" and signal == "BUY":
         signal_score += 1
         reasons.append("추세 상승 + 매수 일치")
+
     if trend == "DOWNTREND" and signal == "SELL":
         signal_score += 1
         reasons.append("추세 하락 + 매도 일치")
+
     if liquidity == "좋음":
         signal_score += 1
         reasons.append("유동성 좋음")
-    if pattern in ["HAMMER", "BULLISH_ENGULFING"]:
+
+    if pattern in ["HAMMER", "BULLISH_ENGULFING", "SHOOTING_STAR", "BEARISH_ENGULFING"]:
         signal_score += 1
-        reasons.append(f"캔들패턴: {pattern}")
+        reasons.append(f"캔들패턴 추가 가점: {pattern}")
+
+    return signal_score, reasons
             
     recent_trade_time = get_last_trade_time()
     time_since_last = datetime.utcnow() - recent_trade_time if recent_trade_time else timedelta(hours=999)
@@ -339,6 +363,15 @@ def detect_trend(candles, rsi, mid_band):
     return "NEUTRAL"
 
 def detect_candle_pattern(candles):
+    last = candles.iloc[-1]
+    body = abs(last['close'] - last['open'])
+    upper_wick = last['high'] - max(last['close'], last['open'])
+    lower_wick = min(last['close'], last['open']) - last['low']
+
+    if lower_wick > 2 * body and upper_wick < body:
+        return "HAMMER"
+    elif upper_wick > 2 * body and lower_wick < body:
+        return "SHOOTING_STAR"
     return "NEUTRAL"
 
 def estimate_liquidity(candles):
