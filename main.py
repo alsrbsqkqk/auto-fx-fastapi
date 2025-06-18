@@ -364,30 +364,47 @@ def calculate_fibonacci_levels(high, low):
 
 def get_candles(pair, granularity, count):
     url = f"https://api-fxpractice.oanda.com/v3/instruments/{pair}/candles"
-    headers = {"Authorization": f"Bearer {OANDA_API_KEY}"}
+    # OANDA_API_KEY와 ACCOUNT_ID는 환경 변수에서 가져오므로, 파일 상단에 import os 가 있는지 확인해주세요.
+    # 만약 없다면, 파일 맨 위쪽에 'import os' 줄을 추가해주세요.
+    headers = {"Authorization": f"Bearer {os.getenv('OANDA_API_KEY')}"}
     params = {"granularity": granularity, "count": count, "price": "M"}
-    r = requests.get(url, headers=headers, params=params)
-    candles = r.json().get("candles", [])
-
-    if not candles:
-        print(f"⚠️ {pair} 캔들 데이터 없음.")
-        # 빈 DataFrame 대신 None을 반환하여 상위 호출자에서 처리하도록 함
-        return None 
     
-    df = pd.DataFrame([
-        {
-            "time": c["time"],
-            "open": float(c["mid"]["o"]),
-            "high": float(c["mid"]["h"]),
-            "low": float(c["mid"]["l"]),
-            "close": float(c["mid"]["c"]),
-            "volume": c.get("volume", 0)
-        }
-        for c in candles
-    ])
-    # 시간 필드를 datetime 객체로 변환 (필요시)
-    df['time'] = pd.to_datetime(df['time'])
-    return df
+    print(f"DEBUG: OANDA API 요청 URL: {url}")
+    print(f"DEBUG: OANDA API 요청 헤더: {{'Authorization': 'Bearer <숨김>', 'Content-Type': 'application/json'}}")
+    print(f"DEBUG: OANDA API 요청 파라미터: {params}")
+    
+    try:
+        r = requests.get(url, headers=headers, params=params)
+        r.raise_for_status() # HTTP 오류가 발생하면 예외를 발생시킵니다.
+        
+        print(f"DEBUG: OANDA API 응답 상태 코드: {r.status_code}")
+        print(f"DEBUG: OANDA API 응답 본문: {r.text[:500]}...") # 응답 내용 일부만 출력
+        
+        candles_data = r.json().get("candles", [])
+        if not candles_data:
+            print(f"WARNING: OANDA API에서 {pair} 캔들 데이터가 없습니다. 빈 DataFrame 반환.")
+            return pd.DataFrame() # 빈 DataFrame 반환
+        
+        df = pd.DataFrame(candles_data)
+        df["time"] = pd.to_datetime(df["time"])
+        df["open"] = df["mid"].apply(lambda x: float(x["o"]))
+        df["high"] = df["mid"].apply(lambda x: float(x["h"]))
+        df["low"] = df["mid"].apply(lambda x: float(x["l"]))
+        df["close"] = df["mid"].apply(lambda x: float(x["c"]))
+        df["volume"] = df["volume"].astype(int)
+        df = df[["time", "open", "high", "low", "close", "volume"]]
+        return df
+    except requests.exceptions.RequestException as e:
+        print(f"ERROR: OANDA API 요청 중 오류 발생: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            print(f"ERROR: OANDA API 응답: {e.response.text}")
+        return None # 오류 발생 시 None 반환
+    except json.JSONDecodeError as e:
+        print(f"ERROR: OANDA API 응답 JSON 디코딩 실패: {e} | 응답 텍스트: {r.text[:500]}...")
+        return None
+    except Exception as e:
+        print(f"ERROR: get_candles 함수에서 알 수 없는 오류 발생: {e}")
+        return None
 
 def calculate_rsi(series, period=14):
     delta = series.diff()
