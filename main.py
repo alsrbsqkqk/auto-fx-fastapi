@@ -11,49 +11,49 @@ import numpy as np
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-    def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, liquidity, pattern):
-        signal_score = 0
-        reasons = []
+def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, liquidity, pattern):
+    signal_score = 0
+    reasons = []
 
-        if rsi < 30:
-            if pattern in ["HAMMER", "BULLISH_ENGULFING"]:
-                signal_score += 2
-                reasons.append("RSI < 30 + 캔들 패턴 확인")
-            else:
-                reasons.append("RSI < 30 but 캔들 패턴 없음 → 관망")
-
-        if rsi > 70:
-            if pattern in ["SHOOTING_STAR", "BEARISH_ENGULFING"]:
-                signal_score += 2
-                reasons.append("RSI > 70 + 캔들 패턴 확인")
-            else:
-                reasons.append("RSI > 70 but 캔들 패턴 없음 → 관망")
-
-        if macd > macd_signal:
+    if rsi < 30:
+        if pattern in ["HAMMER", "BULLISH_ENGULFING"]:
             signal_score += 2
-            reasons.append("MACD 골든크로스")
+            reasons.append("RSI < 30 + 캔들 패턴 확인")
+        else:
+            reasons.append("RSI < 30 but 캔들 패턴 없음 → 관망")
 
-        if stoch_rsi > 0.8:
-            signal_score += 1
-            reasons.append("Stoch RSI 과열")
+    if rsi > 70:
+        if pattern in ["SHOOTING_STAR", "BEARISH_ENGULFING"]:
+            signal_score += 2
+            reasons.append("RSI > 70 + 캔들 패턴 확인")
+        else:
+            reasons.append("RSI > 70 but 캔들 패턴 없음 → 관망")
 
-        if trend == "UPTREND" and signal == "BUY":
-            signal_score += 1
-            reasons.append("추세 상승 + 매수 일치")
+    if macd > macd_signal:
+        signal_score += 2
+        reasons.append("MACD 골든크로스")
 
-        if trend == "DOWNTREND" and signal == "SELL":
-            signal_score += 1
-            reasons.append("추세 하락 + 매도 일치")
+    if stoch_rsi > 0.8:
+        signal_score += 1
+        reasons.append("Stoch RSI 과열")
 
-        if liquidity == "좋음":
-            signal_score += 1
-            reasons.append("유동성 좋음")
+    if trend == "UPTREND" and signal == "BUY":
+        signal_score += 1
+        reasons.append("추세 상승 + 매수 일치")
 
-        if pattern in ["HAMMER", "BULLISH_ENGULFING", "SHOOTING_STAR", "BEARISH_ENGULFING"]:
-            signal_score += 1
-            reasons.append(f"캔들패턴 추가 가점: {pattern}")
+    if trend == "DOWNTREND" and signal == "SELL":
+        signal_score += 1
+        reasons.append("추세 하락 + 매도 일치")
 
-        return signal_score, reasons
+    if liquidity == "좋음":
+        signal_score += 1
+        reasons.append("유동성 좋음")
+
+    if pattern in ["HAMMER", "BULLISH_ENGULFING", "SHOOTING_STAR", "BEARISH_ENGULFING"]:
+        signal_score += 1
+        reasons.append(f"캔들패턴 추가 가점: {pattern}")
+
+    return signal_score, reasons
 
 app = FastAPI()
 
