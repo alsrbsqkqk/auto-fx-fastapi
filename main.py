@@ -27,6 +27,7 @@ STRATEGY_SETTINGS_SHEET_NAME = os.getenv("STRATEGY_SETTINGS_SHEET_NAME", "Strate
 def get_google_sheet_client():
     """Google Sheet API 클라이언트를 인증하고 반환합니다."""
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    # Render 환경 변수를 통해 인증 정보 파일 경로 설정
     creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
     client = gspread.authorize(creds)
     return client
@@ -514,4 +515,260 @@ def detect_candle_pattern(candles):
 def estimate_liquidity(candles):
     if candles.empty or "volume" not in candles.columns:
         return "확인불가"
-    # 최근
+    # 최근 10봉의 volume 데이터가 충분한지 확인
+    recent_volumes = candles["volume"].tail(10).dropna()
+    if recent_volumes.empty:
+        return "낮음" # 데이터 없으면 유동성 낮다고 판단
+    return "좋음" if recent_volumes.mean() > 100 else "낮음"
+
+def fetch_forex_news():
+    try:
+        response = requests.get("https://www.forexfactory.com/", timeout=5)
+        # 응답 상태 코드 확인
+        response.raise_for_status() 
+        if "High Impact Expected" in response.text:
+            return "⚠️ 고위험 뉴스 존재"
+        return "🟢 뉴스 영향 적음"
+    except requests.exceptions.RequestException as e:
+        print(f"❗ 뉴스 확인 실패: {e}")
+        return "❓ 뉴스 확인 실패"
+
+def place_order(pair, units, tp, sl, digits):
+    url = f"https://api-fxpractice.oanda.com/v3/accounts/{ACCOUNT_ID}/orders"
+    headers = {
+        "Authorization": f"Bearer {OANDA_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    # TP/SL이 None이거나 유효하지 않은 값일 경우 None으로 설정하여 주문 요청에 포함시키지 않음
+    if tp is None or math.isnan(tp) or math.isinf(tp):
+        take_profit_order_details = None
+    else:
+        take_profit_order_details = {"price": str(tp)}
+
+    if sl is None or math.isnan(sl) or math.isinf(sl):
+        stop_loss_order_details = None
+    else:
+        stop_loss_order_details = {"price": str(sl)}
+
+    data = {
+        "order": {
+            "instrument": pair,
+            "units": str(units),
+            "type": "MARKET",
+            "positionFill": "DEFAULT"
+        }
+    }
+
+    if take_profit_order_details:
+        data["order"]["takeProfitOnFill"] = take_profit_order_details
+    if stop_loss_order_details:
+        data["order"]["stopLossOnFill"] = stop_loss_order_details
+
+    try:
+        response = requests.post(url, headers=headers, json=data, timeout=10)
+        response.raise_for_status()  # 200 이외의 상태 코드를 받으면 예외 발생
+        print(f"OANDA 응답: {response.json()}")
+        return {"status": "order_placed", "details": response.json()}
+    except requests.exceptions.RequestException as e:
+        print(f"❌ OANDA 주문 실패: {e}")
+        if response is not None:
+            print(f"OANDA 에러 응답: {response.text}")
+        return {"status": "order_failed", "error": str(e), "response": response.text if response is not None else "No response"}
+    except Exception as e:
+        print(f"❌ 예외 발생: {e}")
+        return {"status": "order_failed", "error": str(e)}
+
+def analyze_with_gpt(payload):
+    prompt_messages = [
+        {"role": "system", "content": """You are an expert forex trader AI. Analyze the provided market data and indicators to provide a trading decision (BUY, SELL, or WAIT) for the given currency pair.
+        Always start your response with [DECISION]: BUY/SELL/WAIT.
+        Then, provide a detailed analysis explaining your decision based on the provided indicators and market context.
+        If you decide BUY or SELL, suggest a Take Profit (TP) and Stop Loss (SL) level in pips.
+        Consider these factors:
+        - Signal: The initial signal (BUY/SELL) from TradingView.
+        - Price: Current market price.
+        - RSI: Overbought/oversold conditions.
+        - MACD: Momentum and trend changes (crosses, divergence).
+        - Stoch RSI: Confirmation of momentum, particularly overbought/oversold.
+        - Bollinger Bands: Volatility and potential reversals (price relative to bands).
+        - Pattern: Candle patterns (e.g., NEUTRAL, bullish/bearish patterns).
+        - Trend: Overall trend (UPTREND, DOWNTREND, NEUTRAL).
+        - Liquidity: Market liquidity (e.g., '좋음', '낮음', '확인불가').
+        - Support/Resistance: Key price levels.
+        - News: Impact of upcoming news (e.g., '고위험 뉴스 존재', '뉴스 영향 적음', '뉴스 확인 실패').
+        - New High/Low: Whether the current price is a new high or low in the recent window.
+        - ATR: Average True Range, for volatility and potential TP/SL sizing.
+        
+        Example Output:
+        [DECISION]: BUY
+        Analysis: The market shows a strong uptrend (UPTREND) with RSI at 30 (oversold, suggesting potential bounce). MACD has just crossed above its signal line (MACD Golden Cross), indicating bullish momentum. Price is near the lower Bollinger Band, hinting at a rebound. No high-impact news. New low indicates potential reversal. ATR is 0.0010.
+        TP_PIPS: 20
+        SL_PIPS: 10
+        """},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}
+    ]
+
+    try:
+        response = openai.chat.completions.create(
+            model="gpt-4o", # 또는 "gpt-4", "gpt-3.5-turbo" 등 사용 가능한 모델
+            messages=prompt_messages,
+            temperature=0.7,
+            max_tokens=500,
+            timeout=30 # 30초 타임아웃 설정
+        )
+        gpt_response_content = response.choices[0].message.content
+        print(f"✅ GPT 원본 응답: {gpt_response_content}")
+        return gpt_response_content
+    except openai.APITimeoutError:
+        print("❌ OpenAI API Timeout Error: 요청 시간 초과")
+        return "[DECISION]: WAIT\nAnalysis: OpenAI API 요청 시간 초과."
+    except openai.APIConnectionError as e:
+        print(f"❌ OpenAI API Connection Error: {e}")
+        return f"[DECISION]: WAIT\nAnalysis: OpenAI API 연결 오류: {e}"
+    except openai.APIStatusError as e:
+        print(f"❌ OpenAI API Status Error: {e.status_code} - {e.response}")
+        return f"[DECISION]: WAIT\nAnalysis: OpenAI API 상태 오류: {e.status_code}"
+    except Exception as e:
+        print(f"❌ GPT 분석 중 예외 발생: {e}")
+        return "[DECISION]: WAIT\nAnalysis: GPT 분석 중 알 수 없는 오류 발생."
+
+def parse_gpt_feedback(gpt_response):
+    decision = "WAIT"
+    tp_pips = None
+    sl_pips = None
+    
+    # DECISION 파싱
+    decision_match = re.search(r"\[DECISION\]:\s*(BUY|SELL|WAIT)", gpt_response)
+    if decision_match:
+        decision = decision_match.group(1)
+
+    # TP_PIPS 파싱
+    tp_match = re.search(r"TP_PIPS:\s*(\d+)", gpt_response)
+    if tp_match:
+        tp_pips = int(tp_match.group(1))
+
+    # SL_PIPS 파싱
+    sl_match = re.search(r"SL_PIPS:\s*(\d+)", gpt_response)
+    if sl_match:
+        sl_pips = int(sl_match.group(1))
+
+    return decision, tp_pips, sl_pips
+
+# NaN, Inf 값을 안전하게 처리하여 문자열로 반환하는 헬퍼 함수
+def safe_float(value):
+    if isinstance(value, (float, np.float64)):
+        if math.isnan(value) or math.isinf(value):
+            return ""
+        return round(value, 5) # 기본 5자리 반올림
+    elif isinstance(value, pd.Series) and not value.empty:
+        return safe_float(value.iloc[-1]) # Series의 마지막 값을 처리
+    return value
+
+def log_trade_result(
+    pair, signal, decision, score, reasons, result, rsi, macd, stoch_rsi, 
+    pattern, trend, fibo, gpt_original_decision, news, gpt_feedback, 
+    alert_name, tp, sl, price, pnl, 
+    outcome_analysis, adjustment_suggestion, price_movements, atr_value
+):
+    """
+    거래 결과를 Google Sheet에 기록합니다.
+    Google Sheet 컬럼 순서에 맞게 데이터를 매핑합니다 (총 30개 컬럼).
+    """
+    client = get_google_sheet_client()
+    sheet = client.open(GOOGLE_SHEET_NAME).sheet1 # 첫 번째 시트 (기본 시트)
+
+    now_atlanta = datetime.now() + timedelta(hours=-4) # GMT-4 (애틀랜타 시간)
+
+    # is_new_high, is_new_low는 이미 high_low_analysis에서 bool 값으로 가져왔을 것이므로
+    # 직접 문자열로 변환합니다. (analyze_highs_lows 함수의 반환값)
+    # 다만 이 함수에 직접 해당 bool 값을 전달받지 않으므로 임시로 빈 문자열 처리
+    # 실제 호출 시 인자로 is_new_high_str, is_new_low_str을 받도록 변경 필요
+    # 현재는 이 함수 호출 시 해당 인자가 없으므로 "" 처리
+    is_new_high_str = ""
+    is_new_low_str = ""
+
+    # price_movements 리스트를 시트에 기록할 문자열로 변환
+    filtered_movement_str_for_sheet = ""
+    try:
+        # 최근 8개 캔들만 고려
+        filtered_movements_last_8 = price_movements[-8:] 
+        
+        movement_parts = []
+        for p in filtered_movements_last_8:
+            if isinstance(p, dict) and "high" in p and "low" in p:
+                high_val = p['high']
+                low_val = p['low']
+                
+                # float 또는 int 타입이 아니거나 NaN/Inf인 경우 건너뛰기
+                if not isinstance(high_val, (float, int)) or not isinstance(low_val, (float, int)):
+                    continue
+                if math.isnan(high_val) or math.isinf(high_val) or math.isnan(low_val) or math.isinf(low_val):
+                    continue
+                
+                movement_parts.append(f"H: {round(high_val, 5)} / L: {round(low_val, 5)}")
+        
+        filtered_movement_str_for_sheet = ", ".join(movement_parts)
+    except Exception as e:
+        print(f"❌ price_movements 변환 실패: {e}")
+        filtered_movement_str_for_sheet = "error_in_conversion"
+
+    # Google Sheet 컬럼 순서 (30개)에 맞춰 데이터 준비
+    # ⚠️ 컬럼 개수 및 매핑 정확히 확인 필요
+    row = [
+        str(now_atlanta),                              # 1. 타임스탬프
+        pair,                                          # 2. 종목
+        alert_name or "",                              # 3. 알림명
+        signal,                                        # 4. 신호
+        decision,                                      # 5. GPT 최종 결정 (WAIT/BUY/SELL)
+        score,                                         # 6. 점수 (signal_score)
+        safe_float(rsi),                               # 7. RSI
+        safe_float(macd),                              # 8. MACD
+        safe_float(stoch_rsi),                         # 9. Stoch RSI
+        pattern or "",                                 # 10. 캔들 패턴 (현재는 "NEUTRAL")
+        trend or "",                                   # 11. 추세 (UPTREND/DOWNTREND/NEUTRAL)
+        safe_float(fibo.get("0.382", "")),             # 12. FIBO 0.382
+        safe_float(fibo.get("0.618", "")),             # 13. FIBO 0.618
+        gpt_original_decision or "",                   # 14. GPT 원본 판단 (GPT가 직접 리턴한 BUY/SELL/WAIT)
+        news or "",                                    # 15. 뉴스 요약 (fetch_forex_news 결과)
+        reasons or "",                                 # 16. 조건 요약 (signal_score 이유)
+        json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else (result or "미정"), # 17. OANDA 주문 결과
+        gpt_feedback or "",                            # 18. GPT 상세 분석 (GPT가 제공하는 전체 분석 리포트 내용)
+        safe_float(price),                             # 19. 진입가
+        safe_float(tp),                                # 20. Take Profit
+        safe_float(sl),                                # 21. Stop Loss
+        safe_float(pnl),                               # 22. 실현 손익 (현재는 None, PnL 구현 필요)
+        # high_low_analysis["new_high"]와 high_low_analysis["new_low"]는 이 함수에 직접 인자로 전달되지 않으므로,
+        # 웹훅 함수에서 이 함수를 호출할 때 인자로 추가해야 합니다.
+        # 현재는 인자로 받지 않으므로 임시로 빈 문자열 처리합니다.
+        # (웹훅 호출 시점에 is_new_high_str, is_new_low_str 변수가 정의되어 있어야 함)
+        "", # 23. 신고점 (웹훅 함수에서 인자로 받아야 함)
+        "", # 24. 신저점 (웹훅 함수에서 인자로 받아야 함)
+        safe_float(atr_value),                         # 25. ATR (인자명 atr_value로 통일)
+        outcome_analysis or "",                        # 26. 거래 성과 분석
+        adjustment_suggestion or "",                   # 27. 전략 조정 제안
+        gpt_feedback or "",                            # 28. GPT 리포트 전문 (18번과 동일)
+        filtered_movement_str_for_sheet,               # 29. 최근 8봉 가격 흐름
+        ""                                             # 30. 미사용/비고
+    ]
+
+    # Google Sheets에 dict, list 타입이 직접 들어가지 않도록 문자열화
+    clean_row = []
+    for v in row:
+        if isinstance(v, (dict, list)):
+            clean_row.append(json.dumps(v, ensure_ascii=False))
+        elif isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+            clean_row.append("") # NaN 또는 Inf는 빈 문자열로
+        else:
+            clean_row.append(v)
+    
+    # 디버깅을 위해 최종 clean_row 내용 출력
+    print("✅ STEP 8: 시트 저장 직전 (clean_row):", clean_row)
+    print(f"🧪 최종 clean_row 길이: {len(clean_row)}")
+
+    try:
+        sheet.append_row(clean_row)
+        print("✅ STEP 8: Google Sheet에 성공적으로 기록됨.")
+    except Exception as e:
+        print(f"❌ Google Sheet 기록 실패: {e}")
+        # 실패 시에도 에러를 리턴하지 않고 계속 진행 (웹훅은 완료되어야 함)
