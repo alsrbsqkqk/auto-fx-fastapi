@@ -32,10 +32,16 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     if macd > macd_signal:
         signal_score += 2
         reasons.append("MACD 골든크로스")
+    if macd < macd_signal:
+        signal_score += 2
+        reasons.append("MACD 데드크로스 (하락)")
 
     if stoch_rsi > 0.8:
         signal_score += 1
         reasons.append("Stoch RSI 과열")
+    if stoch_rsi < 0.2:
+        signal_score += 1
+        reasons.append("Stoch RSI 과매도 (반등 가능성)")
 
     if trend == "UPTREND" and signal == "BUY":
         signal_score += 1
