@@ -212,8 +212,14 @@ async def webhook(request: Request):
     effective_decision = decision if decision in ["BUY", "SELL"] else signal
     if (tp is None or sl is None) and price is not None:
         pip_value = 0.01 if "JPY" in pair else 0.0001
-        tp_pips = pip_value * 15
-        sl_pips = pip_value * 10
+
+        # ATR 기반 보정 추가
+        if atr < 0.0007:
+            tp_pips = pip_value * 10
+            sl_pips = pip_value * 7
+        else:
+            tp_pips = pip_value * 15
+            sl_pips = pip_value * 10
 
         if effective_decision == "BUY":
             tp = round(price + tp_pips, 5)
@@ -222,7 +228,7 @@ async def webhook(request: Request):
             tp = round(price - tp_pips, 5)
             sl = round(price + sl_pips, 5)
 
-        gpt_feedback += "\n⚠️ TP/SL 추출 실패 → 기본값 적용 (TP: 15 pip, SL: 10 pip)"
+        gpt_feedback += "\n⚠️ TP/SL 추출 실패 → ATR 기반 기본값 적용"
 
     
     should_execute = False
