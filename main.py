@@ -469,7 +469,7 @@ def parse_gpt_feedback(text):
     sl_line = next((line for line in text.splitlines() if "SL:" in line.upper() or "SL 제안 값" in line or "손절" in line), "")
 
     def extract_avg_price(line):
-        matches = re.findall(r"[\d.]{4,}", line)
+        matches = re.findall(r"\b\d{1,3}\.\d{4,5}\b", line)  # 가격 패턴만 추출
         if len(matches) >= 2:
             return (float(matches[0]) + float(matches[1])) / 2
         elif matches:
