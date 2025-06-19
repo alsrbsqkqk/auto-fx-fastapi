@@ -459,11 +459,11 @@ def parse_gpt_feedback(text):
             decision = "SELL"
 
     # ✅ TP/SL 추출 (가장 마지막 숫자 사용)
-    tp_line = next((line for line in text.splitlines() if "TP" in line.upper() or "목표" in line), "")
-    sl_line = next((line for line in text.splitlines() if "SL" in line.upper() or "손절" in line), "")
+    tp_line = next((line for line in text.splitlines() if "TP:" in line.upper() or "TP 제안 값" in line or "목표" in line), "")
+    sl_line = next((line for line in text.splitlines() if "SL:" in line.upper() or "SL 제안 값" in line or "손절" in line), "")
 
     def extract_avg_price(line):
-        matches = re.findall(r"([\d.]{4,})", line)
+        matches = re.findall(r"[\d.]{4,}", line)
         if len(matches) >= 2:
             return (float(matches[0]) + float(matches[1])) / 2
         elif matches:
