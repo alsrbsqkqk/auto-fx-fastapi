@@ -468,7 +468,7 @@ def extract_avg_price(line):
         return (float(matches[0]) + float(matches[1])) / 2
     elif matches:
         return float(matches[0])
-     else:
+    else:
         return None
 
 tp = extract_avg_price(tp_line)
