@@ -230,7 +230,7 @@ async def webhook(request: Request):
         should_execute = True
         
     if should_execute:
-        units = 50000 if decision == "BUY" else -50000
+        units = 100000 if decision == "BUY" else -100000
         digits = 3 if pair.endswith("JPY") else 5
         print(f"[DEBUG] 조건 충족 → 실제 주문 실행: {pair}, units={units}, tp={tp}, sl={sl}, digits={digits}")
         result = place_order(pair, units, tp, sl, digits)
@@ -240,7 +240,7 @@ async def webhook(request: Request):
     price_movements = []
     pnl = None
     if decision in ["BUY", "SELL"] and tp and sl:
-        units = 50000 if decision == "BUY" else -50000
+        units = 100000 if decision == "BUY" else -100000
         digits = 3 if pair.endswith("JPY") else 5
         result = place_order(pair, units, tp, sl, digits)
         print("✅ STEP 9: 주문 결과 확인 |", result)
