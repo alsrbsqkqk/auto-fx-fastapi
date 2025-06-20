@@ -760,6 +760,42 @@ async def fastfury_webhook(request: Request):
     print(f"✅ FAST FURY ALGO 진입: {pair} | {signal} | {price}")
 
     # 👉 여기에 GPT 간이필터 또는 본 전략 로직 연결 가능
+    # ✅ 보조지표 계산 시작 (15분봉 기준)
+    candles = get_candles(pair, "M15", 100)
+    close = candles["close"]
+
+    rsi = calculate_rsi(close)
+    macd, macd_signal = calculate_macd(close)
+    stoch_rsi_series = calculate_stoch_rsi(rsi)
+    stoch_rsi = stoch_rsi_series.dropna().iloc[-1] if not stoch_rsi_series.dropna().empty else 0
+
+    boll_up, boll_mid, boll_low = calculate_bollinger_bands(close)
+    pattern = detect_candle_pattern(candles)
+    trend = detect_trend(candles, rsi, boll_mid)
+    liquidity = estimate_liquidity(candles)
+
+    # ✅ GPT 호출 (TP/SL 없이 판단만 요청)
+    payload = {
+        "pair": pair, "price": price, "signal": signal,
+        "rsi": rsi.iloc[-1], "macd": macd.iloc[-1], "macd_signal": macd_signal.iloc[-1],
+        "stoch_rsi": stoch_rsi, "bollinger_upper": boll_up.iloc[-1], "bollinger_lower": boll_low.iloc[-1],
+        "pattern": pattern, "trend": trend, "liquidity": liquidity
+    }
+
+    gpt_result = analyze_with_gpt(payload)
+
+    # GPT 결과 파싱 (BUY/SELL/WAIT)
+    if "BUY" in gpt_result:
+        decision = "BUY"
+    elif "SELL" in gpt_result:
+        decision = "SELL"
+    else:
+        decision = "WAIT"
+
+    if decision == "WAIT":
+        return {"status": "WAIT", "message": "GPT 판단으로 관망"}        
+
+    
 
     # ✅ Fast Fury GPT Hybrid 간이판단 + TP/SL 조건 추가
     should_execute = False
@@ -792,9 +828,8 @@ async def fastfury_webhook(request: Request):
     print(f"🚀 주문 실행: {pair} {signal} {units} @ {price} TP: {tp} SL: {sl}")
 
 
-    result = place_order(pair, units, tp=None, sl=None, digits=3)
+    result = place_order(pair, units, tp=tp, sl=sl, digits=3)
     print("✅ 주문 실행 완료:", result)
     return result    
     # 실제 주문 넣을때는 너의 기존 place_order() 함수 재활용 가능 (원하면 내가 연결 스크립트 작성 가능)
-    return {"status": "order_placed"}
 
