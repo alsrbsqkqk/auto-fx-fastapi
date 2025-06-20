@@ -793,43 +793,30 @@ async def fastfury_webhook(request: Request):
         decision = "WAIT"
 
     if decision == "WAIT":
-        return {"status": "WAIT", "message": "GPT 판단으로 관망"}        
+        return {"status": "WAIT", "message": "GPT 판단으로 관망"} 
 
-    
-
-    # ✅ Fast Fury GPT Hybrid 간이판단 + TP/SL 조건 추가
-    should_execute = False
+    # 이제 GPT 최종 decision을 기준으로 진입
     tp = None
     sl = None
 
-    # TP/SL 간격 설정 (JPY 기준 약 5 PIP ~ 10 PIP 범위)
     pip_value = 0.01
     tp_pips = pip_value * 7
     sl_pips = pip_value * 4
 
-    # 기본 진입 조건
-    if signal == "BUY":
+    if decision == "BUY":
         units = 100000
         tp = round(price + tp_pips, 3)
         sl = round(price - sl_pips, 3)
-        should_execute = True
-    elif signal == "SELL":
+    elif decision == "SELL":
         units = -100000
         tp = round(price - tp_pips, 3)
         sl = round(price + sl_pips, 3)
-        should_execute = True
-
-    # ✅ 추가적인 시장 급변동 방지 GPT 필터 (추후 확장 가능)
-    # 현재는 간이 GPT 없이 단순 신호로 진입 → 추후 확장 가능
-
-    if not should_execute:
+    else:
         return {"status": "NO_ACTION"}
 
-    print(f"🚀 주문 실행: {pair} {signal} {units} @ {price} TP: {tp} SL: {sl}")
-
-
+    print(f"🚀 주문 실행: {pair} {decision} {units} @ {price} TP: {tp} SL: {sl}")
     result = place_order(pair, units, tp=tp, sl=sl, digits=3)
     print("✅ 주문 실행 완료:", result)
-    return result    
-    # 실제 주문 넣을때는 너의 기존 place_order() 함수 재활용 가능 (원하면 내가 연결 스크립트 작성 가능)
+    return result
+
 
