@@ -11,9 +11,23 @@ import numpy as np
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
+def conflict_check(rsi, pattern, trend):
+    """
+    패턴-추세 충돌 감지: 추세와 반전패턴이 충돌할 때 관망 유도
+    """
+    if rsi > 70 and pattern in ["SHOOTING_STAR", "BEARISH_ENGULFING"] and trend == "UPTREND":
+        return True
+    if rsi < 30 and pattern in ["HAMMER", "BULLISH_ENGULFING"] and trend == "DOWNTREND":
+        return True
+    return False
+
 def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, liquidity, pattern):
     signal_score = 0
     reasons = []
+
+    if conflict_check(rsi, pattern, trend):
+        reasons.append("⚠️ 추세와 패턴이 충돌 → 관망 권장")
+        return 0, reasons   
 
     if rsi < 30:
         if pattern in ["HAMMER", "BULLISH_ENGULFING"]:
