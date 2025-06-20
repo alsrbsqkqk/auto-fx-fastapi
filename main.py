@@ -723,5 +723,49 @@ def get_last_trade_time():
     try:
         with open("/tmp/last_trade_time.txt", "r") as f:
             return datetime.fromisoformat(f.read().strip())
+            
     except:
         return None
+
+@app.post("/fastfury_webhook")
+async def fastfury_webhook(request: Request):
+    data = await request.json()
+
+    pair_raw = data.get("pair")  # 예: "USD_JPY"
+    signal = data.get("signal")  # BUY / SELL
+    alert_name = data.get("alert_name", "")
+    price_raw = data.get("price")
+
+    # ✅ 변환: USD_JPY → USDJPY (OANDA용으로)
+    pair = pair_raw.replace("_", "")
+
+    try:
+        price = float(price_raw)
+    except:
+        import re
+        numeric_match = re.search(r"\d+\.?\d*", str(price_raw))
+        price = float(numeric_match.group()) if numeric_match else None
+
+    if price is None:
+        return {"status": "error", "message": "가격 변환 실패"}
+
+    print(f"✅ FAST FURY ALGO 진입: {pair} | {signal} | {price}")
+
+    # 👉 여기에 GPT 간이필터 또는 본 전략 로직 연결 가능
+
+    # ⭐ 단순 예시: 신호 그대로 진입
+    if signal == "BUY":
+        units = 100000
+    elif signal == "SELL":
+        units = -100000
+    else:
+        return {"status": "NO_ACTION"}
+
+    print(f"🚀 주문 실행: {pair} {units} @ {price}")
+
+    result = place_order(pair, units, tp=None, sl=None, digits=3)
+    print("✅ 주문 실행 완료:", result)
+    return result    
+    # 실제 주문 넣을때는 너의 기존 place_order() 함수 재활용 가능 (원하면 내가 연결 스크립트 작성 가능)
+    return {"status": "order_placed"}
+
