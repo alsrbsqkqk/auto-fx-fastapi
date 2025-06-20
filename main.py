@@ -11,6 +11,11 @@ import numpy as np
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
+if check_recent_opposite_signal(pair, signal)
+    print("🚫 양방향 충돌 감지 → 관망")
+    return JSONResponse(content={"status": "WAIT", "reason": "conflict_with_recent_opposite_signal"})
+
+
 def conflict_check(rsi, pattern, trend, signal):
     """
     추세-패턴-시그널 충돌 방지 필터 (V2 최종)
@@ -36,6 +41,37 @@ def conflict_check(rsi, pattern, trend, signal):
         return True
 
     return False
+    
+def check_recent_opposite_signal(pair, current_signal, within_minutes=30):
+    """
+    최근 동일 페어에서 반대 시그널이 있으면 True 반환
+    """
+    log_path = f"/tmp/{pair}_last_signal.txt"
+    now = datetime.utcnow()
+
+    # 기존 기록 읽기
+    if os.path.exists(log_path):
+        try:
+            with open(log_path, "r") as f:
+                last_record = f.read().strip().split(",")
+                last_time = datetime.fromisoformat(last_record[0])
+                last_signal = last_record[1]
+            if (now - last_time).total_seconds() < within_minutes * 60:
+                if last_signal != current_signal:
+                    return True
+        except Exception as e:
+            print("❗ 최근 시그널 기록 불러오기 실패:", e)
+
+    # 현재 시그널 기록 갱신
+    try:
+        with open(log_path, "w") as f:
+            f.write(f"{now.isoformat()},{current_signal}")
+    except Exception as e:
+        print("❗ 시그널 기록 저장 실패:", e)
+
+    return False
+
+
 
 def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, liquidity, pattern):
     signal_score = 0
