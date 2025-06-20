@@ -11,7 +11,7 @@ import numpy as np
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-if check_recent_opposite_signal(pair, signal)
+if check_recent_opposite_signal(pair, signal):
     print("🚫 양방향 충돌 감지 → 관망")
     return JSONResponse(content={"status": "WAIT", "reason": "conflict_with_recent_opposite_signal"})
 
