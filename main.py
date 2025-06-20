@@ -762,7 +762,7 @@ async def fastfury_webhook(request: Request):
 
     # 👉 여기에 GPT 간이필터 또는 본 전략 로직 연결 가능
     # ✅ 보조지표 계산 시작 (15분봉 기준)
-    candles = get_candles(pair, "M15", 100)
+    candles = get_candles(pair, "M5", 100)
     close = candles["close"]
 
     rsi = calculate_rsi(close)
