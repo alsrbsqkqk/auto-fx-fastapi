@@ -11,7 +11,7 @@ import numpy as np
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-def conflict_check(rsi, pattern, trend):
+def conflict_check(rsi, pattern, trend, signal):
     """
     추세-패턴-시그널 충돌 방지 필터 (V2 최종)
     """
