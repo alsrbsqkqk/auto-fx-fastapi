@@ -11,10 +11,6 @@ import numpy as np
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-if check_recent_opposite_signal(pair, signal):
-    print("🚫 양방향 충돌 감지 → 관망")
-    return JSONResponse(content={"status": "WAIT", "reason": "conflict_with_recent_opposite_signal"})
-
 
 def conflict_check(rsi, pattern, trend, signal):
     """
@@ -153,8 +149,13 @@ async def webhook(request: Request):
     print("✅ STEP 1: 웹훅 진입")
     data = json.loads(await request.body())
     pair = data.get("pair")
+    signal = data.get("signal")
     print(f"✅ STEP 2: 데이터 수신 완료 | pair: {pair}")
 
+    if check_recent_opposite_signal(pair, signal):    
+        print("🚫 양방향 충돌 감지 → 관망")      
+        return JSONResponse(content={"status": "WAIT", "reason": "conflict_with_recent_opposite_signal"})
+        
     price_raw = data.get("price")
     try:
         price = float(price_raw)
