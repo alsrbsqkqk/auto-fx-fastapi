@@ -69,9 +69,19 @@ def check_recent_opposite_signal(pair, current_signal, within_minutes=30):
 
 
 
-def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, liquidity, pattern):
+def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, liquidity, pattern, pair):
     signal_score = 0
     reasons = []
+
+    # ✅ 거래 제한 시간 필터 (애틀랜타 기준)
+    now_utc = datetime.utcnow()
+    now_atlanta = now_utc - timedelta(hours=4)
+
+    if now_atlanta.hour >= 22 or now_atlanta.hour <= 6:
+        if pair in ["EUR_USD", "GBP_USD"]:
+            reasons.append("❌ 심야 유동성 부족 → EURUSD, GBPUSD 거래 제한")
+            return 0, reasons
+    
 
     if conflict_check(rsi, pattern, trend, signal):
         reasons.append("⚠️ 추세와 패턴이 충돌 → 관망 권장")
