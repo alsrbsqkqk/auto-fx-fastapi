@@ -437,6 +437,7 @@ def calculate_macd(series):
     signal = macd.ewm(span=9).mean()
     return macd, signal
 
+
 def calculate_stoch_rsi(rsi, period=14):
     min_rsi = rsi.rolling(window=period).min()
     max_rsi = rsi.rolling(window=period).max()
@@ -817,6 +818,38 @@ async def fastfury_webhook(request: Request):
     print(f"🚀 주문 실행: {pair} {decision} {units} @ {price} TP: {tp} SL: {sl}")
     result = place_order(pair, units, tp=tp, sl=sl, digits=3)
     print("✅ 주문 실행 완료:", result)
+
+    # 스프레드시트 기록 호출
+    log_trade_result(
+        pair=pair, 
+        signal=signal, 
+        decision=decision, 
+        score=None,  # 지금 이 버전엔 승점 없음
+        notes="FastFury Hybrid 실전진입", 
+        result=result, 
+        rsi=rsi.iloc[-1], 
+        macd=macd.iloc[-1], 
+        stoch_rsi=stoch_rsi, 
+        pattern=pattern, 
+        trend=trend, 
+        fibo={},  # 피보나치 안씀
+        gpt_decision=decision, 
+        news=None, 
+        gpt_feedback=gpt_result, 
+        alert_name=alert_name, 
+        tp=tp, 
+        sl=sl, 
+        entry=price, 
+        price=price, 
+        pnl=None, 
+        outcome_analysis=None, 
+        adjustment_suggestion=None, 
+        price_movements=None, 
+        atr=None
+    )
+
+
+    
     return result
 
 
