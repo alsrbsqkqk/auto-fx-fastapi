@@ -90,20 +90,27 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
             reasons.append("RSI > 70 + 캔들 패턴 확인")
         else:
             reasons.append("RSI > 70 but 캔들 패턴 없음 → 관망")
+    if 40 <= rsi <= 60:
+    reasons.append("RSI 중립구간 (보수 관망 추천)")
+    
 
-    if macd > macd_signal:
+    if (macd - macd_signal) > 0.001:
         signal_score += 2
-        reasons.append("MACD 골든크로스")
-    if macd < macd_signal:
+        reasons.append("MACD 골든크로스 (유의미)")
+    elif (macd_signal - macd) > 0.001:
         signal_score += 2
-        reasons.append("MACD 데드크로스 (하락)")
+        reasons.append("MACD 데드크로스 (유의미)")
+    else:
+        reasons.append("MACD 미세변동 → 가점 보류")
 
-    if stoch_rsi > 0.8:
+    if stoch_rsi > 0.8 and trend == "UPTREND":
         signal_score += 1
-        reasons.append("Stoch RSI 과열")
-    if stoch_rsi < 0.2:
+        reasons.append("Stoch RSI 과열 + 상승추세 일치")
+    elif stoch_rsi < 0.2 and trend == "DOWNTREND":
         signal_score += 1
-        reasons.append("Stoch RSI 과매도 (반등 가능성)")
+        reasons.append("Stoch RSI 과매도 + 하락추세 일치")
+    else:
+        reasons.append("Stoch RSI 단독 과열/과매도 → 보류")
 
     if trend == "UPTREND" and signal == "BUY":
         signal_score += 1
