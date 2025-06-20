@@ -698,10 +698,6 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
         else:
             clean_row.append(v)
 
-
-
-
-
     print("✅ STEP 8: 시트 저장 직전", clean_row)
     for idx, val in enumerate(clean_row):
          if isinstance(val, (dict, list)):
@@ -726,6 +722,18 @@ def get_last_trade_time():
             
     except:
         return None
+
+
+
+
+
+
+
+
+
+
+
+
 
 @app.post("/fastfury_webhook")
 async def fastfury_webhook(request: Request):
@@ -753,15 +761,36 @@ async def fastfury_webhook(request: Request):
 
     # 👉 여기에 GPT 간이필터 또는 본 전략 로직 연결 가능
 
-    # ⭐ 단순 예시: 신호 그대로 진입
+    # ✅ Fast Fury GPT Hybrid 간이판단 + TP/SL 조건 추가
+    should_execute = False
+    tp = None
+    sl = None
+
+    # TP/SL 간격 설정 (JPY 기준 약 5 PIP ~ 10 PIP 범위)
+    pip_value = 0.01
+    tp_pips = pip_value * 7
+    sl_pips = pip_value * 4
+
+    # 기본 진입 조건
     if signal == "BUY":
         units = 100000
+        tp = round(price + tp_pips, 3)
+        sl = round(price - sl_pips, 3)
+        should_execute = True
     elif signal == "SELL":
         units = -100000
-    else:
+        tp = round(price - tp_pips, 3)
+        sl = round(price + sl_pips, 3)
+        should_execute = True
+
+    # ✅ 추가적인 시장 급변동 방지 GPT 필터 (추후 확장 가능)
+    # 현재는 간이 GPT 없이 단순 신호로 진입 → 추후 확장 가능
+
+    if not should_execute:
         return {"status": "NO_ACTION"}
 
-    print(f"🚀 주문 실행: {pair} {units} @ {price}")
+    print(f"🚀 주문 실행: {pair} {signal} {units} @ {price} TP: {tp} SL: {sl}")
+
 
     result = place_order(pair, units, tp=None, sl=None, digits=3)
     print("✅ 주문 실행 완료:", result)
