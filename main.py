@@ -13,19 +13,35 @@ from oauth2client.service_account import ServiceAccountCredentials
 
 def conflict_check(rsi, pattern, trend):
     """
-    패턴-추세 충돌 감지: 추세와 반전패턴이 충돌할 때 관망 유도
+    추세-패턴-시그널 충돌 방지 필터 (V2 최종)
     """
+
+    # 1️⃣ 기본 추세-패턴 충돌 방지
     if rsi > 70 and pattern in ["SHOOTING_STAR", "BEARISH_ENGULFING"] and trend == "UPTREND":
         return True
     if rsi < 30 and pattern in ["HAMMER", "BULLISH_ENGULFING"] and trend == "DOWNTREND":
         return True
+
+    # 2️⃣ 캔들패턴이 없는데 시그널과 추세가 역방향이면 관망
+    if pattern == "NEUTRAL":
+        if trend == "UPTREND" and signal == "SELL" and rsi > 70:
+            return True
+        if trend == "DOWNTREND" and signal == "BUY" and rsi < 30:
+            return True
+
+    # 3️⃣ 기타 보수적 예외 추가
+    if trend == "UPTREND" and signal == "SELL" and rsi > 80:
+        return True
+    if trend == "DOWNTREND" and signal == "BUY" and rsi < 20:
+        return True
+
     return False
 
 def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, liquidity, pattern):
     signal_score = 0
     reasons = []
 
-    if conflict_check(rsi, pattern, trend):
+    if conflict_check(rsi, pattern, trend, signal):
         reasons.append("⚠️ 추세와 패턴이 충돌 → 관망 권장")
         return 0, reasons   
 
