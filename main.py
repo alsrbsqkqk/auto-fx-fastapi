@@ -91,7 +91,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
         else:
             reasons.append("RSI > 70 but 캔들 패턴 없음 → 관망")
     if 40 <= rsi <= 60:
-    reasons.append("RSI 중립구간 (보수 관망 추천)")
+        reasons.append("RSI 중립구간 (보수 관망 추천)")
     
 
     if (macd - macd_signal) > 0.001:
