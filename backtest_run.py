@@ -155,7 +155,7 @@ def backtest(df):
 
 # 실제로는 OANDA에서 candle 가져와서 아래 df를 채우면 됨
 # 임시 예시 (이후 OANDA 연동시 자동으로 df 준비됨)
-data = pd.read_csv('oanda_sample_data.csv')
+data = pd.read_csv('backtest_data.csv')
 data['time'] = pd.to_datetime(data['time'])
 result = backtest(data)
 
