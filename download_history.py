@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 import time
 
 # 본인의 OANDA API 정보 입력
-OANDA_API_KEY = "a2d997ea9e6476005739c1e0d11ccc24-ca1acd820317ee8e47cfd263d64c0c7d"
+OANDA_API_KEY = "bb1207dc608f5a09b8b3bcf64fb04d1a-c3191973284dded434e45b62c74474fe"
 ACCOUNT_ID = "101-001-30264285-002"
 
 # 설정값
