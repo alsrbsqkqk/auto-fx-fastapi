@@ -250,7 +250,7 @@ async def webhook(request: Request):
         "liquidity": liquidity,
         "support": support_resistance["support"],
         "resistance": support_resistance["resistance"],
-        "news": news,
+        "news": news_message,
         "new_high": bool(high_low_analysis["new_high"]),
         "new_low": bool(high_low_analysis["new_low"]),
         "atr": atr
@@ -297,7 +297,7 @@ async def webhook(request: Request):
             pair, signal, decision, signal_score,
             "\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}",
             {}, rsi.iloc[-1], macd.iloc[-1], stoch_rsi,
-            pattern, trend, fibo_levels, decision, news, gpt_feedback,
+            pattern, trend, fibo_levels, decision, news_message, gpt_feedback,
             alert_name, tp, sl, price, None,
             outcome_analysis, adjustment_suggestion, [],
             atr
@@ -394,7 +394,7 @@ async def webhook(request: Request):
         pair, signal, decision, signal_score,
         "\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}",
         result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi,
-        pattern, trend, fibo_levels, decision, news, gpt_feedback,
+        pattern, trend, fibo_levels, decision, news_message, gpt_feedback,
         alert_name, tp, sl, price, pnl, None,
         outcome_analysis, adjustment_suggestion, price_movements,
         atr
