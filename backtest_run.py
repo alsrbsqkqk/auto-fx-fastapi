@@ -3,8 +3,7 @@ import numpy as np
 from datetime import datetime, timedelta
 import math
 
-# ====== 시뮬레이션용 주요 지표 계산 함수 ======
-
+# ====== 지표 계산 ======
 def calculate_rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0).rolling(window=period).mean()
@@ -52,109 +51,73 @@ def detect_trend(df):
         return "DOWNTREND"
     return "NEUTRAL"
 
-def candle_psychology_score(row, signal):
-    score = 0
-    reasons = []
-    body = abs(row['close'] - row['open'])
-    upper_wick = row['high'] - max(row['close'], row['open'])
-    lower_wick = min(row['close'], row['open']) - row['low']
-    total_range = row['high'] - row['low']
-    body_ratio = body / total_range if total_range != 0 else 0
-
-    if body_ratio >= 0.7:
-        if row['close'] > row['open'] and signal == "BUY":
-            score += 1
-            reasons.append("장대양봉")
-        elif row['close'] < row['open'] and signal == "SELL":
-            score += 1
-            reasons.append("장대음봉")
-    if lower_wick > 2 * body and signal == "BUY":
-        score += 1
-        reasons.append("아래꼬리 길다")
-    if upper_wick > 2 * body and signal == "SELL":
-        score += 1
-        reasons.append("위꼬리 길다")
-    return score, reasons
-
-# ====== 핵심 시뮬레이션 엔진 ======
-
+# ====== 실전 예약주문 시뮬레이션 엔진 ======
 def backtest(df):
-    results = []
-    
     df['rsi'] = calculate_rsi(df['close'])
     df['macd'], df['macd_signal'] = calculate_macd(df['close'])
     df['stoch_rsi'] = calculate_stoch_rsi(df['rsi'])
     df['boll_up'], df['boll_mid'], df['boll_low'] = calculate_bollinger_bands(df['close'])
     df['pattern'] = df.apply(detect_candle_pattern, axis=1)
 
+    results = []
+    active_orders = []
     last_trade_time = None
+
     for i in range(50, len(df)):
         row = df.iloc[i]
         now_time = pd.to_datetime(row['time'])
         atlanta_hour = (now_time - timedelta(hours=4)).hour
         
         if atlanta_hour >= 22 or atlanta_hour <= 6:
-            continue  # 거래 제한 시간 필터
+            continue  # 거래 제한시간 필터
         
         trend = detect_trend(df.iloc[i-50:i])
-        signal = "BUY" if row['rsi'] < 35 else "SELL" if row['rsi'] > 70 else "WAIT"
-        if signal == "WAIT":
-            continue
-        
-        score = 0
-        reasons = []
-        
-        if signal == "BUY" and row['pattern'] == "HAMMER":
-            score += 2
-            reasons.append("RSI+HAMMER")
-        if signal == "SELL" and row['pattern'] == "SHOOTING_STAR":
-            score += 2
-            reasons.append("RSI+SHOOTING")
-        
-        if (row['macd'] - row['macd_signal']) > 0.001 and signal == "BUY":
-            score += 1
-            reasons.append("MACD GC")
-        if (row['macd_signal'] - row['macd']) > 0.001 and signal == "SELL":
-            score += 1
-            reasons.append("MACD DC")
-        
-        if row['stoch_rsi'] > 0.8 and trend == "UPTREND" and signal == "BUY":
-            score += 1
-            reasons.append("Stoch RSI 과열")
-        if row['stoch_rsi'] < 0.2 and trend == "DOWNTREND" and signal == "SELL":
-            score += 1
-            reasons.append("Stoch RSI 과매도")
+        signal = None
 
-        psy_score, psy_reasons = candle_psychology_score(row, signal)
-        score += psy_score
-        reasons += psy_reasons
+        if row['rsi'] < 35 and row['pattern'] == 'HAMMER':
+            signal = 'BUY'
+        elif row['rsi'] > 70 and row['pattern'] == 'SHOOTING_STAR':
+            signal = 'SELL'
         
-        # 뉴스 필터 (시뮬레이션: 항상 안전)
-        score += 0
+        # MACD 필터
+        if signal == 'BUY' and (row['macd'] - row['macd_signal']) < -0.001:
+            signal = None
+        if signal == 'SELL' and (row['macd_signal'] - row['macd']) < -0.001:
+            signal = None
         
-        # 마지막 거래 후 최소 2시간 간격
-        if last_trade_time and (now_time - last_trade_time) < timedelta(hours=2):
-            continue
-        
-        # 진입 조건
-        if score >= 4:
+        # 최소 2시간 간격
+        if signal and (last_trade_time is None or (now_time - last_trade_time) >= timedelta(hours=2)):
             entry_price = row['close']
-            tp = entry_price + 0.0010 if signal == "BUY" else entry_price - 0.0010
-            sl = entry_price - 0.0007 if signal == "BUY" else entry_price + 0.0007
-            
-            # 백테스트 결과 저장
-            results.append({
-                'time': row['time'], 'signal': signal, 'entry': entry_price, 
-                'tp': tp, 'sl': sl, 'reasons': "; ".join(reasons)
+            tp = entry_price + 0.0010 if signal == 'BUY' else entry_price - 0.0010
+            sl = entry_price - 0.0007 if signal == 'BUY' else entry_price + 0.0007
+            active_orders.append({
+                'time': row['time'], 'signal': signal, 'entry': entry_price, 'tp': tp, 'sl': sl, 'status': 'open'
             })
             last_trade_time = now_time
+
+        # 기존 활성 주문 처리 (예약주문)
+        for order in active_orders:
+            if order['status'] == 'closed':
+                continue
+            price = row['close']
+            if order['signal'] == 'BUY':
+                if price >= order['tp']:
+                    order['status'] = 'tp'
+                elif price <= order['sl']:
+                    order['status'] = 'sl'
+            if order['signal'] == 'SELL':
+                if price <= order['tp']:
+                    order['status'] = 'tp'
+                elif price >= order['sl']:
+                    order['status'] = 'sl'
+
+    # 결과 저장
+    for order in active_orders:
+        results.append(order)
     
     return pd.DataFrame(results)
 
-# ====== 샘플 데이터로 실행 ======
-
-# 실제로는 OANDA에서 candle 가져와서 아래 df를 채우면 됨
-# 임시 예시 (이후 OANDA 연동시 자동으로 df 준비됨)
+# ====== 실행 ======
 data = pd.read_csv('backtest_data.csv')
 data['time'] = pd.to_datetime(data['time'])
 result = backtest(data)
