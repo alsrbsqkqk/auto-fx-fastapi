@@ -69,7 +69,7 @@ def check_recent_opposite_signal(pair, current_signal, within_minutes=30):
 
 
 
-def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, liquidity, pattern, pair):
+def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, liquidity, pattern, pair, candles):
     signal_score = 0
     reasons = []
 
@@ -137,6 +137,18 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     if pattern in ["HAMMER", "BULLISH_ENGULFING", "SHOOTING_STAR", "BEARISH_ENGULFING"]:
         signal_score += 1
         reasons.append(f"캔들패턴 추가 가점: {pattern}")
+
+        # ✅ 박스권 돌파 가점 로직 추가
+    box_info = detect_box_breakout(candles, pair)
+
+    if box_info["in_box"] and box_info["breakout"] == "UP" and signal == "BUY":
+        signal_score += 2
+        reasons.append("📦 박스권 상단 돌파 + 매수 신호 일치")
+    elif box_info["in_box"] and box_info["breakout"] == "DOWN" and signal == "SELL":
+        signal_score += 2
+        reasons.append("📦 박스권 하단 돌파 + 매도 신호 일치")
+    elif box_info["in_box"] and box_info["breakout"] is None:
+        reasons.append("📦 박스권 유지 중 → 관망 경계")
 
     return signal_score, reasons
 
@@ -246,7 +258,7 @@ async def webhook(request: Request):
     }
     signal_score, reasons = score_signal_with_filters(
     rsi.iloc[-1], macd.iloc[-1], macd_signal.iloc[-1], stoch_rsi,
-    trend, signal, liquidity, pattern
+    trend, signal, liquidity, pattern, pair, candles
     )
 
             
@@ -449,6 +461,28 @@ def calculate_bollinger_bands(series, window=20):
     upper = mid + 2 * std
     lower = mid - 2 * std
     return upper, mid, lower
+
+def detect_box_breakout(candles, pair, box_window=10, box_threshold_pips=30):
+    """
+    박스권 돌파 감지 (상향/하향 돌파 모두 반환)
+    """
+    pip_value = 0.01 if pair.endswith("JPY") else 0.0001
+    recent_candles = candles.tail(box_window)
+    high_max = recent_candles['high'].max()
+    low_min = recent_candles['low'].min()
+    box_range = (high_max - low_min) / pip_value
+
+    if box_range > box_threshold_pips:
+        return {"in_box": False, "breakout": None}
+
+    last_close = recent_candles['close'].iloc[-1]
+
+    if last_close > high_max:
+        return {"in_box": True, "breakout": "UP"}
+    elif last_close < low_min:
+        return {"in_box": True, "breakout": "DOWN"}
+    else:
+        return {"in_box": True, "breakout": None}
 
 def detect_trend(candles, rsi, mid_band):
     close = candles["close"]
