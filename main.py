@@ -235,6 +235,11 @@ async def webhook(request: Request):
     atr = calculate_atr(candles).iloc[-1]
     fibo_levels = calculate_fibonacci_levels(candles["high"].max(), candles["low"].min())
 
+    # ✅ 여기에 새 뉴스 필터 삽입
+    news_risk_score, news_message = fetch_and_score_forex_news(pair)
+    signal_score += news_risk_score
+    reasons.append(news_message)
+    
     payload = {
         "pair": pair,
         "price": price,
@@ -262,11 +267,6 @@ async def webhook(request: Request):
     )
     signal_score += psych_score
     reasons += psych_reasons
-
-    # ✅ 여기에 새 뉴스 필터 삽입
-    news_risk_score, news_message = fetch_and_score_forex_news(pair)
-    signal_score += news_risk_score
-    reasons.append(news_message)
             
     recent_trade_time = get_last_trade_time()
     time_since_last = datetime.utcnow() - recent_trade_time if recent_trade_time else timedelta(hours=999)
