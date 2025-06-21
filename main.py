@@ -142,10 +142,10 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     box_info = detect_box_breakout(candles, pair)
 
     if box_info["in_box"] and box_info["breakout"] == "UP" and signal == "BUY":
-        signal_score += 2
+        signal_score += 3
         reasons.append("📦 박스권 상단 돌파 + 매수 신호 일치")
     elif box_info["in_box"] and box_info["breakout"] == "DOWN" and signal == "SELL":
-        signal_score += 2
+        signal_score += 3
         reasons.append("📦 박스권 하단 돌파 + 매도 신호 일치")
     elif box_info["in_box"] and box_info["breakout"] is None:
         reasons.append("📦 박스권 유지 중 → 관망 경계")
@@ -261,8 +261,7 @@ async def webhook(request: Request):
         rsi.iloc[-1], macd.iloc[-1], macd_signal.iloc[-1], stoch_rsi,
         trend, signal, liquidity, pattern, pair, candles
     )
-    signal_score += psych_score
-    reasons += psych_reasons
+
             
     recent_trade_time = get_last_trade_time()
     time_since_last = datetime.utcnow() - recent_trade_time if recent_trade_time else timedelta(hours=999)
