@@ -188,6 +188,7 @@ def backtest_fastfury(df):
         if last_trade_time and (now - last_trade_time) < timedelta(hours=1):
             continue
 
+    
         if score >= 3:
             entry = row['close']
             tp = entry + 0.10 if signal == "BUY" else entry - 0.10
