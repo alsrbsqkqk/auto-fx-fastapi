@@ -226,7 +226,7 @@ async def webhook(request: Request):
     pattern = detect_candle_pattern(candles)
     trend = detect_trend(candles, rsi, boll_mid)
     liquidity = estimate_liquidity(candles)
-    news = fetch_forex_news()
+    news_risk_score, news_message = fetch_and_score_forex_news(pair)
     support_resistance = {
         "support": candles["low"].min(),
         "resistance": candles["high"].max()
@@ -261,7 +261,13 @@ async def webhook(request: Request):
         rsi.iloc[-1], macd.iloc[-1], macd_signal.iloc[-1], stoch_rsi,
         trend, signal, liquidity, pattern, pair, candles
     )
+    signal_score += psych_score
+    reasons += psych_reasons
 
+    # ✅ 여기에 새 뉴스 필터 삽입
+    news_risk_score, news_message = fetch_and_score_forex_news(pair)
+    signal_score += news_risk_score
+    reasons.append(news_message)
             
     recent_trade_time = get_last_trade_time()
     time_since_last = datetime.utcnow() - recent_trade_time if recent_trade_time else timedelta(hours=999)
@@ -557,6 +563,42 @@ def fetch_forex_news():
         return "🟢 뉴스 영향 적음"
     except:
         return "❓ 뉴스 확인 실패"
+
+def fetch_and_score_forex_news(pair):
+    """
+    뉴스 이벤트 위험 점수화 (단계 1+2 통합)
+    """
+    score = 0
+    message = ""
+
+    try:
+        response = requests.get("https://www.forexfactory.com/", timeout=5)
+        text = response.text
+
+        if "High Impact Expected" in text:
+            score -= 2
+            message = "⚠️ 고위험 뉴스 존재"
+        elif "Medium Impact Expected" in text:
+            score -= 1
+            message = "⚠️ 중간위험 뉴스"
+        elif "Low Impact Expected" in text:
+            message = "🟢 낮은 영향 뉴스"
+
+        if pair.startswith("USD") and "Fed Chair" in text:
+            score -= 1
+            message += " | Fed 연설 포함"
+        if pair.endswith("JPY") and "BoJ" in text:
+            score -= 1
+            message += " | 일본은행 관련 뉴스"
+
+        if message == "":
+            message = "🟢 뉴스 영향 적음"
+    except Exception as e:
+        score = 0
+        message = "❓ 뉴스 확인 실패"
+
+    return score, message
+
 
 def place_order(pair, units, tp, sl, digits):
     url = f"https://api-fxpractice.oanda.com/v3/accounts/{ACCOUNT_ID}/orders"
