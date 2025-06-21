@@ -350,14 +350,11 @@ async def webhook(request: Request):
         result = place_order(pair, units, tp, sl, digits)
         
 
-    result = {}
     price_movements = []
     pnl = None
     if decision in ["BUY", "SELL"] and tp and sl:
         units = 100000 if decision == "BUY" else -100000
         digits = 3 if pair.endswith("JPY") else 5
-        result = place_order(pair, units, tp, sl, digits)
-        print("✅ STEP 9: 주문 결과 확인 |", result)
 
         executed_time = datetime.utcnow()
         candles_post = get_candles(pair, "M30", 8)
