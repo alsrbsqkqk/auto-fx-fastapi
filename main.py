@@ -298,7 +298,7 @@ async def webhook(request: Request):
             "\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}",
             {}, rsi.iloc[-1], macd.iloc[-1], stoch_rsi,
             pattern, trend, fibo_levels, decision, news_message, gpt_feedback,
-            alert_name, tp, sl, price, None,
+            alert_name, tp, sl, executed_price, None,
             outcome_analysis, adjustment_suggestion, [],
             atr
         )
@@ -363,6 +363,11 @@ async def webhook(request: Request):
         candles_post = get_candles(pair, "M30", 8)
         price_movements = candles_post[["high", "low"]].to_dict("records")
 
+        try:
+            executed_price = float(result['orderFillTransaction']['price'])
+        except:
+            executed_price = price  # 혹시 못읽으면 기존 price 유지
+
     if decision in ["BUY", "SELL"] and isinstance(result, dict) and "order_placed" in result.get("status", ""):
         if pnl is not None:
             if pnl > 0:
@@ -395,7 +400,7 @@ async def webhook(request: Request):
         "\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}",
         result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi,
         pattern, trend, fibo_levels, decision, news_message, gpt_feedback,
-        alert_name, tp, sl, price, pnl, None,
+        alert_name, tp, sl, executed_price, pnl, None,
         outcome_analysis, adjustment_suggestion, price_movements,
         atr
          )
