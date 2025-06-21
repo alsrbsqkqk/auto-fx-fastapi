@@ -9,7 +9,6 @@ ACCOUNT_ID = "여기에_ACCOUNT_ID"
 BASE_URL = "https://api-fxpractice.oanda.com/v3"
 headers = { "Authorization": f"Bearer {OANDA_API_KEY}" }
 
-# 통화쌍 리스트
 PAIRS = ["EUR_USD", "GBP_USD", "USD_JPY"]
 GRANULARITY = "M30"
 DAYS_BACK = 90
@@ -48,7 +47,7 @@ def download(pair):
         start_time = chunk_end
         time.sleep(1)
     df = pd.DataFrame(all_candles)
-    pair_file = pair.replace("_", "") + ".csv"  # 예: EURUSD.csv
+    pair_file = pair.replace("_", "") + ".csv"
     df.to_csv(pair_file, index=False)
     print(f"✅ {pair_file} 저장 완료")
 
