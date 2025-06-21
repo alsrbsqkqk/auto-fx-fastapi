@@ -4,8 +4,8 @@ from datetime import datetime, timedelta
 import time
 
 # 본인의 OANDA API 정보 입력
-OANDA_API_KEY = "여기에_본인_API_KEY_입력"
-ACCOUNT_ID = "여기에_본인_ACCOUNT_ID_입력"
+OANDA_API_KEY = "a2d997ea9e6476005739c1e0d11ccc24-ca1acd820317ee8e47cfd263d64c0c7d"
+ACCOUNT_ID = "101-001-30264285-002"
 
 # 설정값
 PAIR = "EUR_USD"  # EURUSD 백테스트용
