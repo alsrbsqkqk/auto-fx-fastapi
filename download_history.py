@@ -6,21 +6,18 @@ import time
 # 본인의 OANDA API 정보 입력
 OANDA_API_KEY = "bb1207dc608f5a09b8b3bcf64fb04d1a-c3191973284dded434e45b62c74474fe"
 ACCOUNT_ID = "101-001-30264285-002"
-
-# 설정값
-PAIR = "EUR_USD"  # EURUSD 백테스트용
-GRANULARITY = "M30"  # 30분봉
-DAYS_BACK = 90  # 최근 90일치 다운로드
-
 BASE_URL = "https://api-fxpractice.oanda.com/v3"
-headers = {
-    "Authorization": f"Bearer {OANDA_API_KEY}"
-}
+headers = { "Authorization": f"Bearer {OANDA_API_KEY}" }
 
-def fetch_candles(pair, granularity, start, end):
+# 통화쌍 리스트
+PAIRS = ["EUR_USD", "GBP_USD", "USD_JPY"]
+GRANULARITY = "M30"
+DAYS_BACK = 90
+
+def fetch_candles(pair, start, end):
     url = f"{BASE_URL}/instruments/{pair}/candles"
     params = {
-        "granularity": granularity,
+        "granularity": GRANULARITY,
         "from": start.isoformat() + "Z",
         "to": end.isoformat() + "Z",
         "price": "M"
@@ -39,23 +36,22 @@ def fetch_candles(pair, granularity, start, end):
         })
     return data
 
-def download_full_history():
+def download(pair):
     end_time = datetime.utcnow()
     start_time = end_time - timedelta(days=DAYS_BACK)
     all_candles = []
-
-    # OANDA API는 너무 긴 기간 한번에 요청 못함 → 7일씩 쪼개서 반복
     while start_time < end_time:
         chunk_end = min(start_time + timedelta(days=7), end_time)
-        print(f"다운로드: {start_time} ~ {chunk_end}")
-        candles = fetch_candles(PAIR, GRANULARITY, start_time, chunk_end)
+        print(f"{pair} 다운로드: {start_time} ~ {chunk_end}")
+        candles = fetch_candles(pair, start_time, chunk_end)
         all_candles.extend(candles)
         start_time = chunk_end
-        time.sleep(1)  # API 제한 때문에 살짝 쉬기
-
+        time.sleep(1)
     df = pd.DataFrame(all_candles)
-    df.to_csv("backtest_data.csv", index=False)
-    print("✅ 다운로드 완료. 파일: backtest_data.csv")
+    pair_file = pair.replace("_", "") + ".csv"  # 예: EURUSD.csv
+    df.to_csv(pair_file, index=False)
+    print(f"✅ {pair_file} 저장 완료")
 
 if __name__ == "__main__":
-    download_full_history()
+    for p in PAIRS:
+        download(p)
