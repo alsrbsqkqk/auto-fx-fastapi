@@ -256,11 +256,13 @@ async def webhook(request: Request):
         "new_low": bool(high_low_analysis["new_low"]),
         "atr": atr
     }
+    psych_score, psych_reasons = calculate_candle_psychology_score(candles, signal)
     signal_score, reasons = score_signal_with_filters(
-    rsi.iloc[-1], macd.iloc[-1], macd_signal.iloc[-1], stoch_rsi,
-    trend, signal, liquidity, pattern, pair, candles
+        rsi.iloc[-1], macd.iloc[-1], macd_signal.iloc[-1], stoch_rsi,
+        trend, signal, liquidity, pattern, pair, candles
     )
-
+    signal_score += psych_score
+    reasons += psych_reasons
             
     recent_trade_time = get_last_trade_time()
     time_since_last = datetime.utcnow() - recent_trade_time if recent_trade_time else timedelta(hours=999)
@@ -511,6 +513,39 @@ def detect_candle_pattern(candles):
     elif upper_wick > 2 * body and lower_wick < body:
         return "SHOOTING_STAR"
     return "NEUTRAL"
+
+def calculate_candle_psychology_score(candles, signal):
+    """
+    시장 심리 점수화 시스템: 캔들 바디/꼬리 비율 기반으로 정량 심리 점수 반환
+    """
+    score = 0
+    reasons = []
+
+    last = candles.iloc[-1]
+    body = abs(last['close'] - last['open'])
+    upper_wick = last['high'] - max(last['close'], last['open'])
+    lower_wick = min(last['close'], last['open']) - last['low']
+    total_range = last['high'] - last['low']
+    body_ratio = body / total_range if total_range != 0 else 0
+
+    # ① 장대바디 판단
+    if body_ratio >= 0.7:
+        if last['close'] > last['open'] and signal == "BUY":
+            score += 1
+            reasons.append("✅ 강한 장대양봉 → 매수 심리 강화")
+        elif last['close'] < last['open'] and signal == "SELL":
+            score += 1
+            reasons.append("✅ 강한 장대음봉 → 매도 심리 강화")
+
+    # ② 꼬리 비율 심리
+    if lower_wick > 2 * body and signal == "BUY":
+        score += 1
+        reasons.append("✅ 아래꼬리 길다 → 매수 지지 심리 강화")
+    if upper_wick > 2 * body and signal == "SELL":
+        score += 1
+        reasons.append("✅ 위꼬리 길다 → 매도 압력 심리 강화")
+
+    return score, reasons
 
 def estimate_liquidity(candles):
     return "좋음" if candles["volume"].tail(10).mean() > 100 else "낮음"
