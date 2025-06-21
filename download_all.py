@@ -3,8 +3,8 @@ import pandas as pd
 from datetime import datetime, timedelta
 import time
 
-OANDA_API_KEY = "여기에_API_KEY"
-ACCOUNT_ID = "여기에_ACCOUNT_ID"
+OANDA_API_KEY = "bb1207dc608f5a09b8b3bcf64fb04d1a-c3191973284dded434e45b62c74474fe"
+ACCOUNT_ID = "101-001-30264285-002"
 
 BASE_URL = "https://api-fxpractice.oanda.com/v3"
 headers = { "Authorization": f"Bearer {OANDA_API_KEY}" }
