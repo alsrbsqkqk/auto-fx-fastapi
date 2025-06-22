@@ -235,6 +235,8 @@ async def webhook(request: Request):
     atr = calculate_atr(candles).iloc[-1]
     fibo_levels = calculate_fibonacci_levels(candles["high"].max(), candles["low"].min())
 
+    signal_score = 0
+    reasons = []
     # ✅ 여기에 새 뉴스 필터 삽입
     news_risk_score, news_message = fetch_and_score_forex_news(pair)
     signal_score += news_risk_score
@@ -261,10 +263,12 @@ async def webhook(request: Request):
         "atr": atr
     }
     psych_score, psych_reasons = calculate_candle_psychology_score(candles, signal)
-    signal_score, reasons = score_signal_with_filters(
+    indicator_score, indicator_reasons = score_signal_with_filters(
         rsi.iloc[-1], macd.iloc[-1], macd_signal.iloc[-1], stoch_rsi,
         trend, signal, liquidity, pattern, pair, candles
     )
+signal_score += indicator_score
+reasons += indicator_reasons
     signal_score += psych_score
     reasons += psych_reasons
             
