@@ -267,8 +267,8 @@ async def webhook(request: Request):
         rsi.iloc[-1], macd.iloc[-1], macd_signal.iloc[-1], stoch_rsi,
         trend, signal, liquidity, pattern, pair, candles
     )
-signal_score += indicator_score
-reasons += indicator_reasons
+    signal_score += indicator_score
+    reasons += indicator_reasons
     signal_score += psych_score
     reasons += psych_reasons
             
