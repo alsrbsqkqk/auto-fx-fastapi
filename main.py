@@ -77,7 +77,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     now_utc = datetime.utcnow()
     now_atlanta = now_utc - timedelta(hours=4)
 
-    if now_atlanta.hour >= 22 or now_atlanta.hour <= 6:
+    if now_atlanta.hour >= 22 or now_atlanta.hour <= 4:
         if pair in ["EUR_USD", "GBP_USD"]:
             reasons.append("❌ 심야 유동성 부족 → EURUSD, GBPUSD 거래 제한")
             return 0, reasons
