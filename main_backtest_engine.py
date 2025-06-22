@@ -50,103 +50,132 @@ def detect_candle_pattern(row):
         return "SHOOTING_STAR"
     return "NEUTRAL"
 
-# ====== 박스권 분석 (Main 엔진 전용) ======
-def detect_box_breakout(df, box_window=10, pip_filter=0.0020):
+def detect_box_breakout(df, pip_value, box_window=10, box_threshold_pips=30):
     recent = df.tail(box_window)
     high = recent['high'].max()
     low = recent['low'].min()
-    box_size = high - low
+    box_range = (high - low) / pip_value
     breakout = None
     last_close = recent['close'].iloc[-1]
-    if box_size < pip_filter:
-        if last_close > high:
-            breakout = "UP"
-        elif last_close < low:
-            breakout = "DOWN"
+    if box_range > box_threshold_pips:
+        return None
+    if last_close > high:
+        breakout = "UP"
+    elif last_close < low:
+        breakout = "DOWN"
     return breakout
 
-# ====== Main 시뮬레이션 엔진 (EURUSD, GBPUSD) ======
+def conflict_check(rsi, pattern, trend, signal):
+    if rsi > 70 and pattern in ["SHOOTING_STAR", "BEARISH_ENGULFING"] and trend == "UPTREND":
+        return True
+    if rsi < 30 and pattern in ["HAMMER", "BULLISH_ENGULFING"] and trend == "DOWNTREND":
+        return True
+    if pattern == "NEUTRAL":
+        if trend == "UPTREND" and signal == "SELL" and rsi > 70:
+            return True
+        if trend == "DOWNTREND" and signal == "BUY" and rsi < 30:
+            return True
+    if trend == "UPTREND" and signal == "SELL" and rsi > 80:
+        return True
+    if trend == "DOWNTREND" and signal == "BUY" and rsi < 20:
+        return True
+    return False
+
+# ====== 메인 백테스트 엔진 ======
 def backtest_main(df, pair):
     results = []
+    pip_value = 0.01 if pair.endswith("JPY") else 0.0001
+
     df['rsi'] = calculate_rsi(df['close'])
     df['macd'], df['macd_signal'] = calculate_macd(df['close'])
     df['stoch_rsi'] = calculate_stoch_rsi(df['rsi'])
     df['boll_up'], df['boll_mid'], df['boll_low'] = calculate_bollinger_bands(df['close'])
     df['pattern'] = df.apply(detect_candle_pattern, axis=1)
-    
+
     last_trade_time = None
+    
     for i in range(50, len(df)):
         row = df.iloc[i]
         now = pd.to_datetime(row['time'])
         atlanta_hour = (now - timedelta(hours=4)).hour
         
-        # 유동성 시간대 필터
         if pair in ['EURUSD','GBPUSD'] and (atlanta_hour >= 22 or atlanta_hour <= 6):
             continue
-        
+
         trend = detect_trend(df.iloc[i-50:i])
-        signal = "BUY" if row['rsi'] < 30 else "SELL" if row['rsi'] > 70 else "WAIT"
+        rsi = row['rsi']
+        pattern = row['pattern']
+        macd, macd_signal = row['macd'], row['macd_signal']
+        stoch_rsi = row['stoch_rsi']
+        signal = "BUY" if rsi < 30 else "SELL" if rsi > 70 else "WAIT"
         if signal == "WAIT": continue
-        
+
+        if conflict_check(rsi, pattern, trend, signal):
+            continue
+
         score = 0
         reasons = []
-        
-        # RSI + 캔들 패턴
-        if signal == "BUY" and row['pattern'] in ["HAMMER", "BULLISH_ENGULFING"]:
+
+        if signal == "BUY" and pattern in ["HAMMER", "BULLISH_ENGULFING"]:
             score += 2
             reasons.append("RSI<30 + Hammer")
-        if signal == "SELL" and row['pattern'] in ["SHOOTING_STAR", "BEARISH_ENGULFING"]:
+        if signal == "SELL" and pattern in ["SHOOTING_STAR", "BEARISH_ENGULFING"]:
             score += 2
             reasons.append("RSI>70 + ShootingStar")
-        
-        # MACD 확인
-        if (row['macd'] - row['macd_signal']) > 0.0001 and signal == "BUY":
-            score += 1
+
+        if (macd - macd_signal) > 0.001:
+            score += 2
             reasons.append("MACD 골든크로스")
-        if (row['macd_signal'] - row['macd']) > 0.0001 and signal == "SELL":
-            score += 1
+        elif (macd_signal - macd) > 0.001:
+            score += 2
             reasons.append("MACD 데드크로스")
-        
-        # Stoch RSI + Trend
-        if row['stoch_rsi'] > 0.8 and trend == "UPTREND" and signal == "BUY":
+
+        if stoch_rsi > 0.8 and trend == "UPTREND" and signal == "BUY":
             score += 1
             reasons.append("Stoch과열 + 상승추세")
-        if row['stoch_rsi'] < 0.2 and trend == "DOWNTREND" and signal == "SELL":
+        if stoch_rsi < 0.2 and trend == "DOWNTREND" and signal == "SELL":
             score += 1
             reasons.append("Stoch과매도 + 하락추세")
 
-        # 박스권 돌파 보정
-        breakout = detect_box_breakout(df.iloc[i-10:i])
+        if trend == "UPTREND" and signal == "BUY":
+            score += 1
+            reasons.append("추세 상승 매수")
+        if trend == "DOWNTREND" and signal == "SELL":
+            score += 1
+            reasons.append("추세 하락 매도")
+
+        breakout = detect_box_breakout(df.iloc[i-10:i], pip_value)
         if breakout == "UP" and signal == "BUY":
-            score += 2
+            score += 3
             reasons.append("박스권 상단 돌파")
         if breakout == "DOWN" and signal == "SELL":
-            score += 2
+            score += 3
             reasons.append("박스권 하단 돌파")
 
-        # 최소 2시간 간격 유지
         if last_trade_time and (now - last_trade_time) < timedelta(hours=2):
             continue
 
         if score >= 4:
             entry = row['close']
-            tp = entry + 0.0010 if signal == "BUY" else entry - 0.0010
-            sl = entry - 0.0007 if signal == "BUY" else entry + 0.0007
+            tp = entry + pip_value * 15 if signal == "BUY" else entry - pip_value * 15
+            sl = entry - pip_value * 10 if signal == "BUY" else entry + pip_value * 10
             results.append({
-                'time': row['time'], 'pair': pair, 'signal': signal, 
+                'time': row['time'], 'pair': pair, 'signal': signal,
                 'entry': entry, 'tp': tp, 'sl': sl, 'score': score, 'reason': "; ".join(reasons)
             })
             last_trade_time = now
+    
     return pd.DataFrame(results)
 
-# ====== FastFury 엔진 (USDJPY) ======
+# ====== FastFury 백테스트 엔진 ======
 def backtest_fastfury(df):
     results = []
     df['rsi'] = calculate_rsi(df['close'])
     df['macd'], df['macd_signal'] = calculate_macd(df['close'])
     df['stoch_rsi'] = calculate_stoch_rsi(df['rsi'])
-    
+
     last_trade_time = None
+    
     for i in range(30, len(df)):
         row = df.iloc[i]
         now = pd.to_datetime(row['time'])
@@ -159,15 +188,12 @@ def backtest_fastfury(df):
         reasons = []
 
         if abs(row['macd'] - row['macd_signal']) > 0.00008:
-            if row['macd'] > row['macd_signal']:
-                signal = "BUY"
-            else:
-                signal = "SELL"
+            signal = "BUY" if row['macd'] > row['macd_signal'] else "SELL"
             score += 1
             reasons.append("MACD 강도 통과")
         else:
             continue
-        
+
         ema9 = df['close'].ewm(span=9).mean().iloc[i]
         ema21 = df['close'].ewm(span=21).mean().iloc[i]
         if signal == "BUY" and ema9 > ema21:
@@ -176,7 +202,7 @@ def backtest_fastfury(df):
         if signal == "SELL" and ema9 < ema21:
             score += 1
             reasons.append("EMA 하락추세")
-        
+
         candle_body = row['close'] - row['open']
         if signal == "BUY" and candle_body > 0:
             score += 1
@@ -188,36 +214,32 @@ def backtest_fastfury(df):
         if last_trade_time and (now - last_trade_time) < timedelta(hours=1):
             continue
 
-    
         if score >= 3:
             entry = row['close']
             tp = entry + 0.10 if signal == "BUY" else entry - 0.10
             sl = entry - 0.07 if signal == "BUY" else entry + 0.07
             results.append({
-                'time': row['time'], 'pair': "USDJPY", 'signal': signal, 
+                'time': row['time'], 'pair': "USDJPY", 'signal': signal,
                 'entry': entry, 'tp': tp, 'sl': sl, 'score': score, 'reason': "; ".join(reasons)
             })
             last_trade_time = now
-
+    
     return pd.DataFrame(results)
 
 # ====== 통합 실행 ======
 if __name__ == "__main__":
     final = []
 
-    # EURUSD
     df_eur = pd.read_csv("EURUSD.csv")
     df_eur['time'] = pd.to_datetime(df_eur['time'])
     res_eur = backtest_main(df_eur, "EURUSD")
     final.append(res_eur)
 
-    # GBPUSD
     df_gbp = pd.read_csv("GBPUSD.csv")
     df_gbp['time'] = pd.to_datetime(df_gbp['time'])
     res_gbp = backtest_main(df_gbp, "GBPUSD")
     final.append(res_gbp)
 
-    # USDJPY (Fast Fury)
     df_jpy = pd.read_csv("USDJPY.csv")
     df_jpy['time'] = pd.to_datetime(df_jpy['time'])
     res_jpy = backtest_fastfury(df_jpy)
