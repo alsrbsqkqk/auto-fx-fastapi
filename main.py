@@ -18,9 +18,9 @@ def conflict_check(rsi, pattern, trend, signal):
     """
 
     # 1️⃣ 기본 추세-패턴 충돌 방지
-    if rsi > 70 and pattern in ["SHOOTING_STAR", "BEARISH_ENGULFING"] and trend == "UPTREND":
+    if rsi > 80 and pattern in ["SHOOTING_STAR", "BEARISH_ENGULFING"] and trend == "UPTREND":
         return True
-    if rsi < 30 and pattern in ["HAMMER", "BULLISH_ENGULFING"] and trend == "DOWNTREND":
+    if rsi < 20 and pattern in ["HAMMER", "BULLISH_ENGULFING"] and trend == "DOWNTREND":
         return True
 
     # 2️⃣ 캔들패턴이 없는데 시그널과 추세가 역방향이면 관망
@@ -104,10 +104,10 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
         reasons.append("RSI 중립구간 (보수 관망 추천)")
     
 
-    if (macd - macd_signal) > 0.001:
+    if (macd - macd_signal) > 0.0005:
         signal_score += 2
         reasons.append("MACD 골든크로스 (유의미)")
-    elif (macd_signal - macd) > 0.001:
+    elif (macd_signal - macd) > 0.0005:
         signal_score += 2
         reasons.append("MACD 데드크로스 (유의미)")
     else:
@@ -528,6 +528,11 @@ def detect_candle_pattern(candles):
         return "HAMMER"
     elif upper_wick > 2 * body and lower_wick < body:
         return "SHOOTING_STAR"
+    elif body / (last['high'] - last['low']) >= 0.7:
+        if last['close'] > last['open']:
+            return "LONG_BODY_BULL"
+        elif last['close'] < last['open']:
+            return "LONG_BODY_BEAR"
     return "NEUTRAL"
 
 def calculate_candle_psychology_score(candles, signal):
