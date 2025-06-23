@@ -278,6 +278,7 @@ async def webhook(request: Request):
 
     gpt_feedback = "GPT 분석 생략: 점수 미달"
     decision, tp, sl = "WAIT", None, None
+    executed_price = None
 
     if signal_score >= 3:
         gpt_feedback = analyze_with_gpt(payload)
