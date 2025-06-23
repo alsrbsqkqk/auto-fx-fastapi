@@ -334,8 +334,13 @@ async def webhook(request: Request):
         elif effective_decision == "SELL":
             tp = round(price - tp_pips, 5)
             sl = round(price + sl_pips, 5)
+         gpt_feedback += "\n⚠️ TP/SL 추출 실패 → ATR 기반 기본값 적용"           
+      
+        # ✅ 안전 거리 필터 (너무 가까운 주문 방지)
+        if not is_min_distance_ok(pair, price, tp, sl):
+            print("🚫 TP/SL이 현재가에 너무 가까움 → 주문 취소")
+            return JSONResponse(content={"status": "WAIT", "message": "Too close TP/SL, skipped"})
 
-        gpt_feedback += "\n⚠️ TP/SL 추출 실패 → ATR 기반 기본값 적용"
 
     
     should_execute = False
@@ -636,6 +641,15 @@ def place_order(pair, units, tp, sl, digits):
         return {"status": "error", "message": str(e)}
 
 import re
+
+# ✅ TP/SL 너무 가까운 거리 제한 필터
+def is_min_distance_ok(pair, price, tp, sl, min_distance_pip=3):
+    pip_value = 0.01 if pair.endswith("JPY") else 0.0001
+    min_distance = pip_value * min_distance_pip
+
+    if abs(price - tp) < min_distance or abs(price - sl) < min_distance:
+        return False
+    return True
 
 
 def parse_gpt_feedback(text, pair):
