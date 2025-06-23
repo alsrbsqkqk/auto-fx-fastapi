@@ -283,7 +283,7 @@ async def webhook(request: Request):
     if signal_score >= 3:
         gpt_feedback = analyze_with_gpt(payload)
         print("✅ STEP 6: GPT 응답 수신 완료")
-        decision, tp, sl = parse_gpt_feedback(gpt_feedback)
+        decision, tp, sl = parse_gpt_feedback(gpt_feedback, pair)
     else:
         print("🚫 GPT 분석 생략: 점수 3점 미만")
     
@@ -638,7 +638,7 @@ def place_order(pair, units, tp, sl, digits):
 import re
 
 
-def parse_gpt_feedback(text):
+def parse_gpt_feedback(text, pair):
     import re
 
     decision = "WAIT"
@@ -685,6 +685,18 @@ def parse_gpt_feedback(text):
 
     tp = extract_avg_price(tp_line)
     sl = extract_avg_price(sl_line)
+
+    # ✅ JPY 페어일 경우 자리수 자동 변환
+    if "JPY" in pair:
+        if tp is not None:
+            tp = round(tp, 3)
+        if sl is not None:
+            sl = round(sl, 3)
+    else:
+        if tp is not None:
+            tp = round(tp, 5)
+        if sl is not None:
+            sl = round(sl, 5)
 
     return decision, tp, sl
     
