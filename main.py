@@ -334,7 +334,7 @@ async def webhook(request: Request):
         elif effective_decision == "SELL":
             tp = round(price - tp_pips, 5)
             sl = round(price + sl_pips, 5)
-         gpt_feedback += "\n⚠️ TP/SL 추출 실패 → ATR 기반 기본값 적용"           
+        gpt_feedback += "\n⚠️ TP/SL 추출 실패 → ATR 기반 기본값 적용"           
       
         # ✅ 안전 거리 필터 (너무 가까운 주문 방지)
         if not is_min_distance_ok(pair, price, tp, sl):
