@@ -102,6 +102,10 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
             reasons.append("RSI > 70 but 캔들 패턴 없음 → 관망")
     if 40 <= rsi <= 60:
         reasons.append("RSI 중립구간 (보수 관망 추천)")
+
+    if pattern in ["LONG_BODY_BULL", "LONG_BODY_BEAR"]:
+        signal_score += 2
+        reasons.append(f"장대바디 캔들 추가 가점: {pattern}")
     
 
     if (macd - macd_signal) > 0.0005:
