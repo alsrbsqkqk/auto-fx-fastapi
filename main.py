@@ -25,9 +25,9 @@ def conflict_check(rsi, pattern, trend, signal):
 
     # 2️⃣ 캔들패턴이 없는데 시그널과 추세가 역방향이면 관망
     if pattern == "NEUTRAL":
-        if trend == "UPTREND" and signal == "SELL" and rsi > 70:
+        if trend == "UPTREND" and signal == "SELL" and rsi > 80:
             return True
-        if trend == "DOWNTREND" and signal == "BUY" and rsi < 30:
+        if trend == "DOWNTREND" and signal == "BUY" and rsi < 20:
             return True
 
     # 3️⃣ 기타 보수적 예외 추가
