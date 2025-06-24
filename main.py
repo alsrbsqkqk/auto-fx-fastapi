@@ -668,6 +668,8 @@ import re
 
 # ✅ TP/SL 너무 가까운 거리 제한 필터
 def is_min_distance_ok(pair, price, tp, sl, min_distance_pip=8):
+    if pair.endswith("JPY"):
+        min_distance_pip = 12  # JPY는 더 넓게 보호
     pip_value = 0.01 if pair.endswith("JPY") else 0.0001
     min_distance = pip_value * min_distance_pip
 
