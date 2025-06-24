@@ -132,19 +132,23 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
         reasons.append("MACD 미세변동 → 가점 보류")
 
     if stoch_rsi > 0.8:
-        if trend == "UPTREND":
+        if trend == "UPTREND" and rsi < 70:
             signal_score += 2
             reasons.append("Stoch RSI 과열 + 상승추세 일치")
-        else:
+        elif trend == "NEUTRAL" and signal == "SELL" and rsi > 60:
             signal_score += 1
-            reasons.append("Stoch RSI 과열 단독")
+            reasons.append("Stoch RSI 과열 + neutral 매도 조건 → 피로 누적 매도 가능성")
+        else:
+            reasons.append("Stoch RSI 과열 → 고점 피로, 관망")
     elif stoch_rsi < 0.2:
-        if trend == "DOWNTREND":
+        if trend == "DOWNTREND" and rsi > 30:
             signal_score += 2
             reasons.append("Stoch RSI 과매도 + 하락추세 일치")
-        else:
+        elif trend == "NEUTRAL" and signal == "SELL" and rsi > 50:
             signal_score += 1
-            reasons.append("Stoch RSI 과매도 단독")
+            reasons.append("Stoch RSI 과매도 + neutral 매도 전환 조건")
+        else:
+            reasons.append("Stoch RSI 과매도 → 저점 피로, 관망")
     else:
         reasons.append("Stoch RSI 중립")
 
