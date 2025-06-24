@@ -164,9 +164,12 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
         signal_score += 1
         reasons.append("유동성 좋음")
 
-    if pattern in ["HAMMER", "BULLISH_ENGULFING", "SHOOTING_STAR", "BEARISH_ENGULFING"]:
-        signal_score += 1
-        reasons.append(f"캔들패턴 추가 가점: {pattern}")
+    if pattern in ["BULLISH_ENGULFING", "HAMMER"]:
+        signal_score += 1  # 강력 패턴은 유지
+    elif pattern in ["LONG_BODY_BULL"]:
+        signal_score += 0.5  # 장대양봉은 소폭만 가점 (이번 케이스 반영)
+    elif pattern in ["SHOOTING_STAR", "BEARISH_ENGULFING"]:
+        signal_score -= 1  # 반전 패턴은 역가점
 
 
     return signal_score, reasons
@@ -673,6 +676,7 @@ def is_min_distance_ok(pair, price, tp, sl, min_distance_pip=8):
     pip_value = 0.01 if pair.endswith("JPY") else 0.0001
     min_distance = pip_value * min_distance_pip
 
+    min_distance = atr * 0.8
     if abs(price - tp) < min_distance or abs(price - sl) < min_distance:
         return False
     return True
