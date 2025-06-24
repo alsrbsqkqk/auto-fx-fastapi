@@ -671,7 +671,7 @@ import re
 
 # ✅ TP/SL 너무 가까운 거리 제한 필터
 def is_min_distance_ok(pair, price, tp, sl, atr, atr_factor=0.8):
-        """
+    """
     TP/SL 거리가 최소 ATR 기반으로 일정 수준 이상 확보되었는지 확인
     """
     min_distance = atr * atr_factor  # ex) 80% ATR
