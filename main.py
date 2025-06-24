@@ -153,17 +153,6 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
         signal_score += 1
         reasons.append(f"캔들패턴 추가 가점: {pattern}")
 
-        # ✅ 박스권 돌파 가점 로직 추가
-    box_info = detect_box_breakout(candles, pair)
-
-    if box_info["in_box"] and box_info["breakout"] == "UP" and signal == "BUY":
-        signal_score += 3
-        reasons.append("📦 박스권 상단 돌파 + 매수 신호 일치")
-    elif box_info["in_box"] and box_info["breakout"] == "DOWN" and signal == "SELL":
-        signal_score += 3
-        reasons.append("📦 박스권 하단 돌파 + 매도 신호 일치")
-    elif box_info["in_box"] and box_info["breakout"] is None:
-        reasons.append("📦 박스권 유지 중 → 관망 경계")
 
     return signal_score, reasons
 
