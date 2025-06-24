@@ -119,10 +119,10 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
         reasons.append("📦 박스권 유지 중 → 관망 경계")
     
 
-    if (macd - macd_signal) > 0.0005 and trend == "UPTREND":
+    if (macd - macd_signal) > 0.0002 and trend == "UPTREND":
         signal_score += 3
         reasons.append("MACD 골든크로스 + 상승추세 일치 → breakout 강세")
-    elif (macd_signal - macd) > 0.0005 and trend == "DOWNTREND":
+    elif (macd_signal - macd) > 0.0002 and trend == "DOWNTREND":
         signal_score += 3
         reasons.append("MACD 데드크로스 + 하락추세 일치 → 하락 강화")
     elif abs(macd - macd_signal) > 0.0005:
@@ -131,14 +131,22 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     else:
         reasons.append("MACD 미세변동 → 가점 보류")
 
-    if stoch_rsi > 0.8 and trend == "UPTREND":
-        signal_score += 1
-        reasons.append("Stoch RSI 과열 + 상승추세 일치")
-    elif stoch_rsi < 0.2 and trend == "DOWNTREND":
-        signal_score += 1
-        reasons.append("Stoch RSI 과매도 + 하락추세 일치")
+    if stoch_rsi > 0.8:
+        if trend == "UPTREND":
+            signal_score += 2
+            reasons.append("Stoch RSI 과열 + 상승추세 일치")
+        else:
+            signal_score += 1
+            reasons.append("Stoch RSI 과열 단독")
+    elif stoch_rsi < 0.2:
+        if trend == "DOWNTREND":
+            signal_score += 2
+            reasons.append("Stoch RSI 과매도 + 하락추세 일치")
+        else:
+            signal_score += 1
+            reasons.append("Stoch RSI 과매도 단독")
     else:
-        reasons.append("Stoch RSI 단독 과열/과매도 → 보류")
+        reasons.append("Stoch RSI 중립")
 
     if trend == "UPTREND" and signal == "BUY":
         signal_score += 1
