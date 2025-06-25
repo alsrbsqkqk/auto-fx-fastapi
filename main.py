@@ -133,11 +133,11 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
         elif (macd_signal - macd) > 0.0002 and trend == "DOWNTREND":
             signal_score += 3
             reasons.append("MACD 데드크로스 + 하락추세 일치 → 하락 강화")
-    elif abs(macd - macd_signal) > 0.0005:
-        signal_score += 1
-        reasons.append("MACD 교차 발생 (추세불명확)")
-    else:
-        reasons.append("MACD 미세변동 → 가점 보류")
+elif abs(macd - macd_signal) > 0.0005:
+    signal_score += 1
+    reasons.append("MACD 교차 발생 (추세불명확)")
+else:
+    reasons.append("MACD 미세변동 → 가점 보류")
 
     if stoch_rsi > 0.8:
         if trend == "UPTREND" and rsi < 70:
@@ -318,9 +318,9 @@ async def webhook(request: Request):
         gpt_feedback = analyze_with_gpt(payload)
         print("✅ STEP 6: GPT 응답 수신 완료")
         decision, tp, sl = parse_gpt_feedback(gpt_feedback, pair)
-    # 보정 적용
-    if decision in ["BUY", "SELL"] and tp and sl:
-    tp, sl = adjust_tp_sl_distance(price, tp, sl, atr, pair)
+        # 보정 적용
+        if decision in ["BUY", "SELL"] and tp and sl:
+            tp, sl = adjust_tp_sl_distance(price, tp, sl, atr, pair)
     else:
         print("🚫 GPT 분석 생략: 점수 3점 미만")
     
