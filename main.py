@@ -121,11 +121,16 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
 
     if pair == "USD_JPY":
         if (macd - macd_signal) > 0.0002 and trend == "UPTREND":
-            signal_score += 4  # 강화
+            signal_score += 4
             reasons.append("USDJPY 강화: MACD 골든크로스 + 상승추세 일치 → breakout 강세")
         elif (macd_signal - macd) > 0.0002 and trend == "DOWNTREND":
-            signal_score += 4  # 강화
+            signal_score += 4
             reasons.append("USDJPY 강화: MACD 데드크로스 + 하락추세 일치 → 하락 강화")
+        elif abs(macd - macd_signal) > 0.0005:
+            signal_score += 1
+            reasons.append("USDJPY MACD 교차 발생 (추세불명확)")
+        else:
+            reasons.append("USDJPY MACD 미세변동 → 가점 보류")
     else:
         if (macd - macd_signal) > 0.0002 and trend == "UPTREND":
             signal_score += 3
@@ -134,10 +139,10 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
             signal_score += 3
             reasons.append("MACD 데드크로스 + 하락추세 일치 → 하락 강화")
         elif abs(macd - macd_signal) > 0.0005:
-        signal_score += 1
-        reasons.append("MACD 교차 발생 (추세불명확)")
-else:
-    reasons.append("MACD 미세변동 → 가점 보류")
+            signal_score += 1
+            reasons.append("MACD 교차 발생 (추세불명확)")
+        else:
+            reasons.append("MACD 미세변동 → 가점 보류")
 
     if stoch_rsi > 0.8:
         if trend == "UPTREND" and rsi < 70:
@@ -983,6 +988,50 @@ async def fastfury_webhook(request: Request):
     pattern = detect_candle_pattern(candles)
     trend = detect_trend(candles, rsi, boll_mid)
     liquidity = estimate_liquidity(candles)
+    # ✅ (이 위치에 추가)
+    signal_score = 0
+    reasons = []
+
+    # RSI + Stoch RSI 콤보
+    if 50 <= rsi.iloc[-1] <= 60 and stoch_rsi < 0.2 and signal == "BUY":
+        signal_score += 2
+        reasons.append("RSI 중립 + Stoch RSI 과매도 → 상승 기대")
+    if 50 <= rsi.iloc[-1] <= 60 and stoch_rsi > 0.8 and signal == "SELL":
+        signal_score += 2
+        reasons.append("RSI 중립 + Stoch RSI 과열 → 하락 기대")
+
+    # MACD 민감도 완화
+    if abs(macd.iloc[-1] - macd_signal.iloc[-1]) > 0.0001:
+        signal_score += 1
+        reasons.append("MACD 교차 (민감도 완화 적용)")
+
+    # 박스권 하단 반복 지지 가점
+    box_info = detect_box_breakout(candles, pair)
+    recent_lows = candles['low'].tail(15)
+    support_count = sum(recent_lows <= box_info['support'] * 1.001)
+    if support_count >= 3 and signal == "BUY":
+        signal_score += 2
+        reasons.append("박스권 하단 반복 지지 → 상승 강화")
+
+    # 장대바디 캔들 심리
+    last = candles.iloc[-1]
+    body = abs(last['close'] - last['open'])
+    total_range = last['high'] - last['low']
+    if total_range > 0 and (body / total_range) > 0.6:
+        if signal == "BUY" and last['close'] > last['open']:
+            signal_score += 1
+            reasons.append("장대 양봉 → 매수 심리")
+        elif signal == "SELL" and last['close'] < last['open']:
+            signal_score += 1
+            reasons.append("장대 음봉 → 매도 심리")
+
+    # 미국장 초반 유동성 가점
+    now_utc = datetime.utcnow()
+    if 16 <= now_utc.hour <= 18:
+        signal_score += 1
+        reasons.append("미국 개장 초반 유동성 증가")
+
+    print("📝 FastFury 내부 점수:", signal_score, reasons)
 
     # ✅ GPT 호출 (TP/SL 없이 판단만 요청)
     payload = {
@@ -995,7 +1044,7 @@ async def fastfury_webhook(request: Request):
     gpt_result = analyze_with_gpt(payload)
 
     # GPT 결과 파싱 (BUY/SELL/WAIT)
-    if "BUY" in gpt_result and trend_m15 == "UPTREND":
+    if "BUY" in gpt_result and trend == "UPTREND":
         decision = "BUY"
     elif "SELL" in gpt_result and trend_m15 == "DOWNTREND":
         decision = "SELL"
@@ -1033,7 +1082,7 @@ async def fastfury_webhook(request: Request):
         pair=pair, 
         signal=signal, 
         decision=decision, 
-        score=None,  # 지금 이 버전엔 승점 없음
+        score=signal_score,
         notes="FastFury Hybrid 실전진입", 
         result=result, 
         rsi=rsi.iloc[-1], 
