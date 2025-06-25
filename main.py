@@ -1046,7 +1046,7 @@ async def fastfury_webhook(request: Request):
     # GPT 결과 파싱 (BUY/SELL/WAIT)
     if "BUY" in gpt_result and trend == "UPTREND":
         decision = "BUY"
-    elif "SELL" in gpt_result and trend_m15 == "DOWNTREND":
+    elif "SELL" in gpt_result and trend == "DOWNTREND":
         decision = "SELL"
     else:
         decision = "WAIT"
