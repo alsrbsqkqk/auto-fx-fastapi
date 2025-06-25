@@ -337,26 +337,30 @@ async def webhook(request: Request):
         #return JSONResponse(content={"status": "COOLDOWN"})
 
     
-    # ✅ TP/SL 값이 없을 경우 기본 설정 (15pip/10pip 기준)
-    effective_decision = decision if decision in ["BUY", "SELL"] else signal
+    # ✅ TP/SL 값이 없을 경우 기본 설정 (ATR 기반 세분화 보정)
     if (tp is None or sl is None) and price is not None:
         pip_value = 0.01 if "JPY" in pair else 0.0001
 
-        # ATR 기반 보정 추가
-        if atr < 0.0007:
-            tp_pips = pip_value * 10
-            sl_pips = pip_value * 7
-        else:
+        # 더 세분화된 ATR 기반 설정
+        if atr >= 0.18:
+            tp_pips = pip_value * 25
+            sl_pips = pip_value * 12
+        elif atr >= 0.13:
+            tp_pips = pip_value * 20
+            sl_pips = pip_value * 10
+        elif atr >= 0.08:
             tp_pips = pip_value * 15
             sl_pips = pip_value * 10
+        else:
+            tp_pips = pip_value * 10
+            sl_pips = pip_value * 7
 
         if effective_decision == "BUY":
-            tp = round(price + tp_pips, 5)
-            sl = round(price - sl_pips, 5)
+            tp = round(price + tp_pips, 5 if pip_value == 0.0001 else 3)
+            sl = round(price - sl_pips, 5 if pip_value == 0.0001 else 3)
         elif effective_decision == "SELL":
-            tp = round(price - tp_pips, 5)
-            sl = round(price + sl_pips, 5)
-        gpt_feedback += "\n⚠️ TP/SL 추출 실패 → ATR 기반 기본값 적용"           
+            tp = round(price - tp_pips, 5 if pip_value == 0.0001 else 3)
+            sl = round(price + sl_pips, 5 if pip_value == 0.0001 else 3)      
       
         # ✅ 안전 거리 필터 (너무 가까운 주문 방지)
         if not is_min_distance_ok(pair, price, tp, sl):
