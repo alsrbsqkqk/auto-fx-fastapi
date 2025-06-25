@@ -1132,5 +1132,3 @@ async def fastfury_webhook(request: Request):
 
     
     return result
-
-
