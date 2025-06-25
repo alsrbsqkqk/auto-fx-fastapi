@@ -100,6 +100,24 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
             reasons.append("RSI > 70 + 캔들 패턴 확인")
         else:
             reasons.append("RSI > 70 but 캔들 패턴 없음 → 관망")
+    # === 눌림목 BUY 강화: GBPUSD 한정 ===
+    if pair == "GBP_USD" and signal == "BUY":
+        if trend == "UPTREND":
+            signal_score += 1
+            reasons.append("GBPUSD 강화: UPTREND 유지 → 매수 기대")
+        if 40 <= rsi <= 50:
+            signal_score += 1
+            reasons.append("GBPUSD 강화: RSI 40~50 눌림목 영역")
+        if 0.1 <= stoch_rsi <= 0.3:
+            signal_score += 1
+            reasons.append("GBPUSD 강화: Stoch RSI 바닥 반등 초기")
+        if pattern in ["HAMMER", "LONG_BODY_BULL"]:
+            signal_score += 1
+            reasons.append("GBPUSD 강화: 매수 캔들 패턴 확인")
+        if macd > 0:
+            signal_score += 1
+            reasons.append("GBPUSD 강화: MACD 양수 유지 (상승 흐름 유지)")
+    
     if 40 <= rsi <= 60:
         reasons.append("RSI 중립구간 (보수 관망 추천)")
 
