@@ -87,6 +87,11 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
         reasons.append("⚠️ 추세와 패턴이 충돌 → 관망 권장")
         return 0, reasons   
 
+    # ✅ V3 과매도 SELL 방어 필터 추가
+    if signal == "SELL" and rsi < 40:
+        reasons.append("❗ 과매도 SELL 방어 → 관망 강제 (V3 강화)")
+        return 0, reasons
+        
     if rsi < 30:
         if pattern in ["HAMMER", "BULLISH_ENGULFING"]:
             signal_score += 2
