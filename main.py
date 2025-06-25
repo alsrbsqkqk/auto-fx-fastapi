@@ -363,7 +363,7 @@ async def webhook(request: Request):
             sl = round(price + sl_pips, 5 if pip_value == 0.0001 else 3)      
       
         # ✅ 안전 거리 필터 (너무 가까운 주문 방지)
-        if not is_min_distance_ok(pair, price, tp, sl):
+        if not is_min_distance_ok(pair, price, tp, sl, atr):
             print("🚫 TP/SL이 현재가에 너무 가까움 → 주문 취소")
             return JSONResponse(content={"status": "WAIT", "message": "Too close TP/SL, skipped"})
 
@@ -673,12 +673,17 @@ def place_order(pair, units, tp, sl, digits):
 
 import re
 
-# ✅ TP/SL 너무 가까운 거리 제한 필터
-def is_min_distance_ok(pair, price, tp, sl, atr, atr_factor=0.8):
+# ✅ 페어별 ATR 기반 TP/SL 거리 필터 (A안 적용)
+def is_min_distance_ok(pair, price, tp, sl, atr):
     """
-    TP/SL 거리가 최소 ATR 기반으로 일정 수준 이상 확보되었는지 확인
+    페어별 ATR factor 적용
     """
-    min_distance = atr * atr_factor  # ex) 80% ATR
+    if pair == "USD_JPY":
+        atr_factor = 0.6
+    else:
+        atr_factor = 0.8
+
+    min_distance = atr * atr_factor
     if abs(price - tp) < min_distance or abs(price - sl) < min_distance:
         return False
     return True
