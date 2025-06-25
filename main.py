@@ -119,12 +119,20 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
         reasons.append("📦 박스권 유지 중 → 관망 경계")
     
 
-    if (macd - macd_signal) > 0.0002 and trend == "UPTREND":
-        signal_score += 3
-        reasons.append("MACD 골든크로스 + 상승추세 일치 → breakout 강세")
-    elif (macd_signal - macd) > 0.0002 and trend == "DOWNTREND":
-        signal_score += 3
-        reasons.append("MACD 데드크로스 + 하락추세 일치 → 하락 강화")
+    if pair == "USD_JPY":
+        if (macd - macd_signal) > 0.0002 and trend == "UPTREND":
+            signal_score += 4  # 강화
+            reasons.append("USDJPY 강화: MACD 골든크로스 + 상승추세 일치 → breakout 강세")
+        elif (macd_signal - macd) > 0.0002 and trend == "DOWNTREND":
+            signal_score += 4  # 강화
+            reasons.append("USDJPY 강화: MACD 데드크로스 + 하락추세 일치 → 하락 강화")
+    else:
+        if (macd - macd_signal) > 0.0002 and trend == "UPTREND":
+            signal_score += 3
+            reasons.append("MACD 골든크로스 + 상승추세 일치 → breakout 강세")
+        elif (macd_signal - macd) > 0.0002 and trend == "DOWNTREND":
+            signal_score += 3
+            reasons.append("MACD 데드크로스 + 하락추세 일치 → 하락 강화")
     elif abs(macd - macd_signal) > 0.0005:
         signal_score += 1
         reasons.append("MACD 교차 발생 (추세불명확)")
@@ -133,8 +141,12 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
 
     if stoch_rsi > 0.8:
         if trend == "UPTREND" and rsi < 70:
-            signal_score += 2
-            reasons.append("Stoch RSI 과열 + 상승추세 일치")
+            if pair == "USD_JPY":
+                signal_score += 3  # USDJPY만 강화
+                reasons.append("USDJPY 강화: Stoch RSI 과열 + 상승추세 일치")
+            else:
+                signal_score += 2
+                reasons.append("Stoch RSI 과열 + 상승추세 일치")
         elif trend == "NEUTRAL" and signal == "SELL" and rsi > 60:
             signal_score += 1
             reasons.append("Stoch RSI 과열 + neutral 매도 조건 → 피로 누적 매도 가능성")
@@ -306,6 +318,9 @@ async def webhook(request: Request):
         gpt_feedback = analyze_with_gpt(payload)
         print("✅ STEP 6: GPT 응답 수신 완료")
         decision, tp, sl = parse_gpt_feedback(gpt_feedback, pair)
+    # 보정 적용
+    if decision in ["BUY", "SELL"] and tp and sl:
+    tp, sl = adjust_tp_sl_distance(price, tp, sl, atr, pair)
     else:
         print("🚫 GPT 분석 생략: 점수 3점 미만")
     
@@ -716,6 +731,20 @@ def parse_gpt_feedback(text, pair):
             decision = "BUY"
         elif "SELL" in text.upper() and "BUY" not in text.upper():
             decision = "SELL"
+
+    # GPT가 제시한 TP/SL이 너무 가까울 경우 보정
+    def adjust_tp_sl_distance(price, tp, sl, atr, pair):
+        if atr is None:
+            return tp, sl  # ATR 못구했을 경우는 보정 생략
+        min_sl_distance = atr * 0.5  # 최소 SL 거리는 ATR의 50% 확보
+        current_sl_distance = abs(price - sl)
+        if current_sl_distance < min_sl_distance:
+            if price > sl:
+                sl = round(price - min_sl_distance, 3 if pair.endswith("JPY") else 5)
+            else:
+                sl = round(price + min_sl_distance, 3 if pair.endswith("JPY") else 5)
+        return tp, sl
+    
 
     # ✅ TP/SL 추출 (가장 마지막 숫자 사용)
     tp_line = next((line for line in text.splitlines() if "TP:" in line.upper() or "TP 제안 값" in line or "목표" in line), "")
