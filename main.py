@@ -722,7 +722,7 @@ def is_min_distance_ok(pair, price, tp, sl, atr):
     페어별 ATR factor 적용
     """
     if pair == "USD_JPY":
-        atr_factor = 0.6
+        atr_factor = 0.5
     else:
         atr_factor = 0.8
 
