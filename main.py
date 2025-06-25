@@ -1059,8 +1059,8 @@ async def fastfury_webhook(request: Request):
     sl = None
 
     pip_value = 0.01
-    tp_pips = pip_value * 7
-    sl_pips = pip_value * 4
+    tp_pips = pip_value * 12
+    sl_pips = pip_value * 6
 
     if decision == "BUY":
         units = 100000
