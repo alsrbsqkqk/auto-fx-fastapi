@@ -133,9 +133,9 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
         elif (macd_signal - macd) > 0.0002 and trend == "DOWNTREND":
             signal_score += 3
             reasons.append("MACD 데드크로스 + 하락추세 일치 → 하락 강화")
-elif abs(macd - macd_signal) > 0.0005:
-    signal_score += 1
-    reasons.append("MACD 교차 발생 (추세불명확)")
+        elif abs(macd - macd_signal) > 0.0005:
+        signal_score += 1
+        reasons.append("MACD 교차 발생 (추세불명확)")
 else:
     reasons.append("MACD 미세변동 → 가점 보류")
 
