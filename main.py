@@ -89,8 +89,12 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
 
     # ✅ V3 과매도 SELL 방어 필터 추가
     if signal == "SELL" and rsi < 40:
-        reasons.append("❗ 과매도 SELL 방어 → 관망 강제 (V3 강화)")
-        return 0, reasons
+        if macd > macd_signal and stoch_rsi > 0.5:
+            signal_score += 1
+            reasons.append("❗ 과매도 SELL 경계지만 MACD + Stoch RSI 상승 → 조건부 진입 허용")
+        else:
+            reasons.append("❗ 과매도 SELL 방어 → 관망 강제 (V3 강화)")
+            return 0, reasons
         
     if rsi < 30:
         if pattern in ["HAMMER", "BULLISH_ENGULFING"]:
@@ -123,8 +127,9 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
             signal_score += 1
             reasons.append("GBPUSD 강화: MACD 양수 유지 (상승 흐름 유지)")
     
-    if 40 <= rsi <= 60:
-        reasons.append("RSI 중립구간 (보수 관망 추천)")
+    if 45 <= rsi <= 60 and signal == "BUY":
+        signal_score += 1
+        reasons.append("RSI 중립구간 (45~60) → 반등 기대 가점")
 
     if pattern in ["LONG_BODY_BULL", "LONG_BODY_BEAR"]:
         signal_score += 2
@@ -154,6 +159,13 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
             reasons.append("USDJPY MACD 교차 발생 (추세불명확)")
         else:
             reasons.append("USDJPY MACD 미세변동 → 가점 보류")
+      
+    # ✅ 히스토그램 양봉 전환 여부 확인 → 상승 흐름 가점
+    macd_hist = macd - macd_signal
+    if macd_hist > 0:
+         signal_score += 1
+        reasons.append("MACD 히스토그램 증가 → 상승 초기 흐름 강화")
+            
     else:
         if (macd - macd_signal) > 0.0002 and trend == "UPTREND":
             signal_score += 3
