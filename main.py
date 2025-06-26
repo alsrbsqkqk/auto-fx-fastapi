@@ -762,15 +762,27 @@ def parse_gpt_feedback(text, pair):
 
     # GPT가 제시한 TP/SL이 너무 가까울 경우 보정
     def adjust_tp_sl_distance(price, tp, sl, atr, pair):
-        if atr is None:
-            return tp, sl  # ATR 못구했을 경우는 보정 생략
-        min_sl_distance = atr * 0.5  # 최소 SL 거리는 ATR의 50% 확보
-        current_sl_distance = abs(price - sl)
-        if current_sl_distance < min_sl_distance:
+        if atr is None or tp is None or sl is None:
+            return tp, sl
+
+        pip_value = 0.01 if "JPY" in pair else 0.0001
+        min_gap_pips = 5
+        min_sl_distance = atr * 0.5  # SL과 현재가 간 거리 최소 확보
+        min_tp_sl_gap = pip_value * min_gap_pips  # TP-SL 간 최소 거리
+
+        # SL 보정
+        if abs(price - sl) < min_sl_distance:
             if price > sl:
                 sl = round(price - min_sl_distance, 3 if pair.endswith("JPY") else 5)
             else:
                 sl = round(price + min_sl_distance, 3 if pair.endswith("JPY") else 5)
+
+        # TP/SL 간 거리 보정
+        if abs(tp - sl) < min_tp_sl_gap:
+            print("🚫 TP와 SL 간격이 너무 가까움 → 보정 또는 관망 필요")
+            # 보정 불가능하면 None 반환
+            return None, None
+
         return tp, sl
     
 
