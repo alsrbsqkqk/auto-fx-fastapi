@@ -180,6 +180,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
         else:
             reasons.append("MACD 미세변동 → 가점 보류")
 
+    
     if stoch_rsi > 0.8:
         if trend == "UPTREND" and rsi < 70:
             if pair == "USD_JPY":
