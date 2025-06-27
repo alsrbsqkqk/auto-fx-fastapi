@@ -163,7 +163,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
         # ✅ 히스토그램 양봉 전환 여부 확인 → 상승 흐름 가점
         macd_hist = macd - macd_signal
         if macd_hist > 0:
-             signal_score += 1
+            signal_score += 1
             reasons.append("MACD 히스토그램 증가 → 상승 초기 흐름 강화")
             
     else:
