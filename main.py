@@ -760,7 +760,7 @@ def parse_gpt_feedback(text, pair):
 
     # ✅ 명확한 판단 패턴 탐색 (정규식 우선)
     decision_patterns = [
-        r"(결정|진입\s*판단|신호|방향)\s*(은|:|：)?\s*['\"]?(BUY|SELL|WAIT)['\"]?",
+        r"(결정|판단)\s*(판단|신호|방향)?\s*(은|:|：)?\s*[\"']?(BUY|SELL|WAIT)[\"']?",
         r"진입\s*방향\s*(은|:|：)?\s*['\"]?(BUY|SELL|WAIT)['\"]?",
         r"판단\s*(은|:|：)?\s*['\"]?(BUY|SELL|WAIT)['\"]?",
     ]
