@@ -159,12 +159,13 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
             reasons.append("USDJPY MACD 교차 발생 (추세불명확)")
         else:
             reasons.append("USDJPY MACD 미세변동 → 가점 보류")
+
+            # ✅ 히스토그램 증가 보조 판단 (미세하지만 상승 흐름일 경우)
+            macd_hist = macd - macd_signal
+            if macd_hist > 0:
+                signal_score += 1
+                reasons.append("MACD 미세하지만 히스토그램 증가 → 상승 초기 흐름")
       
-        # ✅ 히스토그램 양봉 전환 여부 확인 → 상승 흐름 가점
-        macd_hist = macd - macd_signal
-        if macd_hist > 0:
-            signal_score += 1
-            reasons.append("MACD 히스토그램 증가 → 상승 초기 흐름 강화")
             
     else:
         if (macd - macd_signal) > 0.0002 and trend == "UPTREND":
