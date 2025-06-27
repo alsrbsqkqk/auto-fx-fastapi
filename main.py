@@ -201,6 +201,10 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
         elif trend == "NEUTRAL" and signal == "SELL" and rsi > 50:
             signal_score += 1
             reasons.append("Stoch RSI 과매도 + neutral 매도 전환 조건")
+        if stoch_rsi < 0.1:
+            signal_score += 1
+            reasons.append("Stoch RSI 0.1 이하 → 극단적 과매도 가점")
+        
         else:
             reasons.append("Stoch RSI 과매도 → 저점 피로, 관망")
     else:
@@ -1040,6 +1044,11 @@ async def fastfury_webhook(request: Request):
     # ✅ (이 위치에 추가)
     signal_score = 0
     reasons = []
+   
+    if trend == 'UPTREND' and macd > 0 and rsi > 65:
+        reasons.append("상승추세 + MACD 강세 → RSI SELL 무효화")
+        rsi_sell_score = 0
+    
 
     # RSI + Stoch RSI 콤보
     if 50 <= rsi.iloc[-1] <= 60 and stoch_rsi < 0.2 and signal == "BUY":
