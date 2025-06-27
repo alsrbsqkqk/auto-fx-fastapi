@@ -798,9 +798,8 @@ def parse_gpt_feedback(text, pair):
 
         # TP/SL 간 거리 보정
         if abs(tp - sl) < min_tp_sl_gap:
-            print("🚫 TP와 SL 간격이 너무 가까움 → 보정 또는 관망 필요")
+            print("⚠️ TP와 SL 간격이 부족하지만 진입 강행 (조건 완화)")
             # 보정 불가능하면 None 반환
-            return None, None
 
         return tp, sl
     
