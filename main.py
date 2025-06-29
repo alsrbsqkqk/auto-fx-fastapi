@@ -12,6 +12,30 @@ import numpy as np
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
+# score_signal_with_filters 위쪽에 추가
+def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles):
+    opportunity_score = 0
+    reasons = []
+
+    if stoch_rsi < 0.05 and rsi > 50 and macd > macd_signal:
+        opportunity_score += 2
+        reasons.append("💡 Stoch RSI 극단 과매도 + RSI 50 상단 돌파 + MACD 상승 → 강력한 BUY 기회")
+
+    if stoch_rsi > 0.95 and rsi < 50 and macd < macd_signal:
+        opportunity_score += 2
+        reasons.append("💡 Stoch RSI 극단 과매수 + RSI 50 이탈 + MACD 하락 → 강력한 SELL 기회")
+
+    if pattern in ["BULLISH_ENGULFING", "BEARISH_ENGULFING"]:
+        opportunity_score += 1
+        reasons.append(f"💡 {pattern} 발생 → 심리 반전 확률↑")
+
+    if 48 < rsi < 52:
+        opportunity_score += 1
+        reasons.append("💡 RSI 50 근접 – 심리 경계선 전환 주시")
+
+    return opportunity_score, reasons
+
+
 
 def conflict_check(rsi, pattern, trend, signal):
     """
@@ -74,6 +98,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     signal_score = 0
     reasons = []
 
+    
     # ✅ 거래 제한 시간 필터 (애틀랜타 기준)
     now_utc = datetime.utcnow()
     now_atlanta = now_utc - timedelta(hours=4)
@@ -243,7 +268,11 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
         signal_score += 0.5  # 장대양봉은 소폭만 가점 (이번 케이스 반영)
     elif pattern in ["SHOOTING_STAR", "BEARISH_ENGULFING"]:
         signal_score -= 1  # 반전 패턴은 역가점
-
+    # 교과서적 기회 포착 보조 점수
+    op_score, op_reasons = must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles)
+    if op_score > 0:
+        signal_score += op_score
+        reasons += op_reasons
 
     return signal_score, reasons
 
