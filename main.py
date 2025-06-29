@@ -178,6 +178,9 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
         elif abs(macd - macd_signal) > 0.0005:
             signal_score += 1
             reasons.append("MACD 교차 발생 (추세불명확)")
+        if macd < macd_signal and trend == "DOWNTREND":
+            signal_score += 1
+            reasons.append("MACD 약한 데드 + 하락추세 → 약한 SELL 지지")
         else:
             reasons.append("MACD 미세변동 → 가점 보류")
 
@@ -202,6 +205,13 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
         elif trend == "NEUTRAL" and signal == "SELL" and rsi > 50:
             signal_score += 1
             reasons.append("Stoch RSI 과매도 + neutral 매도 전환 조건")
+        elif trend == "DOWNTREND":
+            signal_score += 2
+            reasons.append("Stoch RSI 과매도 + 하락추세 일치 (보완조건 포함)")
+        elif trend == "NEUTRAL" and rsi < 50:
+            signal_score += 1
+            reasons.append("Stoch RSI 과매도 + RSI 50 이하 → 약세 유지 SELL 가능")
+        
         if stoch_rsi < 0.1:
             signal_score += 1
             reasons.append("Stoch RSI 0.1 이하 → 극단적 과매도 가점")
@@ -222,7 +232,11 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     if liquidity == "좋음":
         signal_score += 1
         reasons.append("유동성 좋음")
-
+    last_3 = candles.tail(3)
+    if all(last_3["close"] < last_3["open"]) and trend == "DOWNTREND" and pattern == "NEUTRAL":
+        signal_score += 1
+        reasons.append("최근 3봉 연속 음봉 + 하락추세 → 패턴 부재 보정 SELL 가점")
+    
     if pattern in ["BULLISH_ENGULFING", "HAMMER"]:
         signal_score += 1  # 강력 패턴은 유지
     elif pattern in ["LONG_BODY_BULL"]:
