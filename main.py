@@ -982,14 +982,16 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
             filtered_movement_str = "no_data"
     
     # ✅ 여기를 새로 추가하세요 (row 정의 바로 위)
-    result = "미정"         # OANDA 주문 결과 기본값 설정
+    result = "미정"  # OANDA 주문 결과 기본값
     rejection_reason = ""
     too_close_to_SL = False
-    signal_score = score if score else 0   # 점수 기반 필터링용 점수
+    signal_score = score if 'score' in locals() else 0
     effective_decision = decision if 'decision' in locals() else ""
+    filtered_movement_str = filtered_movement_str if 'filtered_movement_str' in locals() else "no_data"
 
     def conflict_check():                  # 추세/패턴 충돌 필터 더미 함수
         return False
+    
     
     row = [
       
@@ -1014,6 +1016,7 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
     print("🧾 row 길이:", len(row))
     print("📋 row 내용:\n", row)
     rejection_reasons = []
+    row[12] = " / ".join(rejection_reasons) if rejection_reasons else ""
 
     if too_close_to_SL:  # SL이 최소 거리보다 가까운 경우
         rejection_reasons.append("SL이 OANDA 최소거리 미달")
