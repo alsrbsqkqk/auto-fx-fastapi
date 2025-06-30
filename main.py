@@ -986,6 +986,7 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
     rejection_reason = ""
     too_close_to_SL = False
     signal_score = score if score else 0   # 점수 기반 필터링용 점수
+    effective_decision = decision if 'decision' in locals() else ""
 
     def conflict_check():                  # 추세/패턴 충돌 필터 더미 함수
         return False
