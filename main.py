@@ -1,4 +1,4 @@
- 
+  
 # ⚠️ V2 업그레이드된 자동 트레이딩 스크립트 (학습 강화, 트렌드 보강, 시트 시간 보정 포함)
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -473,6 +473,7 @@ async def webhook(request: Request):
             return JSONResponse(content={"status": "WAIT", "message": "Too close TP/SL, skipped"})
 
 
+    result = None  # 🧱 주문 실행 여부와 무관하게 선언 (에러 방지용)
     
     should_execute = False
     # 1️⃣ 기본 진입 조건: GPT가 BUY/SELL 판단 + 점수 4점 이상
@@ -488,7 +489,7 @@ async def webhook(request: Request):
         units = 100000 if decision == "BUY" else -100000
         digits = 3 if pair.endswith("JPY") else 5
         print(f"[DEBUG] 조건 충족 → 실제 주문 실행: {pair}, units={units}, tp={tp}, sl={sl}, digits={digits}")
-        result = place_order(pair, units, tp, sl, digits)
+        result = place_order(pair, units, tp, sl, digits)  # ⬅ 여기서 꼭 할당
         
 
     price_movements = []
@@ -506,7 +507,7 @@ async def webhook(request: Request):
         except:
             executed_price = price  # 혹시 못읽으면 기존 price 유지
 
-    if decision in ["BUY", "SELL"] and isinstance(result, dict) and "order_placed" in result.get("status", ""):
+    if result and decision in ["BUY", "SELL"] and isinstance(result, dict) and "order_placed" in result.get("status", ""):
         if pnl is not None:
             if pnl > 0:
                 if abs(tp - price) < abs(sl - price):
