@@ -987,6 +987,8 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
         safe_float(rsi), safe_float(macd), safe_float(stoch_rsi),
         pattern or "", trend or "", fibo.get("0.382", ""), fibo.get("0.618", ""),
         gpt_decision or "", news or "", notes,
+        rejection_reason,    # ✅ 여기 새로 추가
+        notes,       
         json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else (result or "미정"),
         gpt_feedback or "",        
         safe_float(price), safe_float(tp), safe_float(sl), safe_float(pnl),
@@ -999,7 +1001,27 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
         gpt_feedback or "",
         filtered_movement_str
     ]
+ 
+    rejection_reasons = []
 
+    if too_close_to_SL:  # SL이 최소 거리보다 가까운 경우
+        rejection_reasons.append("SL이 OANDA 최소거리 미달")
+
+    if signal_score < 3:  # 점수가 부족한 경우
+        rejection_reasons.append("전략 점수 미달")
+
+    if conflict_check(...):  # 추세 충돌 필터
+        rejection_reasons.append("추세/패턴 충돌로 진입 불가")
+
+    # ... 다른 조건들도 여기에 추가
+
+    # 이유가 하나라도 있으면 문자열로 합치고 row에 기록
+    if rejection_reasons:
+        row.append(" / ".join(rejection_reasons))
+    else:
+        row.append("")
+
+    
     clean_row = []
     for v in row:
         if isinstance(v, (dict, list)):
