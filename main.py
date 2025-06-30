@@ -980,7 +980,9 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
     
         if not filtered_movement_str:
             filtered_movement_str = "no_data"
-   
+    # ✅ 여기를 새로 추가하세요 (row 정의 바로 위)
+    rejection_reason = ""
+    
     row = [
       
         str(now_atlanta), pair, alert_name or "", signal, decision, score,
