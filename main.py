@@ -1,4 +1,4 @@
-
+ 
 # ⚠️ V2 업그레이드된 자동 트레이딩 스크립트 (학습 강화, 트렌드 보강, 시트 시간 보정 포함)
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -1039,11 +1039,13 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
     clean_row = []
     for v in row:
         if isinstance(v, (dict, list)):
-            clean_row.append(json.dumps(v, ensure_ascii=False))
+            clean_row.append(json.dumps(v, ensure_ascii=False))  # ✅ dict, list를 JSON 문자열로
         elif isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
-            clean_row.append("")
+            clean_row.append("")  # NaN, inf → 빈 문자열
+        elif v is None:
+            clean_row.append("")  # ✅ NoneType도 명시 처리
         else:
-            clean_row.append(v)
+            clean_row.append(str(v))  # ✅ 문자열로 변환해서 누락 방지
 
     print("✅ STEP 8: 시트 저장 직전", clean_row)
     for idx, val in enumerate(clean_row):
