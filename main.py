@@ -985,6 +985,11 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
     rejection_reason = ""
     result = "미정"         # OANDA 주문 결과 기본값 설정
     too_close_to_SL = False
+    signal_score = score if score else 0   # 점수 기반 필터링용 점수
+
+    def conflict_check():                  # 추세/패턴 충돌 필터 더미 함수
+        return False
+    
     row = [
       
         str(now_atlanta), pair, alert_name or "", signal, decision, score,
