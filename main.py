@@ -1026,8 +1026,6 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
     if signal_score < 3:  # 점수가 부족한 경우
         rejection_reasons.append("전략 점수 미달")
 
-    if conflict_check(...):  # 추세 충돌 필터
-        rejection_reasons.append("추세/패턴 충돌로 진입 불가")
 
     # ... 다른 조건들도 여기에 추가
 
