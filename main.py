@@ -988,7 +988,6 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
         pattern or "", trend or "", fibo.get("0.382", ""), fibo.get("0.618", ""),
         gpt_decision or "", news or "", notes,
         rejection_reason,    # ✅ 여기 새로 추가
-        notes,       
         json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else (result or "미정"),
         gpt_feedback or "",        
         safe_float(price), safe_float(tp), safe_float(sl), safe_float(pnl),
@@ -1001,7 +1000,9 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
         gpt_feedback or "",
         filtered_movement_str
     ]
- 
+
+    print("🧾 row 길이:", len(row))
+    print("📋 row 내용:\n", row)
     rejection_reasons = []
 
     if too_close_to_SL:  # SL이 최소 거리보다 가까운 경우
