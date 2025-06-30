@@ -984,7 +984,7 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
     # ✅ 여기를 새로 추가하세요 (row 정의 바로 위)
     rejection_reason = ""
     result = "미정"         # OANDA 주문 결과 기본값 설정
-    
+    too_close_to_SL = False
     row = [
       
         str(now_atlanta), pair, alert_name or "", signal, decision, score,
