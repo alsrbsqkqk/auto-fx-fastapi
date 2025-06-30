@@ -982,8 +982,8 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
             filtered_movement_str = "no_data"
     
     # ✅ 여기를 새로 추가하세요 (row 정의 바로 위)
-    rejection_reason = ""
     result = "미정"         # OANDA 주문 결과 기본값 설정
+    rejection_reason = ""
     too_close_to_SL = False
     signal_score = score if score else 0   # 점수 기반 필터링용 점수
 
