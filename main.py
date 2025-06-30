@@ -460,10 +460,10 @@ async def webhook(request: Request):
             tp_pips = pip_value * 10
             sl_pips = pip_value * 7
 
-        if effective_decision == "BUY":
+        if decision == "BUY":
             tp = round(price + tp_pips, 5 if pip_value == 0.0001 else 3)
             sl = round(price - sl_pips, 5 if pip_value == 0.0001 else 3)
-        elif effective_decision == "SELL":
+        elif decision == "SELL":
             tp = round(price - tp_pips, 5 if pip_value == 0.0001 else 3)
             sl = round(price + sl_pips, 5 if pip_value == 0.0001 else 3)      
       
