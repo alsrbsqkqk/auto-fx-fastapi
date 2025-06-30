@@ -63,7 +63,7 @@ def conflict_check(rsi, pattern, trend, signal):
 
     return False
     
-def check_recent_opposite_signal(pair, current_signal, within_minutes=30):
+def check_recent_opposite_signal(pair, current_signal, within_minutes=12):
     """
     최근 동일 페어에서 반대 시그널이 있으면 True 반환
     """
@@ -122,19 +122,18 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
             reasons.append("❗ 과매도 SELL 방어 → 관망 강제 (V3 강화)")
             return 0, reasons
         
-    if rsi < 30:
-        if pattern in ["HAMMER", "BULLISH_ENGULFING"]:
-            signal_score += 2
-            reasons.append("RSI < 30 + 캔들 패턴 확인")
+    if rsi < 30 and pattern not in ["HAMMER", "BULLISH_ENGULFING"]:
+        if macd < macd_signal and trend == "DOWNTREND":
+            reasons.append("RSI < 30 but MACD & Trend 약세 지속 → 진입 허용")
         else:
-            reasons.append("RSI < 30 but 캔들 패턴 없음 → 관망")
+            return 0, ["RSI < 30 but 반등 조건 미약 → 관망"]
 
-    if rsi > 70:
-        if pattern in ["SHOOTING_STAR", "BEARISH_ENGULFING"]:
-            signal_score += 2
-            reasons.append("RSI > 70 + 캔들 패턴 확인")
+    if rsi > 70 and pattern not in ["SHOOTING_STAR", "BEARISH_ENGULFING"]:
+        if macd > macd_signal and trend == "UPTREND":
+            reasons.append("RSI > 70 but MACD & Trend 강세 → 진입 허용")
         else:
-            reasons.append("RSI > 70 but 캔들 패턴 없음 → 관망")
+            return 0, ["RSI > 70 but 캔들/지표 약함 → 관망"]
+        
     # === 눌림목 BUY 강화: GBPUSD 한정 ===
     if pair == "GBP_USD" and signal == "BUY":
         if trend == "UPTREND":
