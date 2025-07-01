@@ -43,23 +43,17 @@ def conflict_check(rsi, pattern, trend, signal):
     """
 
     # 1️⃣ 기본 추세-패턴 충돌 방지
-    if rsi > 80 and pattern in ["SHOOTING_STAR", "BEARISH_ENGULFING"] and trend == "UPTREND":
+    if rsi > 85 and pattern in ["SHOOTING_STAR", "BEARISH_ENGULFING"] and trend == "UPTREND":
         return True
-    if rsi < 20 and pattern in ["HAMMER", "BULLISH_ENGULFING"] and trend == "DOWNTREND":
+    if rsi < 15 and pattern in ["HAMMER", "BULLISH_ENGULFING"] and trend == "DOWNTREND":
         return True
 
     # 2️⃣ 캔들패턴이 없는데 시그널과 추세가 역방향이면 관망
     if pattern == "NEUTRAL":
-        if trend == "UPTREND" and signal == "SELL" and rsi > 80:
-            return True
-        if trend == "DOWNTREND" and signal == "BUY" and rsi < 20:
-            return True
-
-    # 3️⃣ 기타 보수적 예외 추가
-    if trend == "UPTREND" and signal == "SELL" and rsi > 80:
-        return True
-    if trend == "DOWNTREND" and signal == "BUY" and rsi < 20:
-        return True
+        if signal == "BUY" and trend == "UPTREND":
+            return False
+        if signal == "SELL" and trend == "DOWNTREND":
+            return False
 
     return False
     
