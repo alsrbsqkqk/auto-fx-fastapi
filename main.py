@@ -103,9 +103,21 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
             return 0, reasons
     
 
-    if conflict_check(rsi, pattern, trend, signal):
-        reasons.append("⚠️ 추세와 패턴이 충돌 → 관망 권장")
-        return 0, reasons   
+    conflict_flag = conflict_check(rsi, pattern, trend, signal)
+
+    # 보완 조건 정의: 극단적 RSI + Stoch RSI or MACD 반전 조짐
+    extreme_buy = signal == "BUY" and rsi < 25 and stoch_rsi < 0.2
+    extreme_sell = signal == "SELL" and rsi > 75 and stoch_rsi > 0.8
+    macd_reversal_buy = signal == "BUY" and macd > macd_signal and trend == "DOWNTREND"
+    macd_reversal_sell = signal == "SELL" and macd < macd_signal and trend == "UPTREND"
+
+    # 완화된 조건: 강력한 역추세 진입 근거가 있을 경우 관망 무시
+    if conflict_flag:
+        if extreme_buy or extreme_sell or macd_reversal_buy or macd_reversal_sell:
+            reasons.append("🔄 추세-패턴 충돌 BUT 강한 역추세 조건 충족 → 진입 허용")
+        else:
+            reasons.append("⚠️ 추세-패턴 충돌 + 보완 조건 미충족 → 관망")
+            return 0, reasons
 
     # ✅ V3 과매도 SELL 방어 필터 추가
     if signal == "SELL" and rsi < 40:
