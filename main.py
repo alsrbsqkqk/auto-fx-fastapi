@@ -874,6 +874,16 @@ def parse_gpt_feedback(text, pair):
     tp = extract_avg_price(tp_line)
     sl = extract_avg_price(sl_line)
 
+    # ✅ fallback: SL 없을 경우 자동 계산 보완
+    if sl is None and decision in ["BUY", "SELL"] and tp is not None:
+        atr_match = re.search(r"ATR\s*[:=]\s*([\d\.]+)", text.upper())
+        if atr_match:
+            atr = float(atr_match.group(1))
+            if decision == "BUY":
+                sl = round(tp - (atr * 2), 3 if "JPY" in pair else 5)
+            elif decision == "SELL":
+                sl = round(tp + (atr * 2), 3 if "JPY" in pair else 5)
+
     # ✅ JPY 페어일 경우 자리수 자동 변환
     if "JPY" in pair:
         if tp is not None:
