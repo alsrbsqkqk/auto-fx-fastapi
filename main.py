@@ -904,15 +904,7 @@ def parse_gpt_feedback(text, pair):
             print("⚠️ TP와 SL 간격이 부족하지만 진입 강행 (조건 완화)")
             # 보정 불가능하면 None 반환
         # ✅ TP가 현재가에 너무 가까운 경우 → 진입 제한
-        min_exec_gap = pip_value * 2  # 최소 2 pip 이상 요구
-        if abs(price - tp) < min_exec_gap:
-            print("⛔️ 현재가와 TP 간 거리가 너무 짧음 → 진입 차단")
-        print(f"[DEBUG] 현재가: {price}, TP: {tp}, SL: {sl}, ATR: {atr}")
-        print(f"[DEBUG] TP-SL 거리: {abs(tp - sl):.5f}, 최소 요구 거리: {min_tp_sl_gap:.5f}")
-        print(f"[DEBUG] SL-현재가 거리: {abs(price - sl):.5f}, 최소 요구 거리: {min_sl_distance:.5f}")
-        print(f"[DEBUG] TP-현재가 거리: {abs(price - tp):.5f}, 최소 실행 요구 거리: {min_exec_gap:.5f}")
-          
-        return None, None
+
         print(f"[PARSE 최종] 결정: {decision}, TP: {tp}, SL: {sl}")
         return tp, sl
     
