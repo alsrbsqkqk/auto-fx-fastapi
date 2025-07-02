@@ -35,6 +35,38 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
 
     return opportunity_score, reasons
 
+def additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, trend):
+    """ 기존 필터 이후, 추가 가중치 기반 보완 점수 """
+    score = 0
+    reasons = []
+
+    # RSI 30 이하
+    if rsi < 30:
+        score += 1.5
+        reasons.append("🔴 RSI 30 이하 (추가 기회 요인)")
+
+    # Stoch RSI 극단
+    if stoch_rsi < 0.05:
+        score += 1.5
+        reasons.append("🟢 Stoch RSI 0.05 이하 (반등 기대)")
+
+    # MACD 상승 전환
+    if macd > 0 and macd > macd_signal:
+        score += 1
+        reasons.append("🟢 MACD 상승 전환 (추가 확인 요인)")
+
+    # 캔들 패턴
+    if pattern in ["BULLISH_ENGULFING", "BEARISH_ENGULFING"]:
+        score += 1
+        reasons.append(f"📊 {pattern} 발생 (심리 반전)")
+
+    # 추세가 중립일 때: 추가 감점
+    if trend == "NEUTRAL":
+        score -= 0.5
+        reasons.append("⚠ 중립 추세 → 추세 부재로 감점")
+
+    return score, reasons
+
 
 
 def conflict_check(rsi, pattern, trend, signal):
@@ -91,6 +123,12 @@ def check_recent_opposite_signal(pair, current_signal, within_minutes=12):
 def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, liquidity, pattern, pair, candles):
     signal_score = 0
     reasons = []
+
+    score, base_reasons = must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles)
+    extra_score, extra_reasons = additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, trend)
+
+    signal_score += score + extra_score
+    reasons.extend(base_reasons + extra_reasons)
 
     
     # ✅ 거래 제한 시간 필터 (애틀랜타 기준)
