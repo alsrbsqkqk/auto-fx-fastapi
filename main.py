@@ -915,7 +915,7 @@ def parse_gpt_feedback(text, pair):
 
     # ✅ TP/SL 추출 (가장 마지막 숫자 사용)
     tp_line = next((line for line in text.splitlines() if "TP:" in line.upper() or "TP 제안 값" in line or "목표" in line), "")
-    sl_line = next((line for line in text.splitlines() if re.search(r"\bSL\s*:?\s*\d+\.\d{4,5}", line.upper())), "")
+    sl_line = next((line for line in text.splitlines() if "SL:" in line.upper() and re.search(r"\d+\.\d+", line)), "")
     if not sl_line:
         print("❗ SL 라인 탐색 실패 → GPT 파서에서 예외로 처리")
         decision = "WAIT"
