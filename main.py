@@ -1042,33 +1042,6 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
     # ✅ Google Sheet 저장용 문자열로 변환
     
 
-    filtered_movement_str = ", ".join([
-        f"H: {round(p['high'], 5)} / L: {round(p['low'], 5)}"
-        for p in filtered_movements[-5:]
-        if isinstance(p, dict) and "high" in p and "low" in p
-    ])
-
-
-    try:
-        filtered_movement_str = ", ".join([
-            f"H: {round(p['high'], 5)} / L: {round(p['low'], 5)}"
-            for p in filtered_movements[-5:]
-            if isinstance(p, dict) and "high" in p and "low" in p and
-               isinstance(p['high'], (float, int)) and isinstance(p['low'], (float, int)) and
-               not math.isnan(p['high']) and not math.isnan(p['low']) and
-               not math.isinf(p['high']) and not math.isinf(p['low'])
-        ])
-    except Exception as e:
-        print("❌ filtered_movement_str 변환 실패:", e)
-        filtered_movement_str = "error_in_conversion"
-    
-        if not filtered_movement_str:
-            filtered_movement_str = "no_data"
-    
-    # ✅ 여기를 새로 추가하세요 (row 정의 바로 위)
-    result = "미정"  # OANDA 주문 결과 기본값
-    filtered_movement_str = "no_data"
-    print(f"📊 filtered_movement_str 최종 값: {filtered_movement_str}")
     rejection_reason = ""
     too_close_to_SL = False
     signal_score = score if 'score' in locals() else 0
@@ -1096,7 +1069,6 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
         outcome_analysis or "",
         adjustment_suggestion or "",
         gpt_feedback or "",
-        filtered_movement_str
     ]
 
     print("🧾 row 길이:", len(row))
