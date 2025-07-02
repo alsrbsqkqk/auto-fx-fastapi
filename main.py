@@ -1068,6 +1068,7 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
     # ✅ 여기를 새로 추가하세요 (row 정의 바로 위)
     result = "미정"  # OANDA 주문 결과 기본값
     filtered_movement_str = "no_data"
+    print(f"📊 filtered_movement_str 최종 값: {filtered_movement_str}")
     rejection_reason = ""
     too_close_to_SL = False
     signal_score = score if 'score' in locals() else 0
