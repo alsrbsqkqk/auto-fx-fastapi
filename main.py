@@ -934,6 +934,11 @@ def parse_gpt_feedback(text, pair):
     tp = extract_avg_price(tp_line)
     sl = extract_avg_price(sl_line)
 
+    print(f"📌 SL 라인 원본: {sl_line}")
+    print(f"📌 TP 라인 원본: {tp_line}")
+    print(f"📌 SL 숫자 추출 결과: {sl}")
+    print(f"📌 TP 숫자 추출 결과: {tp}")
+  
     # ✅ fallback: SL 없을 경우 자동 계산 보완
     if sl is None and decision in ["BUY", "SELL"] and tp is not None:
         atr_match = re.search(r"ATR\s*[:=]\s*([\d\.]+)", text.upper())
