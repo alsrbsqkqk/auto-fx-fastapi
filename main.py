@@ -798,7 +798,19 @@ def is_min_distance_ok(pair, price, tp, sl, atr):
     if abs(price - tp) < min_distance or abs(price - sl) < min_distance:
         return False
     return True
+  
+def allow_narrow_tp_sl(signal_score, atr, liquidity, pair, tp, sl, min_gap_pips=5):
+    pip_value = 0.01 if "JPY" in pair else 0.0001
+    min_tp_sl_gap = pip_value * min_gap_pips
 
+    if abs(tp - sl) < min_tp_sl_gap:
+        if signal_score >= 7 and atr < 0.2 and liquidity == "좋음":
+            print("✅ 신호 강도 & 유동성 조건 만족 → 좁은 TP-SL 예외 허용")
+            return True
+        else:
+            print("❌ TP-SL 간격 부족 & 조건 미충족 → 진입 차단")
+            return False
+    return True
 
 
 def parse_gpt_feedback(text, pair):
@@ -821,6 +833,10 @@ def parse_gpt_feedback(text, pair):
             decision = d.group(3)
             break
 
+    if decision == "BUY" or decision == "SELL":
+        if not allow_narrow_tp_sl(signal_score, atr, liquidity, pair, tp, sl):
+            return "WAIT", None, None
+    
     # ✅ fallback: "BUY" 또는 "SELL" 단독 등장 시 인식
     if decision == "WAIT":
         if "BUY" in text.upper() and "SELL" not in text.upper():
