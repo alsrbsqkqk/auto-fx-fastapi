@@ -888,7 +888,9 @@ def parse_gpt_feedback(text, pair):
 
     # GPT가 제시한 TP/SL이 너무 가까울 경우 보정
     def adjust_tp_sl_distance(price, tp, sl, atr, pair):
+        print(f"🔥 adjust_tp_sl_distance() 호출됨 → price: {price}, TP: {tp}, SL: {sl}, ATR: {atr}")
         if atr is None or tp is None or sl is None:
+            print("⛔ 조기 리턴: tp/sl/atr 중 None 있음")
             return tp, sl
 
         pip_value = 0.01 if "JPY" in pair else 0.0001
@@ -961,7 +963,7 @@ def parse_gpt_feedback(text, pair):
             tp = round(tp, 5)
         if sl is not None:
             sl = round(sl, 5)
-
+    print(f"✅ GPT 피드백 리턴 → decision: {decision}, TP: {tp}, SL: {sl}")
     return decision, tp, sl
     
 def analyze_with_gpt(payload):
