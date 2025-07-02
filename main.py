@@ -849,11 +849,11 @@ def allow_narrow_tp_sl(signal_score, atr, liquidity, pair, tp, sl, min_gap_pips=
     min_tp_sl_gap = pip_value * min_gap_pips
 
     if abs(tp - sl) < min_tp_sl_gap:
-        if signal_score >= 7 and atr < 0.2 and liquidity == "좋음":
-            print("✅ 신호 강도 & 유동성 조건 만족 → 좁은 TP-SL 예외 허용")
+        if signal_score >= 5 and atr < 0.003 and liquidity == "좋음":
+            print("🟢 [완화조건] 신호 5 이상 + ATR<0.003 + 유동성 양호 → 진입 허용")
             return True
         else:
-            print("❌ TP-SL 간격 부족 & 조건 미충족 → 진입 차단")
+            print(f"🔴 [차단] TP-SL 간격 부족 + 조건 미충족 → 진입 제한 (gap={abs(tp - sl):.5f})")
             return False
     return True
 
