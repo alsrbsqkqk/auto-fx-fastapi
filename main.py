@@ -454,6 +454,8 @@ async def webhook(request: Request):
         # 보정 적용
         if decision in ["BUY", "SELL"] and tp and sl:
             tp, sl = adjust_tp_sl_distance(price, tp, sl, atr, pair)
+            # ✅ 최종 결정 로그 찍기
+            print(f"✅ [PARSE 최종] 결정: {decision}, TP: {tp}, SL: {sl}")
     else:
         print("🚫 GPT 분석 생략: 점수 3점 미만")
     
@@ -876,9 +878,6 @@ def parse_gpt_feedback(text, pair):
             decision = d.group(3)
             break
 
-    if decision == "BUY" or decision == "SELL":
-        if not allow_narrow_tp_sl(signal_score, atr, liquidity, pair, tp, sl):
-            return "WAIT", None, None
     
     # ✅ fallback: "BUY" 또는 "SELL" 단독 등장 시 인식
     if decision == "WAIT":
@@ -906,7 +905,7 @@ def parse_gpt_feedback(text, pair):
 
         # TP/SL 간 거리 보정
         if abs(tp - sl) < min_tp_sl_gap and not allow_narrow_tp_sl(signal_score, atr, liquidity, pair, tp, sl):
-            print("⚠️ TP와 SL 간격이 부족하지만 진입 강행 (조건 완화)")
+             print(f"❌ [거리제한] TP-SL 간격({abs(tp - sl):.5f})이 {min_tp_sl_gap:.5f}보다 작음 → 진입 제한")
             # 보정 불가능하면 None 반환
         # ✅ TP가 현재가에 너무 가까운 경우 → 진입 제한
 
