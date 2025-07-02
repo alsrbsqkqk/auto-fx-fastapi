@@ -512,7 +512,7 @@ async def webhook(request: Request):
       
         # ✅ 안전 거리 필터 (너무 가까운 주문 방지)
         if not is_min_distance_ok(pair, price, tp, sl, atr):
-            print("🚫 TP/SL이 현재가에 너무 가까움 → 주문 취소")
+            print(f"🚫 TP/SL 거리 미달 → TP: {tp}, SL: {sl}, 현재가: {price}, ATR: {atr}")
             return JSONResponse(content={"status": "WAIT", "message": "Too close TP/SL, skipped"})
 
 
@@ -527,7 +527,9 @@ async def webhook(request: Request):
     elif allow_conditional_trade and signal_score >= 4 and decision in ["BUY", "SELL"]:
         gpt_feedback += "\n⚠️ 조건부 진입: 최근 2시간 거래 없음 → 4점 이상 기준 만족하여 진입 허용"
         should_execute = True
-        
+
+    print(f"🚀 주문 조건 충족 | 페어: {pair}, 결정: {decision}, 점수: {signal_score}")
+    print(f"🔧 TP: {tp}, SL: {sl}, 현재가: {price}, ATR: {atr}")  
     if should_execute:
         units = 100000 if decision == "BUY" else -100000
         digits = 3 if pair.endswith("JPY") else 5
@@ -816,8 +818,11 @@ def place_order(pair, units, tp, sl, digits):
     try:
         response = requests.post(url, headers=headers, json=data)
         response.raise_for_status()
-        return response.json()
+        result = response.json()
+        print("📦 OANDA 주문 응답:", result)
+        return result
     except requests.exceptions.RequestException as e:
+        print("❌ OANDA 요청 실패:", str(e))
         return {"status": "error", "message": str(e)}
 
 import re
