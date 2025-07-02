@@ -910,6 +910,7 @@ def parse_gpt_feedback(text, pair):
         # ✅ TP가 현재가에 너무 가까운 경우 → 진입 제한
 
         print(f"[PARSE 최종] 결정: {decision}, TP: {tp}, SL: {sl}")
+        print(f"🔥 최종 판단 디버그 → decision: {decision}, TP: {tp}, SL: {sl}")
         return tp, sl
     
 
