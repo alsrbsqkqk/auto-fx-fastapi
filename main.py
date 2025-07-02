@@ -874,7 +874,7 @@ def parse_gpt_feedback(text, pair):
         print(f"[DEBUG] SL-현재가 거리: {abs(price - sl):.5f}, 최소 요구 거리: {min_sl_distance:.5f}")
         print(f"[DEBUG] TP-현재가 거리: {abs(price - tp):.5f}, 최소 실행 요구 거리: {min_exec_gap:.5f}")
           
-            return None, None
+        return None, None
         print(f"[PARSE 최종] 결정: {decision}, TP: {tp}, SL: {sl}")
         return tp, sl
     
