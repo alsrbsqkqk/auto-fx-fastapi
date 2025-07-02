@@ -862,7 +862,7 @@ def parse_gpt_feedback(text, pair):
                 sl = round(price + min_sl_distance, 3 if pair.endswith("JPY") else 5)
 
         # TP/SL 간 거리 보정
-        if abs(tp - sl) < min_tp_sl_gap:
+        if abs(tp - sl) < min_tp_sl_gap and not allow_narrow_tp_sl(signal_score, atr, liquidity, pair, tp, sl):
             print("⚠️ TP와 SL 간격이 부족하지만 진입 강행 (조건 완화)")
             # 보정 불가능하면 None 반환
         # ✅ TP가 현재가에 너무 가까운 경우 → 진입 제한
