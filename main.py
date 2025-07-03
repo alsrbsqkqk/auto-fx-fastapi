@@ -926,15 +926,15 @@ def parse_gpt_feedback(text, pair):
     tp_line = next((line for line in text.splitlines() if "TP:" in line.upper() or "TP 제안 값" in line or "목표" in line), "")
     sl_line = next((line for line in text.splitlines() if "SL:" in line.upper() and re.search(r"\d+\.\d+", line)), "")
     if not sl_line:
-        print("❗ SL 라인 탐색 실패 → GPT 파서에서 예외로 처리")
-        decision = "WAIT"
-        return decision, None, None
+        print("⚠️ SL 라인 탐색 실패. fallback으로 계산 시도 예정.")
+        sl = None  # 여기서 바로 return하지 말고, fallback로 흘려보냄
 
 
     def extract_avg_price(line):
-        matches = re.findall(r"\b\d{1,5}\.\d{1,5}\b", line)  # 가격 패턴만 추출
+        matches = re.findall(r"\b\d{1,5}\.\d{1,5}\b", line)
         if len(matches) >= 2:
-            return (float(matches[0]) + float(matches[1])) / 2
+            print(f"⚠️ TP/SL 라인에 숫자 2개 이상 추출됨. 첫 값만 사용: {matches}")
+            return float(matches[0])
         elif matches:
             return float(matches[0])
         else:
