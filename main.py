@@ -832,14 +832,20 @@ import re
 # ✅ 페어별 ATR 기반 TP/SL 거리 필터 (A안 적용)
 def is_min_distance_ok(pair, price, tp, sl, atr):
     """
-    페어별 ATR factor 적용
+    페어별 ATR factor 적용 (완화 기준 추가)
     """
-    if pair == "USD_JPY":
-        atr_factor = max(0.35, 0.05 / atr) 
+    major_pairs = ["USD_JPY", "EUR_USD", "GBP_USD"]
+    
+    if pair in major_pairs:
+        if atr >= 0.2:
+            atr_factor = 0.2  # ✅ 완화 기준 적용
+        else:
+            atr_factor = max(0.35, 0.05 / atr) if pair == "USD_JPY" else max(0.6, 0.0010 / atr)
     else:
         atr_factor = max(0.6, 0.0010 / atr)
 
     min_distance = atr * atr_factor
+
     if abs(price - tp) < min_distance or abs(price - sl) < min_distance:
         return False
     return True
