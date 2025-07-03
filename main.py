@@ -876,6 +876,7 @@ def parse_gpt_feedback(text, pair):
         r"(결정|판단)\s*(판단|신호|방향)?\s*(은|:|：)?\s*[\"']?(BUY|SELL|WAIT)[\"']?",
         r"진입\s*방향\s*(은|:|：)?\s*['\"]?(BUY|SELL|WAIT)['\"]?",
         r"판단\s*(은|:|：)?\s*['\"]?(BUY|SELL|WAIT)['\"]?",
+        r"진입판단\s*(은|:|：)?\s*['\"]?(BUY|SELL|WAIT)['\"]?",
     ]
 
     for pat in decision_patterns:
