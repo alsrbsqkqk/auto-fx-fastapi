@@ -544,8 +544,9 @@ async def webhook(request: Request):
             print("✅ 주문 체결 성공 → orderFillTransaction 감지됨")
             outcome_analysis = "성공: 주문 체결됨"
         elif "orderCancelTransaction" in result:
-            print("⚠️ 주문 거절 → orderCancelTransaction 발생")
-            outcome_analysis = "실패: 서버 거절"
+            reason = result["orderCancelTransaction"].get("reason", "알 수 없음")
+            print(f"⚠️ 주문 거절 → orderCancelTransaction 발생 | 사유: {reason}")
+            outcome_analysis = f"실패: 서버 거절 - {reason}"       
         else:
             print("❓ 주문 체결 여부 불확실 → 예외 처리 필요")
             outcome_analysis = "WAIT 또는 주문 미실행"
