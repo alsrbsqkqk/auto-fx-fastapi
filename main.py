@@ -534,9 +534,21 @@ async def webhook(request: Request):
     print(f"🔧 TP: {tp}, SL: {sl}, 현재가: {price}, ATR: {atr}")  
     if should_execute:
         units = 100000 if decision == "BUY" else -100000
-        digits = 3 if pair.endswith("JPY") else 5
+        digits = 5 if pair.endswith("JPY") == False else 3
+
         print(f"[DEBUG] 조건 충족 → 실제 주문 실행: {pair}, units={units}, tp={tp}, sl={sl}, digits={digits}")
-        result = place_order(pair, units, tp, sl, digits)  # ⬅ 여기서 꼭 할당
+        result = place_order(pair, units, tp, sl, digits)
+        print("✅ STEP 9: 주문 결과 확인 |", json.dumps(result, indent=2, ensure_ascii=False))
+
+        if isinstance(result, dict) and "orderFillTransaction" in result:
+            print("✅ 주문 체결 성공 → orderFillTransaction 감지됨")
+            outcome_analysis = "성공: 주문 체결됨"
+        elif "orderCancelTransaction" in result:
+            print("⚠️ 주문 거절 → orderCancelTransaction 발생")
+            outcome_analysis = "실패: 서버 거절"
+        else:
+            print("❓ 주문 체결 여부 불확실 → 예외 처리 필요")
+            outcome_analysis = "WAIT 또는 주문 미실행"
         
 
     price_movements = []
