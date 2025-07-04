@@ -533,6 +533,7 @@ async def webhook(request: Request):
     print(f"🚀 주문 조건 충족 | 페어: {pair}, 결정: {decision}, 점수: {signal_score}")
     print(f"🔧 TP: {tp}, SL: {sl}, 현재가: {price}, ATR: {atr}")  
     if should_execute:
+        print(f"[디버깅] 진입 조건 만족, 주문 실행 준비 완료")
         units = 100000 if decision == "BUY" else -100000
         digits = 5 if pair.endswith("JPY") == False else 3
 
@@ -829,7 +830,8 @@ def place_order(pair, units, tp, sl, digits):
             }
         }
     }
-
+    print("📤 실제 주문 전송 내용:", json.dumps(data, indent=2, ensure_ascii=False))
+    print("📍 요청 대상 URL:", url)
     try:
         response = requests.post(url, headers=headers, json=data)
         response.raise_for_status()
