@@ -517,16 +517,12 @@ async def webhook(request: Request):
 
     result = None  # 🧱 주문 실행 여부와 무관하게 선언 (에러 방지용)
     
-    should_execute = False
-    # 1️⃣ 기본 진입 조건: GPT가 BUY/SELL 판단 + 점수 4점 이상
-    if decision in ["BUY", "SELL"] and signal_score >= 4:
-        should_execute = True
-        print("🚀 주문 실행 진입 확인됨") 
-
-    # 2️⃣ 조건부 진입: 최근 2시간 거래 없으면 점수 4점 미만이어도 진입 허용
-    elif allow_conditional_trade and signal_score >= 4 and decision in ["BUY", "SELL"]:
-        gpt_feedback += "\n⚠️ 조건부 진입: 최근 2시간 거래 없음 → 4점 이상 기준 만족하여 진입 허용"
-        should_execute = True
+    # ✅ 무조건 진입 조건으로 변경: GPT가 BUY/SELL + 점수 4 이상이면 실행
+    should_execute = decision in ["BUY", "SELL"] and signal_score >= 4
+    if should_execute:
+        print("🚀 조건 만족 → 주문 실행 진입")
+    else:
+        print("🚫 조건 불충족 → 주문 실행 안됨")
 
     print(f"🚀 주문 조건 충족 | 페어: {pair}, 결정: {decision}, 점수: {signal_score}")
     print(f"🔧 TP: {tp}, SL: {sl}, 현재가: {price}, ATR: {atr}")  
