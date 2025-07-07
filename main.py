@@ -872,17 +872,9 @@ def is_min_distance_ok(pair, price, tp, sl, atr):
     return True
   
 def allow_narrow_tp_sl(signal_score, atr, liquidity, pair, tp, sl, min_gap_pips=5):
-    pip_value = 0.01 if "JPY" in pair else 0.0001
-    min_tp_sl_gap = pip_value * min_gap_pips
-
-    if abs(tp - sl) < min_tp_sl_gap:
-        if signal_score >= 5 and atr < 0.003 and liquidity == "좋음":
-            print("🟢 [완화조건] 신호 5 이상 + ATR<0.003 + 유동성 양호 → 진입 허용")
-            return True
-        else:
-            print(f"🔴 [차단] TP-SL 간격 부족 + 조건 미충족 → 진입 제한 (gap={abs(tp - sl):.5f})")
-            return False
+    print("⚠️ allow_narrow_tp_sl 완화: 조건 무시하고 True 반환")
     return True
+
 
 
 def parse_gpt_feedback(text, pair):
