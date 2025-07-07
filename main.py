@@ -512,11 +512,7 @@ async def webhook(request: Request):
             tp = round(price - tp_pips, 5 if pip_value == 0.0001 else 3)
             sl = round(price + sl_pips, 5 if pip_value == 0.0001 else 3)      
       
-        # ✅ 안전 거리 필터 (너무 가까운 주문 방지)
-        print(f"📏 거리 필터 체크 ➞ price: {price}, TP: {tp}, SL: {sl}, ATR: {atr}, TP거리: {abs(tp - price)}, SL거리: {abs(sl - price)}")
-        if not is_min_distance_ok(pair, price, tp, sl, atr):
-            print(f"🚫 TP/SL 거리 미달 → TP: {tp}, SL: {sl}, 현재가: {price}, ATR: {atr}")
-            return JSONResponse(content={"status": "WAIT", "message": "Too close TP/SL, skipped"})
+
 
 
     result = None  # 🧱 주문 실행 여부와 무관하게 선언 (에러 방지용)
@@ -850,30 +846,6 @@ def place_order(pair, units, tp, sl, digits):
 
 import re
 
-# ✅ 페어별 ATR 기반 TP/SL 거리 필터 (A안 적용)
-def is_min_distance_ok(pair, price, tp, sl, atr):
-    """
-    페어별 ATR factor 적용 (완화 기준 추가)
-    """
-    major_pairs = ["USD_JPY", "EUR_USD", "GBP_USD"]
-    
-    if pair in major_pairs:
-        if atr >= 0.2:
-            atr_factor = 0.2  # ✅ 완화 기준 적용
-        else:
-            atr_factor = max(0.35, 0.05 / atr) if pair == "USD_JPY" else max(0.6, 0.0010 / atr)
-    else:
-        atr_factor = max(0.6, 0.0010 / atr)
-
-    min_distance = atr * atr_factor
-
-    if abs(price - tp) < min_distance or abs(price - sl) < min_distance:
-        return False
-    return True
-  
-def allow_narrow_tp_sl(signal_score, atr, liquidity, pair, tp, sl, min_gap_pips=5):
-    print("⚠️ allow_narrow_tp_sl 완화: 조건 무시하고 True 반환")
-    return True
 
 
 
