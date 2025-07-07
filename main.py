@@ -524,6 +524,7 @@ async def webhook(request: Request):
     # 1️⃣ 기본 진입 조건: GPT가 BUY/SELL 판단 + 점수 4점 이상
     if decision in ["BUY", "SELL"] and signal_score >= 4:
         should_execute = True
+        print("🚀 주문 실행 진입 확인됨") 
 
     # 2️⃣ 조건부 진입: 최근 2시간 거래 없으면 점수 4점 미만이어도 진입 허용
     elif allow_conditional_trade and signal_score >= 4 and decision in ["BUY", "SELL"]:
@@ -538,7 +539,11 @@ async def webhook(request: Request):
         digits = 5 if pair.endswith("JPY") == False else 3
 
         print(f"[DEBUG] 조건 충족 → 실제 주문 실행: {pair}, units={units}, tp={tp}, sl={sl}, digits={digits}")
+        print("🤖 주문 실제 실행 시도")  # ✅ 추가
         result = place_order(pair, units, tp, sl, digits)
+        if result is None:
+            print("❌ 주문 실패: place_order에서 결과가 None 반환됨")
+            outcome_analysis = "FAIL: API 요청 실패 또는 응답 없음"
         print("✅ STEP 9: 주문 결과 확인 |", json.dumps(result, indent=2, ensure_ascii=False))
 
         if isinstance(result, dict) and "orderFillTransaction" in result:
