@@ -513,6 +513,7 @@ async def webhook(request: Request):
             sl = round(price + sl_pips, 5 if pip_value == 0.0001 else 3)      
       
         # ✅ 안전 거리 필터 (너무 가까운 주문 방지)
+        print(f"📏 거리 필터 체크 ➞ price: {price}, TP: {tp}, SL: {sl}, ATR: {atr}, TP거리: {abs(tp - price)}, SL거리: {abs(sl - price)}")
         if not is_min_distance_ok(pair, price, tp, sl, atr):
             print(f"🚫 TP/SL 거리 미달 → TP: {tp}, SL: {sl}, 현재가: {price}, ATR: {atr}")
             return JSONResponse(content={"status": "WAIT", "message": "Too close TP/SL, skipped"})
