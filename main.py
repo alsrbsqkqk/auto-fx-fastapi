@@ -454,6 +454,7 @@ async def webhook(request: Request):
         # 보정 적용
         if decision in ["BUY", "SELL"] and tp and sl:
             tp, sl = adjust_tp_sl_distance(price, tp, sl, atr, pair)
+            print(f"✅ [디버그] 조정된 TP/SL: TP={tp}, SL={sl}, 거리: {abs(tp - sl)}")
             # ✅ 최종 결정 로그 찍기
             print(f"✅ [PARSE 최종] 결정: {decision}, TP: {tp}, SL: {sl}")
     else:
@@ -528,9 +529,15 @@ async def webhook(request: Request):
     print(f"🔧 TP: {tp}, SL: {sl}, 현재가: {price}, ATR: {atr}")  
     if should_execute:
         print(f"[디버깅] 진입 조건 만족, 주문 실행 준비 완료")
-        units = 100000 if decision == "BUY" else -100000
-        digits = 5 if pair.endswith("JPY") == False else 3
-
+        try:
+            units = 100000 if decision == "BUY" else -100000
+            digits = 5 if pair.endswith("JPY") == False else 3
+            print(f"🚨 주문 실행 직전 정보: pair={pair}, decision={decision}, units={units}, tp={tp}, sl={sl}, digits={digits}")
+        except Exception as e:
+            print(f"❌ 주문 직전 변수 계산 에러 발생: {e}")
+            outcome_analysis = f"FAIL: 주문 조건 계산 중 에러 - {str(e)}"
+            return
+      
         print(f"[DEBUG] 조건 충족 → 실제 주문 실행: {pair}, units={units}, tp={tp}, sl={sl}, digits={digits}")
         print("🤖 주문 실제 실행 시도")  # ✅ 추가
         result = place_order(pair, units, tp, sl, digits)
@@ -893,15 +900,6 @@ def parse_gpt_feedback(text, pair):
             else:
                 sl = round(price + min_sl_distance, 3 if pair.endswith("JPY") else 5)
 
-        # TP/SL 간 거리 보정
-        if abs(tp - sl) < min_tp_sl_gap and not allow_narrow_tp_sl(signal_score, atr, liquidity, pair, tp, sl):
-             print(f"❌ [거리제한] TP-SL 간격({abs(tp - sl):.5f})이 {min_tp_sl_gap:.5f}보다 작음 → 진입 제한")
-            # 보정 불가능하면 None 반환
-        # ✅ TP가 현재가에 너무 가까운 경우 → 진입 제한
-
-        print(f"[PARSE 최종] 결정: {decision}, TP: {tp}, SL: {sl}")
-        print(f"🔥 최종 판단 디버그 → decision: {decision}, TP: {tp}, SL: {sl}")
-        return tp, sl
     
 
     # ✅ TP/SL 추출 (가장 마지막 숫자 사용)
