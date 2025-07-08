@@ -891,7 +891,7 @@ def parse_gpt_feedback(text, pair):
         pip_value = 0.01 if "JPY" in pair else 0.0001
         min_gap_pips = 5
         min_sl_distance = atr * 0.5  # SL과 현재가 간 거리 최소 확보
-        min_tp_sl_gap = pip_value * min_gap_pips  # TP-SL 간 최소 거리
+      
 
         # SL 보정
         if abs(price - sl) < min_sl_distance:
