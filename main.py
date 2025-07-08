@@ -1126,8 +1126,8 @@ def get_last_trade_time():
 
 
 
-@app.post("/fastfury_webhook")
-async def fastfury_webhook(request: Request):
+#@app.post("/fastfury_webhook")
+#async def fastfury_webhook(request: Request):
     data = await request.json()
 
     pair_raw = data.get("pair")  # 예: "USD_JPY"
