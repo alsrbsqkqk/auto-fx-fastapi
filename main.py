@@ -638,6 +638,28 @@ def calculate_bollinger_bands(series, window=20):
     upper = mid + 2 * std
     lower = mid - 2 * std
     return upper, mid, lower
+    
+def detect_box_breakout(candles, pair, box_window=10, box_threshold_pips=30):
+    """
+    박스권 돌파 감지 (상향/하향 돌파 모두 반환)
+    """
+    pip_value = 0.01 if pair.endswith("JPY") else 0.0001
+    recent_candles = candles.tail(box_window)
+    high_max = recent_candles['high'].max()
+    low_min = recent_candles['low'].min()
+    box_range = (high_max - low_min) / pip_value
+
+    if box_range > box_threshold_pips:
+        return {"in_box": False, "breakout": None}
+
+    last_close = recent_candles['close'].iloc[-1]
+
+    if last_close > high_max:
+        return {"in_box": True, "breakout": "UP"}
+    elif last_close < low_min:
+        return {"in_box": True, "breakout": "DOWN"}
+    else:
+        return {"in_box": True, "breakout": None}
 
 def detect_trend(candles, rsi, mid_band):
     close = candles["close"]
@@ -667,6 +689,39 @@ def detect_candle_pattern(candles):
         return "SHOOTING_STAR"
     return "NEUTRAL"
 
+def calculate_candle_psychology_score(candles, signal):
+    """
+    시장 심리 점수화 시스템: 캔들 바디/꼬리 비율 기반으로 정량 심리 점수 반환
+    """
+    score = 0
+    reasons = []
+
+    last = candles.iloc[-1]
+    body = abs(last['close'] - last['open'])
+    upper_wick = last['high'] - max(last['close'], last['open'])
+    lower_wick = min(last['close'], last['open']) - last['low']
+    total_range = last['high'] - last['low']
+    body_ratio = body / total_range if total_range != 0 else 0
+
+    # ① 장대바디 판단
+    if body_ratio >= 0.7:
+        if last['close'] > last['open'] and signal == "BUY":
+            score += 1
+            reasons.append("✅ 강한 장대양봉 → 매수 심리 강화")
+        elif last['close'] < last['open'] and signal == "SELL":
+            score += 1
+            reasons.append("✅ 강한 장대음봉 → 매도 심리 강화")
+
+    # ② 꼬리 비율 심리
+    if lower_wick > 2 * body and signal == "BUY":
+        score += 1
+        reasons.append("✅ 아래꼬리 길다 → 매수 지지 심리 강화")
+    if upper_wick > 2 * body and signal == "SELL":
+        score += 1
+        reasons.append("✅ 위꼬리 길다 → 매도 압력 심리 강화")
+
+    return score, reasons
+
 def estimate_liquidity(candles):
     return "좋음" if candles["volume"].tail(10).mean() > 100 else "낮음"
 
@@ -678,6 +733,41 @@ def fetch_forex_news():
         return "🟢 뉴스 영향 적음"
     except:
         return "❓ 뉴스 확인 실패"
+def fetch_and_score_forex_news(pair):
+    """
+    뉴스 이벤트 위험 점수화 (단계 1+2 통합)
+    """
+    score = 0
+    message = ""
+
+    try:
+        response = requests.get("https://www.forexfactory.com/", timeout=5)
+        text = response.text
+
+        if "High Impact Expected" in text:
+            score -= 2
+            message = "⚠️ 고위험 뉴스 존재"
+        elif "Medium Impact Expected" in text:
+            score -= 1
+            message = "⚠️ 중간위험 뉴스"
+        elif "Low Impact Expected" in text:
+            message = "🟢 낮은 영향 뉴스"
+
+        if pair.startswith("USD") and "Fed Chair" in text:
+            score -= 1
+            message += " | Fed 연설 포함"
+        if pair.endswith("JPY") and "BoJ" in text:
+            score -= 1
+            message += " | 일본은행 관련 뉴스"
+
+        if message == "":
+            message = "🟢 뉴스 영향 적음"
+    except Exception as e:
+        score = 0
+        message = "❓ 뉴스 확인 실패"
+
+    return score, message
+
 
 def place_order(pair, units, tp, sl, digits):
     url = f"https://api-fxpractice.oanda.com/v3/accounts/{ACCOUNT_ID}/orders"
