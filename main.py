@@ -12,6 +12,62 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 
+# score_signal_with_filters 위쪽에 추가
+def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles):
+    opportunity_score = 0
+    reasons = []
+
+    if stoch_rsi < 0.05 and rsi > 50 and macd > macd_signal:
+        opportunity_score += 2
+        reasons.append("💡 Stoch RSI 극단 과매도 + RSI 50 상단 돌파 + MACD 상승 → 강력한 BUY 기회")
+
+    if stoch_rsi > 0.95 and rsi < 50 and macd < macd_signal:
+        opportunity_score += 2
+        reasons.append("💡 Stoch RSI 극단 과매수 + RSI 50 이탈 + MACD 하락 → 강력한 SELL 기회")
+
+    if pattern in ["BULLISH_ENGULFING", "BEARISH_ENGULFING"]:
+        opportunity_score += 1
+        reasons.append(f"💡 {pattern} 발생 → 심리 반전 확률↑")
+
+    if 48 < rsi < 52:
+        opportunity_score += 1
+        reasons.append("💡 RSI 50 근접 – 심리 경계선 전환 주시")
+
+    return opportunity_score, reasons
+
+def additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, trend):
+    """ 기존 필터 이후, 추가 가중치 기반 보완 점수 """
+    score = 0
+    reasons = []
+
+    # RSI 30 이하
+    if rsi < 30:
+        score += 1.5
+        reasons.append("🔴 RSI 30 이하 (추가 기회 요인)")
+
+    # Stoch RSI 극단
+    if stoch_rsi < 0.05:
+        score += 1.5
+        reasons.append("🟢 Stoch RSI 0.05 이하 (반등 기대)")
+
+    # MACD 상승 전환
+    if macd > 0 and macd > macd_signal:
+        score += 1
+        reasons.append("🟢 MACD 상승 전환 (추가 확인 요인)")
+
+    # 캔들 패턴
+    if pattern in ["BULLISH_ENGULFING", "BEARISH_ENGULFING"]:
+        score += 1
+        reasons.append(f"📊 {pattern} 발생 (심리 반전)")
+
+    # 추세가 중립일 때: 추가 감점
+    if trend == "NEUTRAL":
+        score -= 0.5
+        reasons.append("⚠ 중립 추세 → 추세 부재로 감점")
+
+    return score, reasons
+
+
 def conflict_check(rsi, pattern, trend, signal):
     """
     추세-패턴-시그널 충돌 방지 필터 (V2 최종)
