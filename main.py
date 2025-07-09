@@ -374,7 +374,7 @@ async def webhook(request: Request):
     }
     signal_score, reasons = score_signal_with_filters(
     rsi.iloc[-1], macd.iloc[-1], macd_signal.iloc[-1], stoch_rsi,
-    trend, signal, liquidity, pattern
+    trend, signal, liquidity, pattern, pair, candles
     )
 
             
@@ -426,19 +426,25 @@ async def webhook(request: Request):
         pip_value = 0.01 if "JPY" in pair else 0.0001
 
         # ATR 기반 보정 추가
-        if atr < 0.0007:
-            tp_pips = pip_value * 10
-            sl_pips = pip_value * 7
-        else:
+        if atr >= 0.18:
+            tp_pips = pip_value * 25
+            sl_pips = pip_value * 12
+        elif atr >= 0.13:
+            tp_pips = pip_value * 20
+            sl_pips = pip_value * 10
+        elif atr >= 0.08:
             tp_pips = pip_value * 15
             sl_pips = pip_value * 10
+        else:
+            tp_pips = pip_value * 10
+            sl_pips = pip_value * 7
 
-        if effective_decision == "BUY":
-            tp = round(price + tp_pips, 5)
-            sl = round(price - sl_pips, 5)
-        elif effective_decision == "SELL":
-            tp = round(price - tp_pips, 5)
-            sl = round(price + sl_pips, 5)
+        if decision == "BUY":
+            tp = round(price + tp_pips, 5 if pip_value == 0.0001 else 3)
+            sl = round(price - sl_pips, 5 if pip_value == 0.0001 else 3)
+        elif decision == "SELL":
+            tp = round(price - tp_pips, 5 if pip_value == 0.0001 else 3)
+            sl = round(price + sl_pips, 5 if pip_value == 0.0001 else 3)  
 
         gpt_feedback += "\n⚠️ TP/SL 추출 실패 → ATR 기반 기본값 적용"
 
