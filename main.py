@@ -819,7 +819,7 @@ def parse_gpt_feedback(text):
     for pat in decision_patterns:
         d = re.search(pat, text.upper())
         if d:
-            decision = d.group(3)
+            decision = d.group(4)
             break
 
     # ✅ fallback: "BUY" 또는 "SELL" 단독 등장 시 인식
