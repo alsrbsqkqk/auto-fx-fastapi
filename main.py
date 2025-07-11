@@ -28,10 +28,6 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
         score -= 0.5
         reasons.append("⚠️ Stoch RSI 중립영역 → 추세 불확실로 감점")
 
-    if pattern in ["BULLISH_ENGULFING", "BEARISH_ENGULFING"]:
-        opportunity_score += 1
-        reasons.append(f"💡 {pattern} 발생 → 심리 반전 확률↑")
-
     if 48 < rsi < 52:
         opportunity_score += 1
         reasons.append("💡 RSI 50 근접 – 심리 경계선 전환 주시")
@@ -54,7 +50,35 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     if atr < 0.0005:
         score -= 0.5
         reasons.append("📉 ATR 낮음 → 변동성 부족, 시그널 신뢰도 약화")
-    
+    if volume_spike:
+        opportunity_score += 1
+        reasons.append("📈 볼륨 급증 → 트렌드 강화 가능성")
+    if near_support and decision == "BUY":
+        opportunity_score += 0.5
+
+
+    # 강한 반전 신호 (1점)
+    strong_reversal_patterns = [
+        "BULLISH_ENGULFING", "BEARISH_ENGULFING",
+        "MORNING_STAR", "EVENING_STAR",
+        "PIERCING_LINE", "DARK_CLOUD_COVER"
+    ]
+
+    # 보조 반전 신호 (0.5점)
+    supportive_patterns = [
+        "HAMMER", "INVERTED_HAMMER",
+        "SHOOTING_STAR", "SPINNING_TOP",
+        "DOJI"
+    ]
+
+    if pattern in strong_reversal_patterns:
+        opportunity_score += 1
+        reasons.append(f"🟢 강력한 반전 캔들 패턴: {pattern}")
+    elif pattern in supportive_patterns:
+        opportunity_score += 0.5
+        reasons.append(f"🟢 보조 캔들 패턴: {pattern}")
+    else:
+        reasons.append("⚪ 주요 캔들 패턴 없음")
 
     return opportunity_score, reasons
 
