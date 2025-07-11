@@ -24,6 +24,9 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     if stoch_rsi > 0.95 and rsi < 50 and macd < macd_signal:
         opportunity_score += 2
         reasons.append("💡 Stoch RSI 극단 과매수 + RSI 50 이탈 + MACD 하락 → 강력한 SELL 기회")
+    if 0.4 < stoch_rsi < 0.6:
+        score -= 0.5
+        reasons.append("⚠️ Stoch RSI 중립영역 → 추세 불확실로 감점")
 
     if pattern in ["BULLISH_ENGULFING", "BEARISH_ENGULFING"]:
         opportunity_score += 1
@@ -32,6 +35,23 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     if 48 < rsi < 52:
         opportunity_score += 1
         reasons.append("💡 RSI 50 근접 – 심리 경계선 전환 주시")
+    if 60 < rsi < 65:
+         score += 0.5
+        reasons.append("🔴 RSI 60~65: 과매수 초기 피로감 (SELL 경계)")
+        
+    if 35 < rsi < 40:
+        score += 0.5
+        reasons.append("🟢 RSI 35~40: 중립 돌파 초기 시도 (기대 영역)")
+    if trend == "UPTREND":
+        score += 0.5
+        reasons.append("🟢 상승추세 지속: 매수 기대감 강화")
+    elif trend == "DOWNTREND":
+        score += 0.5
+        reasons.append("🔴 하락추세 지속: 매도 기대감 강화")
+    if pattern in ["HAMMER", "SHOOTING_STAR"]:
+        score += 0.5
+        reasons.append(f"🕯 {pattern} 캔들: 심리 반전 가능성")
+
 
     return opportunity_score, reasons
 
