@@ -13,7 +13,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 
 
 # score_signal_with_filters 위쪽에 추가
-def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles):
+def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles, trend, volume_spike, near_support):
     opportunity_score = 0
     reasons = []
 
