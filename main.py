@@ -172,7 +172,7 @@ def check_recent_opposite_signal(pair, current_signal, within_minutes=30):
 
 
 
-def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, liquidity, pattern, pair, candles, trend, volume_spike, near_support):
+def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, liquidity, pattern, pair, candles, volume_spike, near_support):
     signal_score = 0
     reasons = []
 
