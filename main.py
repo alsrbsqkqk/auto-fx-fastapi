@@ -50,7 +50,36 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     if atr < 0.0005:
         opportunity_score -= 0.5
         reasons.append("📉 ATR 낮음 → 변동성 부족, 시그널 신뢰도 약화")
+        # 1. RSI와 추세가 충돌
+    if trend == "DOWNTREND" and rsi > 50:
+        opportunity_score -= 0.5
+        reasons.append("⚠️ 하락 추세 중 RSI 매수 신호 → 조건 충돌 감점")
 
+    # 2. MACD 약세인데 RSI/Stoch RSI가 강세면 경고
+    if macd < macd_signal and (rsi > 50 or stoch_rsi > 0.6):
+        opportunity_score -= 0.5
+        reasons.append("⚠️ MACD 하락 중 RSI or Stoch RSI 매수 신호 → 조건 불일치 감점")
+
+    # 3. 추세 중립 + MACD 약세 = 확신 부족
+    if trend == "NEUTRAL" and macd < macd_signal:
+        opportunity_score -= 0.5
+        reasons.append("⚠️ 추세 중립 + MACD 하락 → 확신 부족한 시그널")
+
+    # 4. ATR 극저 (강한 무변동장)
+    if atr < 0.001:
+        opportunity_score -= 0.5
+        reasons.append("⚠️ ATR 매우 낮음 → 변동성 매우 부족한 장세")
+    if abs(macd - macd_signal) < 0.0002:
+        opportunity_score -= 0.5
+        reasons.append("⚠️ MACD 신호 미약 → 방향성 부정확으로 감점")
+    if 40 < rsi < 50:
+        opportunity_score -= 0.5
+        reasons.append("⚠️ RSI 중립구간 (40~50) → 방향성 모호, 진입 보류")
+    if atr < 0.0012:
+        opportunity_score -= 0.5
+        reasons.append("⚠️ ATR 낮음 → 진입 후 변동 부족, 리스크 대비 비효율")
+    
+    return opportunity_score, reasons
 
 
     # 강한 반전 신호 (1점)
