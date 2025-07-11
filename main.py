@@ -476,7 +476,7 @@ async def webhook(request: Request):
 
     signal_score, reasons = score_signal_with_filters(
     rsi.iloc[-1], macd.iloc[-1], macd_signal.iloc[-1], stoch_rsi,
-    trend, signal, liquidity, pattern, pair, candles
+    trend, signal, liquidity, pattern, pair, candles, atr
     )
 
             
