@@ -360,7 +360,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     elif pattern in ["SHOOTING_STAR", "BEARISH_ENGULFING"]:
         signal_score -= 1  # 반전 패턴은 역가점
     # 교과서적 기회 포착 보조 점수
-    op_score, op_reasons = must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles)
+    op_score, op_reasons = must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles, trend, atr)
     if op_score > 0:
         signal_score += op_score
         reasons += op_reasons
