@@ -13,7 +13,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 
 
 # score_signal_with_filters 위쪽에 추가
-def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles, trend, volume_spike, near_support):
+def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles, trend):
     opportunity_score = 0
     reasons = []
 
@@ -50,11 +50,7 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     if atr < 0.0005:
         score -= 0.5
         reasons.append("📉 ATR 낮음 → 변동성 부족, 시그널 신뢰도 약화")
-    if volume_spike:
-        opportunity_score += 1
-        reasons.append("📈 볼륨 급증 → 트렌드 강화 가능성")
-    if near_support and decision == "BUY":
-        opportunity_score += 0.5
+
 
 
     # 강한 반전 신호 (1점)
@@ -172,11 +168,11 @@ def check_recent_opposite_signal(pair, current_signal, within_minutes=30):
 
 
 
-def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, liquidity, pattern, pair, candles, volume_spike, near_support):
+def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, liquidity, pattern, pair, candles):
     signal_score = 0
     reasons = []
 
-    score, base_reasons = must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles, trend, volume_spike, near_support)
+    score, base_reasons = must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles, trend)
     extra_score, extra_reasons = additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, trend)
 
     signal_score += score + extra_score
@@ -476,19 +472,11 @@ async def webhook(request: Request):
         "atr": atr
     }
 
-    # ▶️ volume_spike / near_support 정의 먼저
-    recent_volumes = [c['volume'] for c in candles[-10:] if 'volume' in c]
-    average_volume = sum(recent_volumes) / len(recent_volumes) if recent_volumes else 0
-    volume_spike = any(c['volume'] > 1.5 * average_volume for c in candles[-3:] if 'volume' in c)
 
-    last_price = candles[-1]['close']
-    support_levels = [c['low'] for c in candles[-20:]]  # 최근 20개 캔들에서 저점 후보
-    support = min(support_levels) if support_levels else last_price
-    near_support = abs(last_price - support) / support < 0.002
 
     signal_score, reasons = score_signal_with_filters(
     rsi.iloc[-1], macd.iloc[-1], macd_signal.iloc[-1], stoch_rsi,
-    trend, signal, liquidity, pattern, pair, candles, volume_spike, near_support
+    trend, signal, liquidity, pattern, pair, candles
     )
 
             
