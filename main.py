@@ -475,6 +475,17 @@ async def webhook(request: Request):
         "new_low": bool(high_low_analysis["new_low"]),
         "atr": atr
     }
+
+    # ▶️ volume_spike / near_support 정의 먼저
+    recent_volumes = [c['volume'] for c in candles[-10:] if 'volume' in c]
+    average_volume = sum(recent_volumes) / len(recent_volumes) if recent_volumes else 0
+    volume_spike = any(c['volume'] > 1.5 * average_volume for c in candles[-3:] if 'volume' in c)
+
+    last_price = candles[-1]['close']
+    support_levels = [c['low'] for c in candles[-20:]]  # 최근 20개 캔들에서 저점 후보
+    support = min(support_levels) if support_levels else last_price
+    near_support = abs(last_price - support) / support < 0.002
+
     signal_score, reasons = score_signal_with_filters(
     rsi.iloc[-1], macd.iloc[-1], macd_signal.iloc[-1], stoch_rsi,
     trend, signal, liquidity, pattern, pair, candles, volume_spike, near_support
