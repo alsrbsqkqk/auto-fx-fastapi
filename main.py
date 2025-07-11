@@ -32,7 +32,7 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
         opportunity_score += 1
         reasons.append("💡 RSI 50 근접 – 심리 경계선 전환 주시")
     if 60 < rsi < 65:
-         score += 0.5
+        score += 0.5
         reasons.append("🔴 RSI 60~65: 과매수 초기 피로감 (SELL 경계)")
         
     if 35 < rsi < 40:
