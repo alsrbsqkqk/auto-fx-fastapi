@@ -51,7 +51,10 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     if pattern in ["HAMMER", "SHOOTING_STAR"]:
         score += 0.5
         reasons.append(f"🕯 {pattern} 캔들: 심리 반전 가능성")
-
+    if atr < 0.0005:
+        score -= 0.5
+        reasons.append("📉 ATR 낮음 → 변동성 부족, 시그널 신뢰도 약화")
+    
 
     return opportunity_score, reasons
 
