@@ -507,7 +507,10 @@ async def webhook(request: Request):
     rsi.iloc[-1], macd.iloc[-1], macd_signal.iloc[-1], stoch_rsi,
     trend, signal, liquidity, pattern, pair, candles, atr
     )
-
+    # 🎯 뉴스 리스크 점수 추가 반영
+    news_score, news_msg = news_risk_score(pair)
+    signal_score += news_score
+    reasons.append(f"📰 뉴스 리스크: {news_msg} (점수 {news_score})")
             
     recent_trade_time = get_last_trade_time()
     time_since_last = datetime.utcnow() - recent_trade_time if recent_trade_time else timedelta(hours=999)
@@ -799,6 +802,50 @@ def calculate_candle_psychology_score(candles, signal):
 
 def estimate_liquidity(candles):
     return "좋음" if candles["volume"].tail(10).mean() > 100 else "낮음"
+
+import feedparser
+import pytz
+
+def fetch_news_events():
+    url = "https://nfs.faireconomy.media/ff_calendar_thisweek.xml"
+    feed = feedparser.parse(url)
+    events = []
+    for entry in feed.entries:
+        events.append({
+            "title": entry.title,
+            "summary": entry.summary,
+            "published": entry.published,
+        })
+    return events
+
+def filter_relevant_news(pair, within_minutes=90):
+    currency = pair.split("_")[0] if pair.startswith("USD") else pair.split("_")[1]
+    now_utc = datetime.utcnow().replace(tzinfo=pytz.UTC)
+    events = fetch_news_events()
+    relevant = []
+
+    for e in events:
+        if currency not in e["title"]:
+            continue
+        try:
+            event_time = datetime.strptime(e["published"], "%a, %d %b %Y %H:%M:%S %Z").replace(tzinfo=pytz.UTC)
+        except Exception:
+            continue
+        delta = abs((event_time - now_utc).total_seconds()) / 60
+        if delta < within_minutes:
+            relevant.append(e["title"])
+    return relevant
+
+def news_risk_score(pair):
+    relevant = filter_relevant_news(pair)
+    if any("High" in title for title in relevant):
+        return -2, "⚠️ 고위험 뉴스 임박"
+    elif any("Medium" in title for title in relevant):
+        return -1, "⚠️ 중간위험 뉴스 임박"
+    elif relevant:
+        return 0, "🟢 뉴스 있음 (낮은 영향)"
+    else:
+        return 0, "🟢 영향 있는 뉴스 없음"
 
 def fetch_forex_news():
     try:
