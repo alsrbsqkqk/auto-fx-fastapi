@@ -7,3 +7,4 @@ openai
 aiohttp
 gspread
 oauth2client
+feedparser
