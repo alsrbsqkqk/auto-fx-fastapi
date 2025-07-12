@@ -495,7 +495,7 @@ async def webhook(request: Request):
         "liquidity": liquidity,
         "support": support_resistance["support"],
         "resistance": support_resistance["resistance"],
-        "news": news,
+        "news": f"{news} | {news_msg}",
         "new_high": bool(high_low_analysis["new_high"]),
         "new_low": bool(high_low_analysis["new_low"]),
         "atr": atr
