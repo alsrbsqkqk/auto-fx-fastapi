@@ -378,16 +378,31 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
         signal_score += 1
         reasons.append("유동성 좋음")
     last_3 = candles.tail(3)
-    if all(last_3["close"] < last_3["open"]) and trend == "DOWNTREND" and pattern == "NEUTRAL":
+    if (
+        all(last_3["close"] < last_3["open"]) 
+        and trend == "DOWNTREND" 
+        and pattern in ["NEUTRAL", "SHOOTING_STAR", "LONG_BODY_BEAR"]
+    ):
         signal_score += 1
-        reasons.append("최근 3봉 연속 음봉 + 하락추세 → 패턴 부재 보정 SELL 가점")
-    
-    if pattern in ["BULLISH_ENGULFING", "HAMMER"]:
-        signal_score += 1  # 강력 패턴은 유지
+        reasons.append("🔻최근 3봉 연속 음봉 + 하락추세 + 약세형 패턴 포함 → SELL 강화")
+
+    # 상승 연속 양봉 패턴 보정 BUY
+    if (
+        all(last_3["close"] > last_3["open"]) 
+        and trend == "UPTREND" 
+        and pattern in ["NEUTRAL", "LONG_BODY_BULL", "INVERTED_HAMMER"]
+    ):
+        signal_score += 1
+        reasons.append("🟢 최근 3봉 연속 양봉 + 상승추세 + 약세 미발견 → BUY 강화")
+    if pattern in ["BULLISH_ENGULFING", "HAMMER", "MORNING_STAR"]:
+        signal_score += 2
+        reasons.append(f"🟢 강한 매수형 패턴 ({pattern}) → 진입 근거 강화")
     elif pattern in ["LONG_BODY_BULL"]:
-        signal_score += 0.5  # 장대양봉은 소폭만 가점 (이번 케이스 반영)
-    elif pattern in ["SHOOTING_STAR", "BEARISH_ENGULFING"]:
-        signal_score -= 1  # 반전 패턴은 역가점
+        signal_score += 1
+        reasons.append(f"🟢 양봉 확장 캔들 ({pattern}) → 상승 흐름 가정")
+    elif pattern in ["SHOOTING_STAR", "BEARISH_ENGULFING", "HANGING_MAN", "EVENING_STAR"]:
+        signal_score -= 2
+        reasons.append(f"🔴 반전형 패턴 ({pattern}) → 매도 고려 필요")
     # 교과서적 기회 포착 보조 점수
     op_score, op_reasons = must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles, trend, atr)
     if op_score > 0:
