@@ -34,7 +34,7 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     if 60 < rsi < 65:
         opportunity_score += 0.5
         reasons.append("🔴 RSI 60~65: 과매수 초기 피로감 (SELL 경계)")
-    if 40 < rsi.iloc[-1] < 60 and stoch_rsi > 0.8:
+    if 40 < rsi < 60 and stoch_rsi > 0.8:
         signal_score += 0.5
         reasons.append("⚙ RSI 중립 + Stoch 과열 → 가중 진입 조건")
         
