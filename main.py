@@ -493,7 +493,7 @@ async def webhook(request: Request):
         "support": candles["low"].min(),
         "resistance": candles["high"].max()
     }
-
+    news_score, news_msg = news_risk_score(pair)
     high_low_analysis = analyze_highs_lows(candles)
     atr = calculate_atr(candles).iloc[-1]
     fibo_levels = calculate_fibonacci_levels(candles["high"].max(), candles["low"].min())
@@ -526,7 +526,6 @@ async def webhook(request: Request):
     trend, signal, liquidity, pattern, pair, candles, atr
     )
     # 🎯 뉴스 리스크 점수 추가 반영
-    news_score, news_msg = news_risk_score(pair)
     signal_score += news_score
     reasons.append(f"📰 뉴스 리스크: {news_msg} (점수 {news_score})")
             
