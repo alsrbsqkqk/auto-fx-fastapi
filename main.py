@@ -34,9 +34,16 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     if 60 < rsi < 65:
         opportunity_score += 0.5
         reasons.append("🔴 RSI 60~65: 과매수 초기 피로감 (SELL 경계)")
+    if rsi >= 70:
+        opportunity_score -= 2
+        reasons.append("❌ RSI 70 이상: 과매수로 진입 위험 높음 → 관망 권장")
+    
     if 40 < rsi < 60 and stoch_rsi > 0.8:
         opportunity_score += 0.5
         reasons.append("⚙ RSI 중립 + Stoch 과열 → 가중 진입 조건")
+    if stoch_rsi > 0.8 and rsi > 60:
+        opportunity_score -= 2
+        reasons.append("⚠️ Stoch RSI 과열 + RSI 상승 피로 → 진입 주의 필요")
         
     if 35 < rsi < 40:
         opportunity_score += 0.5
@@ -214,11 +221,10 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     # ✅ 거래 제한 시간 필터 (애틀랜타 기준)
     now_utc = datetime.utcnow()
     now_atlanta = now_utc - timedelta(hours=4)
-
-    if now_atlanta.hour >= 22 or now_atlanta.hour <= 4:
-        if pair in ["EUR_USD", "GBP_USD"]:
-            reasons.append("❌ 심야 유동성 부족 → EURUSD, GBPUSD 거래 제한")
-            return 0, reasons
+    # ✅ 전략 시간대: 오전 09~14시 또는 저녁 19~22시
+    if not ((9 <= now_atlanta.hour <= 14) or (19 <= now_atlanta.hour <= 22)):
+        reasons.append("🕒 전략 외 시간대 → 유동성 부족 / 성공률 저하로 관망")
+        return 0, reasons
     
 
     conflict_flag = conflict_check(rsi, pattern, trend, signal)
