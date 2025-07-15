@@ -80,7 +80,7 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
         opportunity_score -= 0.5
         reasons.append("⚠️ ATR 매우 낮음 → 변동성 매우 부족한 장세")
     if abs(macd - macd_signal) < 0.0002:
-        opportunity_score -= 0.5
+        opportunity_score -= 0.2
         reasons.append("⚠️ MACD 신호 미약 → 방향성 부정확으로 감점")
     if 40 < rsi < 50:
         opportunity_score -= 0.5
