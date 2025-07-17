@@ -29,13 +29,13 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
         reasons.append("⚠️ Stoch RSI 중립영역 → 추세 불확실로 감점")
 
     if 48 < rsi < 52:
-        opportunity_score += 1
+        opportunity_score += 0.5
         reasons.append("💡 RSI 50 근접 – 심리 경계선 전환 주시")
     if 60 < rsi < 65:
         opportunity_score += 0.5
         reasons.append("🔴 RSI 60~65: 과매수 초기 피로감 (SELL 경계)")
     if rsi >= 70:
-        opportunity_score -= 2
+        opportunity_score -= 1
         reasons.append("❌ RSI 70 이상: 과매수로 진입 위험 높음 → 관망 권장")
     
     if 40 < rsi < 60 and stoch_rsi > 0.8:
@@ -72,7 +72,7 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
 
     # 3. 추세 중립 + MACD 약세 = 확신 부족
     if trend == "NEUTRAL" and macd < macd_signal:
-        opportunity_score -= 0.5
+        opportunity_score -= 0.3
         reasons.append("⚠️ 추세 중립 + MACD 하락 → 확신 부족한 시그널")
 
     # 4. ATR 극저 (강한 무변동장)
@@ -83,7 +83,7 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
         opportunity_score -= 0.2
         reasons.append("⚠️ MACD 신호 미약 → 방향성 부정확으로 감점")
     if 40 < rsi < 50:
-        opportunity_score -= 0.5
+        opportunity_score -= 0.2
         reasons.append("⚠️ RSI 중립구간 (40~50) → 방향성 모호, 진입 보류")
     if atr < 0.0012:
         opportunity_score -= 0.5
