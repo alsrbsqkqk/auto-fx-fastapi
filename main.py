@@ -140,10 +140,6 @@ def additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, tre
         score += 1
         reasons.append(f"📊 {pattern} 발생 (심리 반전)")
 
-    # 추세가 중립일 때: 추가 감점
-    if trend == "NEUTRAL":
-        score -= 0.5
-        reasons.append("⚠ 중립 추세 → 추세 부재로 감점")
 
     return score, reasons
 
