@@ -24,9 +24,7 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     if stoch_rsi > 0.95 and rsi < 50 and macd < macd_signal:
         opportunity_score += 2
         reasons.append("💡 Stoch RSI 극단 과매수 + RSI 50 이탈 + MACD 하락 → 강력한 SELL 기회")
-    if 0.4 < stoch_rsi < 0.6:
-        opportunity_score -= 0.5
-        reasons.append("⚠️ Stoch RSI 중립영역 → 추세 불확실로 감점")
+
 
     if 48 < rsi < 52:
         opportunity_score += 0.5
