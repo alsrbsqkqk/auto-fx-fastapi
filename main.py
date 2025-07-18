@@ -537,7 +537,8 @@ async def webhook(request: Request):
     high_low_analysis = analyze_highs_lows(candles)
     atr = calculate_atr(candles).iloc[-1]
     fibo_levels = calculate_fibonacci_levels(candles["high"].max(), candles["low"].min())
-
+    signal_score, reasons = score_signal_with_filters(...)
+    
     payload = {
         "pair": pair,
         "price": price,
