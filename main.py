@@ -1067,7 +1067,7 @@ def analyze_with_gpt(payload):
 
             "나의 최종 목표는 거래당 약 $150 수익을 내는 것이고, 손실은 거래당 $100을 넘지 않도록 설정하는 것이야."
          )
-        }
+        },
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}
     ]
     body = {"model": "gpt-4", "messages": messages, "temperature": 0.3}
