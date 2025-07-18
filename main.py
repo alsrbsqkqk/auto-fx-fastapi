@@ -13,7 +13,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 
 
 # score_signal_with_filters 위쪽에 추가
-def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles, trend, atr):
+def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles, trend, atr, price, bollinger_upper, bollinger_lower):
     opportunity_score = 0
     reasons = []
 
@@ -447,7 +447,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
         signal_score -= 2
         reasons.append(f"🔴 반전형 패턴 ({pattern}) → 매도 고려 필요")
     # 교과서적 기회 포착 보조 점수
-    op_score, op_reasons = must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles, trend, atr)
+    op_score, op_reasons = must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles, trend, atr, price, bollinger_upper, bollinger_lower)
     if op_score > 0:
         signal_score += op_score
         reasons += op_reasons
