@@ -556,7 +556,7 @@ async def webhook(request: Request):
         "news": f"{news} | {news_msg}",
         "new_high": bool(high_low_analysis["new_high"]),
         "new_low": bool(high_low_analysis["new_low"]),
-        "atr": atr
+        "atr": atr,
         "signal_score": signal_score,
         "score_components": reasons
     }
