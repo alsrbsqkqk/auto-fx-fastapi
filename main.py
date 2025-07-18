@@ -550,7 +550,10 @@ async def webhook(request: Request):
         candles,
         atr
     )
-        
+    # 📌 현재가 계산
+    price = candles["close"].iloc[-1]
+
+    # 📦 Payload 구성
     payload = {
         "pair": pair,
         "price": price,
