@@ -208,12 +208,12 @@ def check_recent_opposite_signal(pair, current_signal, within_minutes=30):
 
 
 
-def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, liquidity, pattern, pair, candles, atr, price):
+def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, liquidity, pattern, pair, candles, atr, price, bollinger_upper, bollinger_lower):
     signal_score = 0
     reasons = []
 
-    score, base_reasons = must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles, trend, atr)
-    extra_score, extra_reasons = additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, trend)
+    score, base_reasons = must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles, trend, at, price, bollinger_upper, bollinger_lower)
+    extra_score, extra_reasons = additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, trend, bollinger_upper, bollinger_lower, price)
 
     signal_score += score + extra_score
     reasons.extend(base_reasons + extra_reasons)
@@ -551,7 +551,9 @@ async def webhook(request: Request):
         pair,
         candles,
         atr,
-        price
+        price,
+        boll_up.iloc[-1], 
+        boll_low.iloc[-1]
     )
 
     # 📦 Payload 구성
