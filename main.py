@@ -208,7 +208,7 @@ def check_recent_opposite_signal(pair, current_signal, within_minutes=30):
 
 
 
-def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, liquidity, pattern, pair, candles, atr):
+def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, liquidity, pattern, pair, candles, atr, price):
     signal_score = 0
     reasons = []
 
@@ -537,6 +537,8 @@ async def webhook(request: Request):
     high_low_analysis = analyze_highs_lows(candles)
     atr = calculate_atr(candles).iloc[-1]
     fibo_levels = calculate_fibonacci_levels(candles["high"].max(), candles["low"].min())
+    # 📌 현재가 계산
+    price = candles["close"].iloc[-1]
     signal_score, reasons = score_signal_with_filters(
         rsi.iloc[-1],
         macd.iloc[-1],
@@ -548,10 +550,9 @@ async def webhook(request: Request):
         pattern,
         pair,
         candles,
-        atr
+        atr,
+        price
     )
-    # 📌 현재가 계산
-    price = candles["close"].iloc[-1]
 
     # 📦 Payload 구성
     payload = {
