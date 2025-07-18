@@ -1,4 +1,4 @@
-# ⚠️ V2 업그레이드된 자동 트레이딩 스크립트 (학습 강화, 트렌드 보강, 시트 시간 보정 포함)
+    # ⚠️ V2 업그레이드된 자동 트레이딩 스크립트 (학습 강화, 트렌드 보강, 시트 시간 보정 포함)
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 import os
@@ -68,9 +68,16 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
         opportunity_score -= 0.5
         reasons.append("⚠️ MACD 하락 중 RSI or Stoch RSI 매수 신호 → 조건 불일치 감점")
 
+
+    if macd > macd_signal:
+        opportunity_score += 0.5
+    else:
+        opportunity_score += 0.0  # 감점 없음
+
+    
     # 3. 추세 중립 + MACD 약세 = 확신 부족
     if trend == "NEUTRAL" and macd < macd_signal:
-        opportunity_score -= 0.3
+        opportunity_score -= 0.0
         reasons.append("⚠️ 추세 중립 + MACD 하락 → 확신 부족한 시그널")
 
     # 4. ATR 극저 (강한 무변동장)
@@ -280,12 +287,24 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
         signal_score += 1
         reasons.append("RSI 중립구간 (45~60) → 반등 기대 가점")
 
+    if price >= bollinger_upper:
+        signal_score -= 1
+        reasons.append("🔴 가격이 볼린저밴드 상단 돌파 ➔ 과매수 경계")
+    elif price <= bollinger_lower:
+        signal_score += 1
+        reasons.append("🟢 가격이 볼린저밴드 하단 터치 ➔ 반등 가능성↑")
+
     if pattern in ["LONG_BODY_BULL", "LONG_BODY_BEAR"]:
         signal_score += 2
         reasons.append(f"장대바디 캔들 추가 가점: {pattern}")
 
     box_info = detect_box_breakout(candles, pair)
-
+    
+    high_low_flags = analyze_highs_lows(candles)
+    if high_low_flags["new_high"]:
+        reasons.append("📈 최근 고점 갱신 → 상승세 유지 가능성↑")
+    if high_low_flags["new_low"]:
+        reasons.append("📉 최근 저점 갱신 → 하락세 지속 가능성↑")
     if box_info["in_box"] and box_info["breakout"] == "UP" and signal == "BUY":
         signal_score += 3
         reasons.append("📦 박스권 상단 돌파 + 매수 신호 일치 (breakout 가점 강화)")
@@ -314,6 +333,13 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
             if macd_hist > 0:
                 signal_score += 1
                 reasons.append("MACD 미세하지만 히스토그램 증가 → 상승 초기 흐름")
+            macd_diff = macd - macd_signal
+            if abs(macd_diff) < 0.0001:
+                reasons.append("⚠️ MACD 미세변동 → 신뢰도 낮음")
+            elif macd_diff > 0 and macd > 0:
+                reasons.append("🟢 MACD 양수 유지 → 상승 흐름 유지")
+            elif macd_diff < 0 and macd < 0:
+                reasons.append("🔴 MACD 음수 지속 → 약세 흐름 유지")
       
             
     else:
@@ -331,7 +357,21 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
             reasons.append("MACD 약한 데드 + 하락추세 → 약한 SELL 지지")
         else:
             reasons.append("MACD 미세변동 → 가점 보류")
+        macd_diff = macd - macd_signal
+        if abs(macd_diff) < 0.0001:
+            reasons.append("⚠️ MACD 미세변동 → 신뢰도 낮음")
+        elif macd_diff > 0 and macd > 0:
+            reasons.append("🟢 MACD 양수 유지 → 상승 흐름 유지")
+        elif macd_diff < 0 and macd < 0:
+            reasons.append("🔴 MACD 음수 지속 → 약세 흐름 유지")
 
+
+    if stoch_rsi == 0.0:
+        signal_score += 1
+        reasons.append("🟢 Stoch RSI 0.0 → 극단적 과매도 → 반등 기대")
+    elif stoch_rsi == 1.0:
+        signal_score -= 1
+        reasons.append("🔴 Stoch RSI 1.0 → 극단적 과매수 → 피로감 주의")
     
     if stoch_rsi > 0.8:
         if trend == "UPTREND" and rsi < 70:
@@ -994,7 +1034,7 @@ def parse_gpt_feedback(text):
 def analyze_with_gpt(payload):
     headers = {"Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}", "Content-Type": "application/json"}
     messages = [
-        {"role": "system", "content": "너는 실전 FX 트레이딩 전략 조력자야. (1)아래 JSON 데이터를 기반으로 전략 리포트를 생성하고, 진입 판단(BUY, SELL, WAIT)과 TP, SL 값을 제시해줘. RSI, MACD, Stoch RSI, 추세 점수, 캔들 패턴 점수 등 너가 알수 있는 데의터 분석의 총합이 4점 이상인 경우에는 보수적 WAIT 대신 진입(BUY 또는 SELL) 판단을 조금 더 적극적으로 검토하라. (2) 거래는 기본적으로 1~2시간 내 청산을 목표로 하되, SL과 TP는 너무 짧지 않도록 ATR의 최소 50% 이상 거리로 현재가에서 떨어지게 설정해야 하고, 반드시 TP와 SL은 각각 현재가와 8Pip 이상 차이나게 한다. TP는 SL보다 넓게 설정하되, TP와 SL 사이의 간격은 현재가와 비교해서 반드시 2:1이상 비율 ,최소 10 PIP, 이상 확보해야 한다. BUY 포지션에서는 TP > 진입가, SL < 진입가가 되도록 명심하고, SELL 포지션에서는  TP < 진입가, SL > 진입가가 로직을 명심해라. (3)지지선(support)과 저항선(resistance)은 최근 1시간봉 기준 마지막 6봉에서의 고점/저점 기준으로 이미 계산된 사용하고, 아래 데이터에 포함되어 있다 그러니 분석 시에는 반드시 이 숫자만 기준으로 판단해라. 그 외 고점/저점은 무시해라. (4)분석할땐 캔들의 추세뿐만 아니라, 보조 지표들의 추세&흐름도 꼭 같이 파악해서 추세를 파악해서 분석해.  (5)그리고 너의 분석의 마지막줄은 항상 진입판단: BUY/SELL/WAIT 이라고 명료하게 이 형식으로 보여주고 그 밑에 줄에는 TP랑 SL값만 명료하게 보여줘 예시-> SL:1.17918  (6) SL와 TP도 범위형 표현은 절대 사용하지 말고 단일수치값으로 명료하게 보여주고 숫자 외에는 다른 말은 추가로 보여주지마. 왜냐하면 그 숫자만 함수로 불러와서 거래 할 것이기 때문에 (7) 최근 지지/저항을 중심으로, 현재가가 저항 근처면 짧은 TP 설정, 지지 멀다면 넓은 SL 허용한다 대신에 너무 많이 멀어지지 않도록. (8)피보나치 수렴 또는 확장 여부를 참고하여 돌파 가능성 있으면 TP를 과감하게 약간 확장 가능. 캔들패턴 뿐만 아니라 최근 파동(신고점/신저점 여부), 박스권 유지 여부까지 참고.ATR과 볼린저 폭을 함께 참고하여 변동성이 급격히 축소되는 경우에는 보수적으로 TP/SL 설정한다. 나의 최종목표는 거래 하나당 150불정도 가져가는게 목표이다. 손실은 한 거래당 100불이 넘지 않게 설정한다."},
+        {"role": "system", "content": "너는 실전 FX 트레이딩 전략 조력자야. (1)아래 JSON 데이터를 기반으로 전략 리포트를 생성하고, 진입 판단(BUY, SELL, WAIT)과 TP, SL 값을 제시해줘. RSI, MACD, Stoch RSI, 추세 점수, 캔들 패턴 점수 등 너가 알수 있는 데의터 분석의 총합이 4점 이상인 경우에는 보수적 WAIT 대신 진입(BUY 또는 SELL) 판단을 조금 더 적극적으로 검토하라. (2) 거래는 기본적으로 1~2시간 내 청산을 목표로 하되, SL과 TP는 너무 짧지 않도록 ATR의 최소 50% 이상 거리로 현재가에서 떨어지게 설정해야 하고, 최근 캔들 5봉의 저점과 고점을 분석해서 너가 설정한 tp와 sl이 REASONABLE한지 검증해라. 반드시 TP와 SL은 각각 현재가와 8Pip 이상 차이나게 한다. TP는 SL보다 넓게 설정하되, TP와 SL 사이의 간격은 현재가와 비교해서 반드시 2:1이상 비율 ,최소 10 PIP, 이상 확보해야 한다. BUY 포지션에서는 TP > 진입가, SL < 진입가가 되도록 명심하고, SELL 포지션에서는  TP < 진입가, SL > 진입가가 로직을 명심해라. (3)지지선(support)과 저항선(resistance)은 최근 1시간봉 기준 마지막 6봉에서의 고점/저점 기준으로 이미 계산된 사용하고, 아래 데이터에 포함되어 있다 그러니 분석 시에는 반드시 이 숫자만 기준으로 판단해라. 그 외 고점/저점은 무시해라. (4)분석할땐 캔들의 추세뿐만 아니라, 보조 지표들의 추세&흐름도 꼭 같이 파악해서 추세를 파악해서 분석해.  (5)그리고 너의 분석의 마지막줄은 항상 진입판단: BUY/SELL/WAIT 이라고 명료하게 이 형식으로 보여주고 그 밑에 줄에는 TP랑 SL값만 명료하게 보여줘 예시-> SL:1.17918  (6) SL와 TP도 범위형 표현은 절대 사용하지 말고 단일수치값으로 명료하게 보여주고 숫자 외에는 다른 말은 추가로 보여주지마. 왜냐하면 그 숫자만 함수로 불러와서 거래 할 것이기 때문에 (7) 최근 지지/저항을 중심으로, 현재가가 저항 근처면 짧은 TP 설정, 지지 멀다면 넓은 SL 허용한다 대신에 너무 많이 멀어지지 않도록. (8)피보나치 수렴 또는 확장 여부를 참고하여 돌파 가능성 있으면 TP를 과감하게 약간 확장 가능. 캔들패턴 뿐만 아니라 최근 파동(신고점/신저점 여부), 박스권 유지 여부까지 참고.ATR과 볼린저 폭을 함께 참고하여 변동성이 급격히 축소되는 경우에는 보수적으로 TP/SL 설정한다. 나의 최종목표는 거래 하나당 150불정도 가져가는게 목표이다. 손실은 한 거래당 100불이 넘지 않게 설정한다."},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}
     ]
     body = {"model": "gpt-4", "messages": messages, "temperature": 0.3}
