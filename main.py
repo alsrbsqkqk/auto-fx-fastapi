@@ -52,6 +52,16 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     elif trend == "DOWNTREND":
         opportunity_score += 0.5
         reasons.append("🔴 하락추세 지속: 매도 기대감 강화")
+    # ✅ 중립 추세일 때 추가 조건
+    elif trend == "NEUTRAL":
+        if (45 < rsi < 60) and (macd > macd_signal) and (0.2 < stoch_rsi < 0.8):
+            opportunity_score += 0.5
+            reasons.append("🟡 중립 추세 + 조건 충족 → 약한 기대감")
+        else:
+            opportunity_score -= 0.5
+            reasons.append("⚠️ 중립 추세 + 신호 불충분 → 신뢰도 낮음 (감점)")
+
+    
     if pattern in ["HAMMER", "SHOOTING_STAR"]:
         opportunity_score += 0.5
         reasons.append(f"🕯 {pattern} 캔들: 심리 반전 가능성")
@@ -146,6 +156,10 @@ def additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, tre
     if pattern in ["BULLISH_ENGULFING", "BEARISH_ENGULFING"]:
         score += 1
         reasons.append(f"📊 {pattern} 발생 (심리 반전)")
+        
+    if pattern in ["DOJI", "MORNING_STAR", "EVENING_STAR"]:
+        score += 0.4
+        reasons.append(f"🕯 {pattern} 패턴 → 반전 가능성 강화로 가점 (+0.4)")
 
 
     return score, reasons
@@ -220,11 +234,13 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     # ✅ 캔들 패턴과 추세 강한 일치 시 보너스 점수 부여
     if signal == "BUY" and trend == "UPTREND" and pattern in ["BULLISH_ENGULFING", "HAMMER", "PIERCING_LINE"]:
         signal_score += 1
-        reasons.append("📈 강한 상승추세 + 매수 캔들 패턴 일치 → 보너스 점수 부여")
+        opportunity_score += 0.5  # ✅ 패턴-추세 일치 시 추가 점수
+        reasons.append("✅ 강한 상승추세 + 매수 캔들 패턴 일치 → 보너스 + 기회 점수 강화")
 
-    if signal == "SELL" and trend == "DOWNTREND" and pattern in ["BEARISH_ENGULFING", "SHOOTING_STAR", "DARK_CLOUD_COVER"]:
+    elif signal == "SELL" and trend == "DOWNTREND" and pattern in ["BEARISH_ENGULFING", "SHOOTING_STAR", "DARK_CLOUD_COVER"]:
         signal_score += 1
-        reasons.append("📉 강한 하락추세 + 매도 캔들 패턴 일치 → 보너스 점수 부여")
+        opportunity_score += 0.5  # ✅ 패턴-추세 일치 시 추가 점수
+        reasons.append("✅ 강한 하락추세 + 매도 캔들 패턴 일치 → 보너스 + 기회 점수 강화")
     
     # ✅ 거래 제한 시간 필터 (애틀랜타 기준)
     now_utc = datetime.utcnow()
