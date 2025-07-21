@@ -242,6 +242,7 @@ def check_recent_opposite_signal(pair, current_signal, within_minutes=30):
 
 def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, liquidity, pattern, pair, candles, atr, price, bollinger_upper, bollinger_lower):
     signal_score = 0
+    opportunity_score = 0  
     reasons = []
 
     score, base_reasons = must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles, trend, atr, price, bollinger_upper, bollinger_lower)
