@@ -217,7 +217,14 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
 
     signal_score += score + extra_score
     reasons.extend(base_reasons + extra_reasons)
+    # ✅ 캔들 패턴과 추세 강한 일치 시 보너스 점수 부여
+    if signal == "BUY" and trend == "UPTREND" and pattern in ["BULLISH_ENGULFING", "HAMMER", "PIERCING_LINE"]:
+        signal_score += 1
+        reasons.append("📈 강한 상승추세 + 매수 캔들 패턴 일치 → 보너스 점수 부여")
 
+    if signal == "SELL" and trend == "DOWNTREND" and pattern in ["BEARISH_ENGULFING", "SHOOTING_STAR", "DARK_CLOUD_COVER"]:
+        signal_score += 1
+        reasons.append("📉 강한 하락추세 + 매도 캔들 패턴 일치 → 보너스 점수 부여")
     
     # ✅ 거래 제한 시간 필터 (애틀랜타 기준)
     now_utc = datetime.utcnow()
@@ -244,6 +251,18 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
             reasons.append("⚠️ 추세-패턴 충돌 + 보완 조건 미충족 → 관망")
             return 0, reasons
 
+    # ✅ RSI, MACD, Stoch RSI 모두 중립 + Trend도 NEUTRAL → 횡보장 진입 방어
+    if trend == "NEUTRAL":
+        if 45 <= rsi <= 55 and -0.05 < macd < 0.05 and 0.3 < stoch_rsi < 0.7:
+            reasons.append("📉 지표 중립 + 트렌드 NEUTRAL → 횡보장 진입 방지")
+            return 0, reasons
+  
+    # ✅ BUY 과열 진입 방어 (SELL의 대칭 조건)
+    if signal == "BUY" and rsi > 60:
+        if macd < macd_signal and stoch_rsi > 0.85:
+            reasons.append("🛑 과매수 BUY 방어: MACD 하락 전환 + Stoch RSI 과열 → 관망")
+            return 0, reasons
+    
     # ✅ V3 과매도 SELL 방어 필터 추가
     if signal == "SELL" and rsi < 40:
         if macd > macd_signal and stoch_rsi > 0.5:
