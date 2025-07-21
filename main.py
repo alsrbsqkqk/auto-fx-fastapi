@@ -131,6 +131,24 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
         reasons.append("⚪ 주요 캔들 패턴 없음")
 
     return opportunity_score, reasons
+    
+def get_dynamic_support_resistance(candles, window=3):
+    resistances = []
+    supports = []
+
+    for i in range(window, len(candles) - window):
+        high = candles.iloc[i]["high"]
+        low = candles.iloc[i]["low"]
+
+        if all(high > candles.iloc[j]["high"] for j in range(i - window, i + window + 1)):
+            resistances.append(high)
+        if all(low < candles.iloc[j]["low"] for j in range(i - window, i + window + 1)):
+            supports.append(low)
+
+    support = supports[-1] if supports else candles["low"].tail(5).min()
+    resistance = resistances[-1] if resistances else candles["high"].tail(5).max()
+    return round(support, 5), round(resistance, 5)
+
 
 def additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, trend):
     """ 기존 필터 이후, 추가 가중치 기반 보완 점수 """
@@ -542,11 +560,12 @@ async def webhook(request: Request):
 
     candles = get_candles(pair, "M30", 200)
     print("✅ STEP 4: 캔들 데이터 수신")
-    # ✅ 최근 10봉 기준으로 지지선/저항선 다시 설정
+    # 동적 지지/저항선 계산 (파동 기반)
     candles_recent = candles.tail(10)
+    support, resistance = get_dynamic_support_resistance(candles.tail(30), window=3)
     support_resistance = {
-        "support": candles_recent["low"].min(),
-        "resistance": candles_recent["high"].max()
+        "support": support,
+        "resistance": resistance
     }
     
     if candles is None or candles.empty:
