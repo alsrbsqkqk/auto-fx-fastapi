@@ -269,7 +269,15 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
         reasons.append("🕒 전략 외 시간대 → 유동성 부족 / 성공률 저하로 관망")
         return 0, reasons
     
+    # ✅ 저항선과 너무 가까운 거리에서의 BUY 진입 방지 (구조상 불리한 진입 회피)
+    if signal == "BUY" and resistance_distance / pip_size < 6:
+        reasons.append("⚠️ 저항선 10pip 이내 → 구조상 불리 → 관망")
+        return 0, reasons
 
+    # ✅ 지지선과 너무 가까운 거리에서의 SELL 진입 방지 (구조상 불리한 진입 회피)
+    if signal == "SELL" and abs(price - support) / pip_size < 6:
+        reasons.append("⚠️ 지지선 10pip 이내 → 구조상 불리 → 관망")
+        return 0, reasons
     conflict_flag = conflict_check(rsi, pattern, trend, signal)
 
     # 보완 조건 정의: 극단적 RSI + Stoch RSI or MACD 반전 조짐
@@ -568,7 +576,10 @@ async def webhook(request: Request):
         "support": support,
         "resistance": resistance
     }
-    
+    # ✅ 현재가와 저항선 거리 계산 (pip 기준 거리 필터 적용을 위함)
+    pip_size = 0.01 if "JPY" in pair else 0.0001
+    resistance_distance = abs(resistance - price)
+
     if candles is None or candles.empty:
         return JSONResponse(content={"error": "캔들 데이터를 불러올 수 없음"}, status_code=400)
 
