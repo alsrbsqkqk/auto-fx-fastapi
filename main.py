@@ -576,6 +576,8 @@ async def webhook(request: Request):
         "support": support,
         "resistance": resistance
     }
+    support_distance = abs(price - support)
+    resistance_distance = abs(resistance - price)
     # ✅ 현재가와 저항선 거리 계산 (pip 기준 거리 필터 적용을 위함)
     pip_size = 0.01 if "JPY" in pair else 0.0001
     resistance_distance = abs(resistance - price)
@@ -619,7 +621,11 @@ async def webhook(request: Request):
         atr,
         price,
         boll_up.iloc[-1], 
-        boll_low.iloc[-1]
+        boll_low.iloc[-1],
+        support,
+        resistance,
+        support_distance,
+        resistance_distance
     )
 
     # 📦 Payload 구성
