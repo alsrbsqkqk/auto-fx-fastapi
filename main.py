@@ -166,7 +166,7 @@ def get_enhanced_support_resistance(candles, price, atr, window=20, min_touch_co
 
     # Ensure all are floats
     price = float(price)
-    min_distance = max(0.1, float(atr) * 1.5)
+    min_distance = max(0.1, float(atr.iloc[-1]) * 1.5)
 
     if price - support_price < min_distance:
         support_price = price - min_distance
