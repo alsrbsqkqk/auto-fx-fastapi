@@ -145,6 +145,18 @@ def get_enhanced_support_resistance(candles, price, atr, window=20, min_touch_co
     support_idx = support_candidates.index.max() if not support_candidates.empty else lows.idxmin()
     resistance_idx = resistance_candidates.index.min() if not resistance_candidates.empty else highs.idxmax()
 
+    # 인덱스 계산 with 안전 장치
+    if not support_candidates.empty:
+        support_idx = support_candidates.index.max()
+    else:
+        support_idx = lows.idxmin() if not lows.empty else candles["low"].idxmin()
+
+    if not resistance_candidates.empty:
+        resistance_idx = resistance_candidates.index.min()
+    else:
+        resistance_idx = highs.idxmax() if not highs.empty else candles["high"].idxmax()
+    
+    
     support_price = float(candles.loc[support_idx, "low"]) if not support_candidates.empty else float(lows.min())
     resistance_price = float(candles.loc[resistance_idx, "high"]) if not resistance_candidates.empty else float(highs.max())
 
