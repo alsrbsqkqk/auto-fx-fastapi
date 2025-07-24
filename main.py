@@ -133,8 +133,8 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     return opportunity_score, reasons
     
 def get_enhanced_support_resistance(candles, price, atr, window=20, min_touch_count=2):
-    highs = candles["high"].tail(window)
-    lows = candles["low"].tail(window)
+    highs = candles["high"].tail(window).astype(float)
+    lows = candles["low"].tail(window).astype(float)
 
     support_zone = lows[lows < price].round(2).value_counts()
     resistance_zone = highs[highs > price].round(2).value_counts()
