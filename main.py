@@ -578,7 +578,10 @@ async def webhook(request: Request):
         current_price = candles.iloc[-1]['close']
     else:
         current_price = None
-    
+    # ✅ ATR 먼저 계산
+    atr = calculate_atr(candles)  # 또는 고정값으로 테스트: atr = 0.2
+
+    # ✅ 지지/저항 계산
     support, resistance = get_enhanced_support_resistance(candles, price=current_price, atr=atr)
     support_resistance = {
         "support": support,
