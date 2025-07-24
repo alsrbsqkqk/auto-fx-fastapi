@@ -133,6 +133,8 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     return opportunity_score, reasons
     
 def get_enhanced_support_resistance(candles, price, atr, window=20, min_touch_count=2):
+    if price is None:
+        raise ValueError("get_enhanced_support_resistance: price 인자가 None입니다. current_price가 제대로 전달되지 않았습니다.")
     highs = candles["high"].tail(window).astype(float)
     lows = candles["low"].tail(window).astype(float)
 
@@ -600,6 +602,10 @@ async def webhook(request: Request):
         current_price = candles.iloc[-1]['close']
     else:
         current_price = None
+
+    # ✅ 방어 로직 추가 (607줄 기준)
+    if current_price is None:
+        raise ValueError("current_price가 None입니다. 데이터 로드 로직을 점검하세요.")
     # ✅ ATR 먼저 계산
     atr = calculate_atr(candles)  # 또는 고정값으로 테스트: atr = 0.2
 
