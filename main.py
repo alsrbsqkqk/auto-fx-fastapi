@@ -158,9 +158,7 @@ def get_enhanced_support_resistance(candles, price, atr, window=20, min_touch_co
 
     support_price = float(candles.loc[support_pos, "low"])
     resistance_pos = candles.index.get_loc(resistance_idx)
-    
-    support_price = float(candles.iloc[support_pos]["low"])
-    resistance_price = float(candles.iloc[resistance_pos]["high"])
+
 
     support = float(support_price)
     resistance = float(resistance_price)
