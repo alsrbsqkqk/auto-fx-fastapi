@@ -142,16 +142,15 @@ def get_enhanced_support_resistance(candles, price, atr, window=20, min_touch_co
     support_candidates = support_zone[support_zone >= min_touch_count]
     resistance_candidates = resistance_zone[resistance_zone >= min_touch_count]
 
-
-    
-    # ✅ support_candidates / resistance_candidates 인덱스를 정확히 candles 인덱스로 매핑
+    # Support
     if not support_candidates.empty:
         support_idx = support_candidates.idxmax()
-        support_pos = candles.index.get_loc(support_idx)  # 인덱스 위치 정수값
+        support_pos = candles.index.get_loc(support_idx)
         support_price = float(candles.iloc[support_pos]["low"])
     else:
         support_price = float(lows.min())
 
+    # Resistance
     if not resistance_candidates.empty:
         resistance_idx = resistance_candidates.index.min()
         resistance_pos = candles.index.get_loc(resistance_idx)
@@ -159,17 +158,14 @@ def get_enhanced_support_resistance(candles, price, atr, window=20, min_touch_co
     else:
         resistance_price = float(highs.max())
 
-
-    support = float(support_price)
-    resistance = float(resistance_price)
-
+    # 최소 거리 보정
     min_distance = max(0.1, atr * 1.5)
-    if price - support < min_distance:
-        support = price - min_distance
-    if resistance - price < min_distance:
-        resistance = price + min_distance
+    if price - support_price < min_distance:
+        support_price = price - min_distance
+    if resistance_price - price < min_distance:
+        resistance_price = price + min_distance
 
-    return round(support, 5), round(resistance, 5)
+    return round(support_price, 5), round(resistance_price, 5)
 
 
 def additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, trend):
