@@ -599,7 +599,7 @@ async def webhook(request: Request):
     print("✅ STEP 4: 캔들 데이터 수신")
     # 동적 지지/저항선 계산 (파동 기반)
     print("📉 candles.tail():\n", candles.tail())
-    if candles is not None and not candles.empty and len(candles) >= 2
+    if candles is not None and not candles.empty and len(candles) >= 2:
         print("🧪 candles.iloc[-1]:", candles.iloc[-1])
         print("📌 columns:", candles.columns)
         current_price = candles.iloc[-2]['close']
