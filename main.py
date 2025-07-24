@@ -132,21 +132,25 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
 
     return opportunity_score, reasons
     
-def get_dynamic_support_resistance(candles, window=3):
-    resistances = []
-    supports = []
+def get_enhanced_support_resistance(candles, price, atr, window=20, min_touch_count=2):
+    highs = candles["high"].tail(window)
+    lows = candles["low"].tail(window)
 
-    for i in range(window, len(candles) - window):
-        high = candles.iloc[i]["high"]
-        low = candles.iloc[i]["low"]
+    support_zone = lows[lows < price].round(2).value_counts()
+    resistance_zone = highs[highs > price].round(2).value_counts()
 
-        if all(high > candles.iloc[j]["high"] for j in range(i - window, i + window + 1)):
-            resistances.append(high)
-        if all(low < candles.iloc[j]["low"] for j in range(i - window, i + window + 1)):
-            supports.append(low)
+    support_candidates = support_zone[support_zone >= min_touch_count]
+    resistance_candidates = resistance_zone[resistance_zone >= min_touch_count]
 
-    support = supports[-1] if supports else candles["low"].tail(5).min()
-    resistance = resistances[-1] if resistances else candles["high"].tail(5).max()
+    support = float(support_candidates.index.max()) if not support_candidates.empty else lows.min()
+    resistance = float(resistance_candidates.index.min()) if not resistance_candidates.empty else highs.max()
+
+    min_distance = max(0.1, atr * 1.5)
+    if price - support < min_distance:
+        support = price - min_distance
+    if resistance - price < min_distance:
+        resistance = price + min_distance
+
     return round(support, 5), round(resistance, 5)
 
 
@@ -570,8 +574,7 @@ async def webhook(request: Request):
     candles = get_candles(pair, "M30", 200)
     print("✅ STEP 4: 캔들 데이터 수신")
     # 동적 지지/저항선 계산 (파동 기반)
-    candles_recent = candles.tail(10)
-    support, resistance = get_dynamic_support_resistance(candles.tail(30), window=3)
+    support, resistance = get_enhanced_support_resistance(candles, price=current_price, atr=atr)
     support_resistance = {
         "support": support,
         "resistance": resistance
@@ -1140,7 +1143,7 @@ def analyze_with_gpt(payload):
             "TP와 SL은 현재가에서 각각 8pip 이상 차이나야 하고, TP는 SL보다 넓게 잡아. "
             "TP:SL 비율은 2:1 이상이면서 최소 10pip 이상 차이 나야 해. 비율은 TP가 2이고 SL이 1이다. BUY일 땐 TP > 진입가, SL < 진입가 / SELL일 땐 TP < 진입가, SL > 진입가를 반드시 지켜.\n\n"
 
-            "(3) 지지선(support), 저항선(resistance)은 최근 1시간봉 기준 마지막 6봉의 고점/저점에서 이미 계산되어 JSON에 포함되어 있어. "
+            "(3) 지지선(support), 저항선(resistance)은 최근 1시간봉 기준 마지막 6봉의 고점/저점에서 이미 계산되어 JSON에 포함되어 있어. support와 resistance는 주어진 숫자만을 사용하며, 수치를 임의로 변경하지 마십시오. "
             "이 숫자만 참고하고 그 외 고점/저점은 무시해.\n\n"
 
             "(4) 추세 판단 시 캔들 패턴뿐 아니라 보조지표(RSI, MACD, Stoch RSI)의 흐름과 방향성도 함께 고려해.\n\n"
