@@ -145,16 +145,13 @@ def get_enhanced_support_resistance(candles, price, atr, window=20, min_touch_co
     # Support
     if not support_candidates.empty:
         support_idx = support_candidates.idxmax()
-        support_pos = candles.index.get_loc(support_idx)
-        support_price = float(candles.iloc[support_pos]["low"])
+        support_price = float(candles.loc[support_idx, "low"])
     else:
         support_price = float(lows.min())
 
-    # Resistance
     if not resistance_candidates.empty:
         resistance_idx = resistance_candidates.index.min()
-        resistance_pos = candles.index.get_loc(resistance_idx)
-        resistance_price = float(candles.iloc[resistance_pos]["high"])
+        resistance_price = float(candles.loc[resistance_idx, "high"])
     else:
         resistance_price = float(highs.max())
 
