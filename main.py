@@ -574,6 +574,7 @@ async def webhook(request: Request):
     candles = get_candles(pair, "M30", 200)
     print("✅ STEP 4: 캔들 데이터 수신")
     # 동적 지지/저항선 계산 (파동 기반)
+    current_price = candles[-1]['close'] if candles else None
     support, resistance = get_enhanced_support_resistance(candles, price=current_price, atr=atr)
     support_resistance = {
         "support": support,
