@@ -142,21 +142,32 @@ def get_enhanced_support_resistance(candles, price, atr, window=20, min_touch_co
     support_candidates = support_zone[support_zone >= min_touch_count]
     resistance_candidates = resistance_zone[resistance_zone >= min_touch_count]
 
-    # 인덱스 추출 및 가격 계산
+    # Support
     if not support_candidates.empty:
         support_value = support_candidates.idxmax()
-        support_price = float(candles[candles["low"].round(2) == support_value]["low"].iloc[-1])
+        support_rows = candles[candles["low"].round(2) == support_value]
+        if not support_rows.empty:
+            support_price = float(support_rows["low"].iloc[-1])
+        else:
+            support_price = float(lows.min())
     else:
         support_price = float(lows.min())
 
+    # Resistance
     if not resistance_candidates.empty:
         resistance_value = resistance_candidates.index.min()
-        resistance_price = float(candles[candles["high"].round(2) == resistance_value]["high"].iloc[0])
+        resistance_rows = candles[candles["high"].round(2) == resistance_value]
+        if not resistance_rows.empty:
+            resistance_price = float(resistance_rows["high"].iloc[0])
+        else:
+            resistance_price = float(highs.max())
     else:
         resistance_price = float(highs.max())
 
-    # 최종 보정
-    min_distance = max(0.1, atr * 1.5)
+    # Ensure all are floats
+    price = float(price)
+    min_distance = max(0.1, float(atr) * 1.5)
+
     if price - support_price < min_distance:
         support_price = price - min_distance
     if resistance_price - price < min_distance:
