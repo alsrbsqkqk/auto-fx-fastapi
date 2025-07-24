@@ -577,7 +577,7 @@ async def webhook(request: Request):
     if candles is not None and not candles.empty:
         current_price = candles.iloc[-1]['close']
     else:
-    current_price = None
+        current_price = None
     
     support, resistance = get_enhanced_support_resistance(candles, price=current_price, atr=atr)
     support_resistance = {
