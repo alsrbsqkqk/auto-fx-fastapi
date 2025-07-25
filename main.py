@@ -596,6 +596,9 @@ async def webhook(request: Request):
     alert_name = data.get("alert_name", "기본알림")
 
     candles = get_candles(pair, "M30", 200)
+    # ✅ 캔들 방어 로직 추가
+    if candles is None or candles.empty or len(candles) < 3:
+        return JSONResponse(content={"error": "캔들 데이터 비정상: None이거나 길이 부족"}, status_code=400)
     print("✅ STEP 4: 캔들 데이터 수신")
     # 동적 지지/저항선 계산 (파동 기반)
     print("📉 candles.tail():\n", candles.tail())
@@ -866,10 +869,17 @@ def get_candles(pair, granularity, count):
     url = f"https://api-fxpractice.oanda.com/v3/instruments/{pair}/candles"
     headers = {"Authorization": f"Bearer {OANDA_API_KEY}"}
     params = {"granularity": granularity, "count": count, "price": "M"}
-    r = requests.get(url, headers=headers, params=params)
-    candles = r.json().get("candles", [])
+    
+    try:
+        r = requests.get(url, headers=headers, params=params)
+        r.raise_for_status()
+        candles = r.json().get("candles", [])
+    except Exception as e:
+        print(f"❗ 캔들 요청 실패: {e}")
+        return pd.DataFrame(columns=["time", "open", "high", "low", "close", "volume"])
 
     if not candles:
+        print(f"❗ {pair} 캔들 데이터 없음")
         return pd.DataFrame(columns=["time", "open", "high", "low", "close", "volume"])
          
     return pd.DataFrame([
