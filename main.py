@@ -132,7 +132,11 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
 
     return opportunity_score, reasons
     
-def get_enhanced_support_resistance(candles, price, atr, window=20, min_touch_count=2):
+def get_enhanced_support_resistance(candles, price, atr, window=20, min_touch_count=1):
+    # 자동 window 설정 (타임프레임 기반)
+    window_map = {'M15': 20, 'M30': 10, 'H1': 6, 'H4': 4}
+    window = window_map.get(timeframe, window)
+    
     if price is None:
         raise ValueError("get_enhanced_support_resistance: price 인자가 None입니다. current_price가 제대로 전달되지 않았습니다.")
     highs = candles["high"].tail(window).astype(float)
@@ -168,7 +172,7 @@ def get_enhanced_support_resistance(candles, price, atr, window=20, min_touch_co
 
     # Ensure all are floats
     price = float(price)
-    min_distance = max(0.1, float(atr.iloc[-1]) * 1.5)
+    min_distance = max(0.0005, float(atr.iloc[-1]) * 0.8)
 
     if price - support_price < min_distance:
         support_price = price - min_distance
