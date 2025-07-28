@@ -1333,6 +1333,7 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
         outcome_analysis or "",
         adjustment_suggestion or "",
         filtered_movement_str,
+        "",
         movement_str_clean
     ]
 
