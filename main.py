@@ -1324,8 +1324,7 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
         pattern or "", trend or "", fibo.get("0.382", ""), fibo.get("0.618", ""),
         gpt_decision or "", news or "", notes_clean,
         json.dumps(result, ensure_ascii=False).replace(",", " / ").replace("\n", " ")
-            if isinstance(result, dict) else str(result).replace(",", " / ").replace("\n", " "),
-        gpt_feedback_clean,      
+            if isinstance(result, dict) else str(result).replace(",", " / ").replace("\n", " "), 
         safe_float(price), safe_float(tp), safe_float(sl), safe_float(pnl),
         is_new_high,
         is_new_low,
