@@ -1313,25 +1313,24 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
     
         if not filtered_movement_str:
             filtered_movement_str = "no_data"
-    notes_clean = (notes or "").replace(",", " / ").replace("\n", " ")
-    gpt_feedback_clean = (gpt_feedback or "").replace(",", " / ").replace("\n", " ")
-    news_clean = (news or "").replace(",", " / ").replace("\n", " ")
-    movement_str_clean = (filtered_movement_str or "").replace(",", " / ").replace("\n", " ")
+
     row = [
       
         str(now_atlanta), pair, alert_name or "", signal, decision, score,
         safe_float(rsi), safe_float(macd), safe_float(stoch_rsi),
         pattern or "", trend or "", fibo.get("0.382", ""), fibo.get("0.618", ""),
-        gpt_decision or "", news or "", notes_clean,
-        json.dumps(result, ensure_ascii=False).replace(",", " / ").replace("\n", " ")
-            if isinstance(result, dict) else str(result).replace(",", " / ").replace("\n", " "), 
+        gpt_decision or "", news or "", notes,
+        json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else (result or "미정"),
+        gpt_feedback or "",        
         safe_float(price), safe_float(tp), safe_float(sl), safe_float(pnl),
         is_new_high,
+        is_new_low,
         safe_float(atr),
-        news_clean,
+        news,
         outcome_analysis or "",
         adjustment_suggestion or "",
-        movement_str_clean
+        gpt_feedback or "",
+        filtered_movement_str
     ]
 
     clean_row = []
