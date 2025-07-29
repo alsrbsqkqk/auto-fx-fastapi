@@ -21,10 +21,13 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
         opportunity_score += 2
         reasons.append("💡 Stoch RSI 극단 과매도 + RSI 50 상단 돌파 + MACD 상승 → 강력한 BUY 기회")
 
-    if stoch_rsi > 0.95 and rsi < 50 and macd < macd_signal:
+    if stoch_rsi > 0.95 and rsi < 50 and macd < macd_signal and abs(macd - macd_signal) < 0.0001:
         opportunity_score += 2
-        reasons.append("💡 Stoch RSI 극단 과매수 + RSI 50 이탈 + MACD 하락 → 강력한 SELL 기회")
+        reasons.append("📉 MACD 매우 약함 → 신뢰도 낮음")
 
+    if rsi < 40 and macd > macd_signal:
+        opportunity_score -= 1
+        reasons.append("⚠️ RSI 약세 + MACD 강세 → 방향 충돌 → 관망 권장")
 
     if 48 < rsi < 52:
         opportunity_score += 0.5
@@ -132,7 +135,11 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
 
     return opportunity_score, reasons
     
-def get_enhanced_support_resistance(candles, price, atr, window=20, min_touch_count=2):
+def get_enhanced_support_resistance(candles, price, atr, timeframe, window=20, min_touch_count=1):
+    # 자동 window 설정 (타임프레임 기반)
+    window_map = {'M15': 20, 'M30': 10, 'H1': 6, 'H4': 4}
+    window = window_map.get(timeframe, window)
+    
     if price is None:
         raise ValueError("get_enhanced_support_resistance: price 인자가 None입니다. current_price가 제대로 전달되지 않았습니다.")
     highs = candles["high"].tail(window).astype(float)
@@ -168,7 +175,7 @@ def get_enhanced_support_resistance(candles, price, atr, window=20, min_touch_co
 
     # Ensure all are floats
     price = float(price)
-    min_distance = max(0.1, float(atr.iloc[-1]) * 1.5)
+    min_distance = max(0.0005, float(atr.iloc[-1]) * 0.8)
 
     if price - support_price < min_distance:
         support_price = price - min_distance
@@ -407,10 +414,10 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
 
     if pair == "USD_JPY":
         if (macd - macd_signal) > 0.0002 and trend == "UPTREND":
-            signal_score += 2
+            signal_score += 4
             reasons.append("USDJPY 강화: MACD 골든크로스 + 상승추세 일치 → breakout 강세")
         elif (macd_signal - macd) > 0.0002 and trend == "DOWNTREND":
-            signal_score += 2
+            signal_score += 4
             reasons.append("USDJPY 강화: MACD 데드크로스 + 하락추세 일치 → 하락 강화")
         elif abs(macd - macd_signal) > 0.0005:
             signal_score += 1
@@ -434,10 +441,10 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
             
     else:
         if (macd - macd_signal) > 0.0002 and trend == "UPTREND":
-            signal_score += 2
+            signal_score += 3
             reasons.append("MACD 골든크로스 + 상승추세 일치 → breakout 강세")
         elif (macd_signal - macd) > 0.0002 and trend == "DOWNTREND":
-            signal_score += 2
+            signal_score += 3
             reasons.append("MACD 데드크로스 + 하락추세 일치 → 하락 강화")
         elif abs(macd - macd_signal) > 0.0005:
             signal_score += 1
@@ -466,7 +473,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     if stoch_rsi > 0.8:
         if trend == "UPTREND" and rsi < 70:
             if pair == "USD_JPY":
-                signal_score += 2  # USDJPY만 강화
+                signal_score += 3  # USDJPY만 강화
                 reasons.append("USDJPY 강화: Stoch RSI 과열 + 상승추세 일치")
             else:
                 signal_score += 2
@@ -596,6 +603,9 @@ async def webhook(request: Request):
     alert_name = data.get("alert_name", "기본알림")
 
     candles = get_candles(pair, "M30", 200)
+    # ✅ 캔들 방어 로직 추가
+    if candles is None or candles.empty or len(candles) < 3:
+        return JSONResponse(content={"error": "캔들 데이터 비정상: None이거나 길이 부족"}, status_code=400)
     print("✅ STEP 4: 캔들 데이터 수신")
     # 동적 지지/저항선 계산 (파동 기반)
     print("📉 candles.tail():\n", candles.tail())
@@ -613,7 +623,7 @@ async def webhook(request: Request):
     atr = calculate_atr(candles)  # 또는 고정값으로 테스트: atr = 0.2
 
     # ✅ 지지/저항 계산
-    support, resistance = get_enhanced_support_resistance(candles, price=current_price, atr=atr)
+    support, resistance = get_enhanced_support_resistance(candles, price=current_price, atr=atr, timeframe="1H")
     support_resistance = {
         "support": support,
         "resistance": resistance
@@ -866,10 +876,17 @@ def get_candles(pair, granularity, count):
     url = f"https://api-fxpractice.oanda.com/v3/instruments/{pair}/candles"
     headers = {"Authorization": f"Bearer {OANDA_API_KEY}"}
     params = {"granularity": granularity, "count": count, "price": "M"}
-    r = requests.get(url, headers=headers, params=params)
-    candles = r.json().get("candles", [])
+    
+    try:
+        r = requests.get(url, headers=headers, params=params)
+        r.raise_for_status()
+        candles = r.json().get("candles", [])
+    except Exception as e:
+        print(f"❗ 캔들 요청 실패: {e}")
+        return pd.DataFrame(columns=["time", "open", "high", "low", "close", "volume"])
 
     if not candles:
+        print(f"❗ {pair} 캔들 데이터 없음")
         return pd.DataFrame(columns=["time", "open", "high", "low", "close", "volume"])
          
     return pd.DataFrame([
@@ -1296,7 +1313,7 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
     
         if not filtered_movement_str:
             filtered_movement_str = "no_data"
-   
+
     row = [
       
         str(now_atlanta), pair, alert_name or "", signal, decision, score,
