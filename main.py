@@ -706,11 +706,6 @@ async def webhook(request: Request):
     }
 
 
-
-    signal_score, reasons = score_signal_with_filters(
-    rsi.iloc[-1], macd.iloc[-1], macd_signal.iloc[-1], stoch_rsi,
-    trend, signal, liquidity, pattern, pair, candles, atr, price, boll_up.iloc[-1], boll_low.iloc[-1], support, resistance, support_distance, resistance_distance, pip_size
-    )
     # 🎯 뉴스 리스크 점수 추가 반영
     signal_score += news_score
     reasons.append(f"📰 뉴스 리스크: {news_msg} (점수 {news_score})")
