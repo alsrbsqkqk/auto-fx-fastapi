@@ -414,10 +414,10 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
 
     if pair == "USD_JPY":
         if (macd - macd_signal) > 0.0002 and trend == "UPTREND":
-            signal_score += 4
+            signal_score += 2
             reasons.append("USDJPY 강화: MACD 골든크로스 + 상승추세 일치 → breakout 강세")
         elif (macd_signal - macd) > 0.0002 and trend == "DOWNTREND":
-            signal_score += 4
+            signal_score += 2
             reasons.append("USDJPY 강화: MACD 데드크로스 + 하락추세 일치 → 하락 강화")
         elif abs(macd - macd_signal) > 0.0005:
             signal_score += 1
@@ -441,10 +441,10 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
             
     else:
         if (macd - macd_signal) > 0.0002 and trend == "UPTREND":
-            signal_score += 3
+            signal_score += 2
             reasons.append("MACD 골든크로스 + 상승추세 일치 → breakout 강세")
         elif (macd_signal - macd) > 0.0002 and trend == "DOWNTREND":
-            signal_score += 3
+            signal_score += 2
             reasons.append("MACD 데드크로스 + 하락추세 일치 → 하락 강화")
         elif abs(macd - macd_signal) > 0.0005:
             signal_score += 1
@@ -473,7 +473,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     if stoch_rsi > 0.8:
         if trend == "UPTREND" and rsi < 70:
             if pair == "USD_JPY":
-                signal_score += 3  # USDJPY만 강화
+                signal_score += 2  # USDJPY만 강화
                 reasons.append("USDJPY 강화: Stoch RSI 과열 + 상승추세 일치")
             else:
                 signal_score += 2
