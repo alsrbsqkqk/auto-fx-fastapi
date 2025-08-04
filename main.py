@@ -1369,3 +1369,7 @@ def get_last_trade_time():
             return datetime.fromisoformat(f.read().strip())
     except:
         return None
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
