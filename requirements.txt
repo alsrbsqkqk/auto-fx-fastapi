@@ -1,5 +1,5 @@
 fastapi
-uvicorn
+uvicorn[standard]
 requests
 pandas
 python-dotenv
@@ -8,3 +8,4 @@ aiohttp
 gspread
 oauth2client
 feedparser
+pytz
