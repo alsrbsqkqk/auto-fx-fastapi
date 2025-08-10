@@ -414,10 +414,10 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
 
     if pair == "USD_JPY":
         if (macd - macd_signal) > 0.0002 and trend == "UPTREND":
-            signal_score += 2
+            signal_score += 4
             reasons.append("USDJPY 강화: MACD 골든크로스 + 상승추세 일치 → breakout 강세")
         elif (macd_signal - macd) > 0.0002 and trend == "DOWNTREND":
-            signal_score += 2
+            signal_score += 4
             reasons.append("USDJPY 강화: MACD 데드크로스 + 하락추세 일치 → 하락 강화")
         elif abs(macd - macd_signal) > 0.0005:
             signal_score += 1
@@ -441,10 +441,10 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
             
     else:
         if (macd - macd_signal) > 0.0002 and trend == "UPTREND":
-            signal_score += 2
+            signal_score += 3
             reasons.append("MACD 골든크로스 + 상승추세 일치 → breakout 강세")
         elif (macd_signal - macd) > 0.0002 and trend == "DOWNTREND":
-            signal_score += 2
+            signal_score += 3
             reasons.append("MACD 데드크로스 + 하락추세 일치 → 하락 강화")
         elif abs(macd - macd_signal) > 0.0005:
             signal_score += 1
@@ -473,7 +473,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     if stoch_rsi > 0.8:
         if trend == "UPTREND" and rsi < 70:
             if pair == "USD_JPY":
-                signal_score += 2  # USDJPY만 강화
+                signal_score += 3  # USDJPY만 강화
                 reasons.append("USDJPY 강화: Stoch RSI 과열 + 상승추세 일치")
             else:
                 signal_score += 2
@@ -722,12 +722,12 @@ async def webhook(request: Request):
     gpt_feedback = "GPT 분석 생략: 점수 미달"
     decision, tp, sl = "WAIT", None, None
 
-    if signal_score >= 6:
+    if signal_score >= 5:
         gpt_feedback = analyze_with_gpt(payload)
         print("✅ STEP 6: GPT 응답 수신 완료")
         decision, tp, sl = parse_gpt_feedback(gpt_feedback)
     else:
-        print("🚫 GPT 분석 생략: 점수 6점 미만")
+        print("🚫 GPT 분석 생략: 점수 5점 미만")
     
     
     print(f"✅ STEP 7: GPT 해석 완료 | decision: {decision}, TP: {tp}, SL: {sl}")
@@ -1369,7 +1369,3 @@ def get_last_trade_time():
             return datetime.fromisoformat(f.read().strip())
     except:
         return None
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
