@@ -574,6 +574,7 @@ def analyze_highs_lows(candles, window=20):
 
 @app.post("/webhook")
 async def webhook(request: Request):
+    print("[DEBUG] Webhook received at server")
     print("✅ STEP 1: 웹훅 진입")
     data = json.loads(await request.body())
     pair = data.get("pair")
