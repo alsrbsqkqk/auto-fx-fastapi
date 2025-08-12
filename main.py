@@ -217,6 +217,21 @@ def additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, tre
 
     return score, reasons
 
+# === pip/거리 헬퍼 ===
+def pip_value_for(pair: str) -> float:
+    return 0.01 if pair.endswith("JPY") else 0.0001
+
+def pips_between(a: float, b: float, pair: str) -> float:
+    return abs(a - b) / pip_value_for(pair)
+    
+def calculate_realistic_tp_sl(price, atr, pip_value, risk_reward_ratio=2, min_pips=8):
+    """
+    현실적인 TP/SL 계산 함수
+    """
+    atr_pips = max(min_pips, atr / pip_value * 0.5)  # ATR 절반 이상
+    sl_price = price - (atr_pips * pip_value)
+    tp_price = price + (atr_pips * pip_value * risk_reward_ratio)
+    return round(tp_price, 5), round(sl_price, 5), atr_pips
 
 def conflict_check(rsi, pattern, trend, signal):
     """
@@ -327,6 +342,39 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
             reasons.append("🔄 추세-패턴 충돌 BUT 강한 역추세 조건 충족 → 진입 허용")
         else:
             reasons.append("⚠️ 추세-패턴 충돌 + 보완 조건 미충족 → 관망")
+            return 0, reasons
+
+        # === 저항/지지 근접 추격 진입 금지 규칙 ===
+    # BUY: 저항 3pip 이내면 금지. 돌파(확정) 없고 10pip 이내도 금지
+    if signal == "BUY":
+        dist_to_res_pips = pips_between(price, resistance, pair)
+        if dist_to_res_pips <= 3:
+            reasons.append(f"⛔ 저항선 {dist_to_res_pips:.1f} pip 이내(BUY 금지)")
+            return 0, reasons
+
+        last2 = candles.tail(2)
+        over1 = (last2.iloc[-1]['close'] > resistance + 2 * pip_value_for(pair)) if not last2.empty else False
+        over2 = (len(last2) > 1 and last2.iloc[-2]['close'] > resistance + 2 * pip_value_for(pair)) if not last2.empty else False
+        confirmed_breakout_up = over1 or (over1 and over2)
+
+        if not confirmed_breakout_up and dist_to_res_pips <= 10:
+            reasons.append("⛔ 저항선 돌파 미확인 + 10pip 이내 → 추격 매수 금지")
+            return 0, reasons
+
+    # SELL: 지지 3pip 이내면 금지. 이탈(확정) 없고 10pip 이내도 금지
+    if signal == "SELL":
+        dist_to_sup_pips = pips_between(price, support, pair)
+        if dist_to_sup_pips <= 3:
+            reasons.append(f"⛔ 지지선 {dist_to_sup_pips:.1f} pip 이내(SELL 금지)")
+            return 0, reasons
+
+        last2 = candles.tail(2)
+        under1 = (last2.iloc[-1]['close'] < support - 2 * pip_value_for(pair)) if not last2.empty else False
+        under2 = (len(last2) > 1 and last2.iloc[-2]['close'] < support - 2 * pip_value_for(pair)) if not last2.empty else False
+        confirmed_breakdown = under1 or (under1 and under2)
+
+        if not confirmed_breakdown and dist_to_sup_pips <= 10:
+            reasons.append("⛔ 지지선 이탈 미확인 + 10pip 이내 → 추격 매도 금지")
             return 0, reasons
 
     # ✅ RSI, MACD, Stoch RSI 모두 중립 + Trend도 NEUTRAL → 횡보장 진입 방어
@@ -526,6 +574,30 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
         signal_score += 1
         reasons.append("🔻최근 3봉 연속 음봉 + 하락추세 + 약세형 패턴 포함 → SELL 강화")
 
+        # === 박스권 상단/하단 근접 진입 제한 ===
+    recent = candles.tail(10)
+    if not recent.empty:
+        box_high = recent['high'].max()
+        box_low  = recent['low'].min()
+        near_top_pips = pips_between(price, box_high, pair)
+        near_low_pips = pips_between(price, box_low, pair)
+
+        # 상단 근접 매수 금지(확정 돌파 or 리테스트만 허용)
+        if signal == "BUY" and box_info.get("in_box") and box_info.get("breakout") is None:
+            confirmed_top_break = recent.iloc[-1]['close'] > (box_high + 2 * pip_value_for(pair))
+            retest_support = (recent.iloc[-1]['low'] > box_high - 2 * pip_value_for(pair)) and (near_top_pips <= 4)
+            if near_top_pips <= 6 and not (confirmed_top_break or retest_support):
+                reasons.append("⛔ 박스 상단 근접 매수 금지(돌파확정/리테스트만)")
+                return 0, reasons
+
+        # 하단 근접 매도 금지(확정 이탈 or 리테스트만 허용)
+        if signal == "SELL" and box_info.get("in_box") and box_info.get("breakout") is None:
+            confirmed_bottom_break = recent.iloc[-1]['close'] < (box_low - 2 * pip_value_for(pair))
+            retest_resist = (recent.iloc[-1]['high'] < box_low + 2 * pip_value_for(pair)) and (near_low_pips <= 4)
+            if near_low_pips <= 6 and not (confirmed_bottom_break or retest_resist):
+                reasons.append("⛔ 박스 하단 근접 매도 금지(이탈확정/리테스트만)")
+                return 0, reasons
+                
     # 상승 연속 양봉 패턴 보정 BUY
     if (
         all(last_3["close"] > last_3["open"]) 
@@ -712,6 +784,26 @@ async def webhook(request: Request):
     rsi.iloc[-1], macd.iloc[-1], macd_signal.iloc[-1], stoch_rsi,
     trend, signal, liquidity, pattern, pair, candles, atr, price, boll_up.iloc[-1], boll_low.iloc[-1], support, resistance, support_distance, resistance_distance, pip_size
     )
+    # 0번: 지지선/저항선 확인
+    if price > resistance or price < support:
+        reasons.append("❌ 지지선/저항선 돌파 실패 → 거래 배제")
+        signal_score = 0
+
+    # 1번: TP/SL 조건 검증
+    if abs(tp - price) < min_pip or abs(price - sl) < min_pip:
+        reasons.append("❌ TP/SL 거리 너무 짧음 → 거래 배제")
+        signal_score = 0
+
+    # 2번: TP:SL 비율 확인
+    if tp_sl_ratio < 2:
+        reasons.append("❌ TP:SL 비율 < 2:1 → 거래 배제")
+        signal_score = 0
+
+    # 3번: 예상 손익 조건
+    if expected_profit_usd < min_profit:
+        reasons.append("❌ 예상 손익 기준 미달 → 거래 배제")
+        signal_score = 0
+    
     # 🎯 뉴스 리스크 점수 추가 반영
     signal_score += news_score
     reasons.append(f"📰 뉴스 리스크: {news_msg} (점수 {news_score})")
@@ -763,28 +855,19 @@ async def webhook(request: Request):
     if (tp is None or sl is None) and price is not None:
         pip_value = 0.01 if "JPY" in pair else 0.0001
 
-        # ATR 기반 보정 추가
-        if atr >= 0.18:
-            tp_pips = pip_value * 25
-            sl_pips = pip_value * 12
-        elif atr >= 0.13:
-            tp_pips = pip_value * 20
-            sl_pips = pip_value * 10
-        elif atr >= 0.08:
-            tp_pips = pip_value * 15
-            sl_pips = pip_value * 10
-        else:
-            tp_pips = pip_value * 10
-            sl_pips = pip_value * 7
+        tp, sl, atr_pips = calculate_realistic_tp_sl(
+            price=price,
+            atr=atr,
+            pip_value=pip_value,
+            risk_reward_ratio=2,
+            min_pips=8
+        )
 
-        if decision == "BUY":
-            tp = round(price + tp_pips, 5 if pip_value == 0.0001 else 3)
-            sl = round(price - sl_pips, 5 if pip_value == 0.0001 else 3)
-        elif decision == "SELL":
-            tp = round(price - tp_pips, 5 if pip_value == 0.0001 else 3)
-            sl = round(price + sl_pips, 5 if pip_value == 0.0001 else 3)  
+        if decision == "SELL":
+            # SELL이면 방향 반대로
+            tp, sl = sl, tp
 
-        gpt_feedback += "\n⚠️ TP/SL 추출 실패 → ATR 기반 기본값 적용"
+        gpt_feedback += f"\n⚠️ TP/SL 추출 실패 → 현실적 계산 적용 (ATR: {atr}, pips: {atr_pips})"
 
     
     should_execute = False
@@ -1185,6 +1268,55 @@ def parse_gpt_feedback(text):
 
     return decision, tp, sl
     
+ # === TP/SL 구조·ATR 보정 ===
+def adjust_tp_sl_for_structure(pair, entry, tp, sl, support, resistance, atr):
+    if entry is None or tp is None or sl is None:
+        return tp, sl
+    pip = pip_value_for(pair)
+    min_dist = 8 * pip  # 최소 8pip
+    is_buy  = tp > entry and sl < entry
+    is_sell = tp < entry and sl > entry
+
+    # 구조 클램핑
+    if is_buy:
+        if resistance is not None:
+            tp = min(tp, resistance + 5 * pip)
+        if support is not None:
+            sl = max(sl, support - 5 * pip)
+    elif is_sell:
+        if support is not None:
+            tp = max(tp, support - 5 * pip)
+        if resistance is not None:
+            sl = min(sl, resistance + 5 * pip)
+
+    # 최소 거리 확보
+    if is_buy:
+        tp = max(tp, entry + min_dist)
+        sl = min(sl, entry - min_dist)
+    elif is_sell:
+        tp = min(tp, entry - min_dist)
+        sl = max(sl, entry + min_dist)
+
+    # RR ≥ 1.8 강제
+    if is_buy and (entry - sl) > 0:
+        desired_tp = entry + 1.8 * (entry - sl)
+        tp = max(tp, desired_tp)
+    if is_sell and (sl - entry) > 0:
+        desired_tp = entry - 1.8 * (sl - entry)
+        tp = min(tp, desired_tp)
+
+    # ATR 과욕 방지(±1.5*ATR)
+    if atr and float(atr) > 0:
+        span = 1.5 * float(atr)
+        if is_buy:
+            tp = min(tp, entry + span)
+            sl = max(sl, entry - span)
+        elif is_sell:
+            tp = max(tp, entry - span)
+            sl = min(sl, entry + span)
+
+    digits = 3 if pair.endswith("JPY") else 5
+    return round(tp, digits), round(sl, digits)   
 def analyze_with_gpt(payload):
     headers = {"Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}", "Content-Type": "application/json"}
     messages = [
