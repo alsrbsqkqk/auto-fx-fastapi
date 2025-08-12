@@ -692,17 +692,18 @@ async def webhook(request: Request):
     # ✅ 방어 로직 추가 (607줄 기준)
     if current_price is None:
         raise ValueError("current_price가 None입니다. 데이터 로드 로직을 점검하세요.")
-    # ✅ ATR 먼저 계산
-    atr = calculate_atr(candles)  # 또는 고정값으로 테스트: atr = 0.2
+    # ✅ ATR 먼저 계산 (Series)
+    atr_series = calculate_atr(candles)
 
-    # ✅ 지지/저항 계산
-    support, resistance = get_enhanced_support_resistance(candles, price=current_price, atr=atr, timeframe="1H")
-    support_resistance = {
-        "support": support,
-        "resistance": resistance
-    }
+    # ✅ 지지/저항 계산 - timeframe 키 "H1" 로, atr에는 Series 전달
+    support, resistance = get_enhanced_support_resistance(
+        candles, price=current_price, atr=atr_series, timeframe="H1"
+    )
+
+    support_resistance = {"support": support, "resistance": resistance}
     support_distance = abs(price - support)
     resistance_distance = abs(resistance - price)
+
     # ✅ 현재가와 저항선 거리 계산 (pip 기준 거리 필터 적용을 위함)
     pip_size = 0.01 if "JPY" in pair else 0.0001
     resistance_distance = abs(resistance - price)
@@ -724,7 +725,7 @@ async def webhook(request: Request):
     news = fetch_forex_news()
     news_score, news_msg = news_risk_score(pair)
     high_low_analysis = analyze_highs_lows(candles)
-    atr = calculate_atr(candles).iloc[-1]
+    atr = float(atr_series.iloc[-1])
     fibo_levels = calculate_fibonacci_levels(candles["high"].max(), candles["low"].min())
     # 📌 현재가 계산
     price = candles["close"].iloc[-1]
@@ -780,25 +781,6 @@ async def webhook(request: Request):
     rsi.iloc[-1], macd.iloc[-1], macd_signal.iloc[-1], stoch_rsi,
     trend, signal, liquidity, pattern, pair, candles, atr, price, boll_up.iloc[-1], boll_low.iloc[-1], support, resistance, support_distance, resistance_distance, pip_size
     )
-    # 0번: 지지선/저항선 확인
-    if price > resistance or price < support:
-        reasons.append("❌ 지지선/저항선 돌파 실패 → 거래 배제")
-        signal_score = 0
-
-    # 1번: TP/SL 조건 검증
-    if abs(tp - price) < min_pip or abs(price - sl) < min_pip:
-        reasons.append("❌ TP/SL 거리 너무 짧음 → 거래 배제")
-        signal_score = 0
-
-    # 2번: TP:SL 비율 확인
-    if tp_sl_ratio < 2:
-        reasons.append("❌ TP:SL 비율 < 2:1 → 거래 배제")
-        signal_score = 0
-
-    # 3번: 예상 손익 조건
-    if expected_profit_usd < min_profit:
-        reasons.append("❌ 예상 손익 기준 미달 → 거래 배제")
-        signal_score = 0
     
     # 🎯 뉴스 리스크 점수 추가 반영
     signal_score += news_score
@@ -866,6 +848,32 @@ async def webhook(request: Request):
         gpt_feedback += f"\n⚠️ TP/SL 추출 실패 → 현실적 계산 적용 (ATR: {atr}, pips: {atr_pips})"
         tp, sl = adjust_tp_sl_for_structure(pair, price, tp, sl, support, resistance, atr)
 
+    # ✅ 여기서부터 검증 블록 삽입
+    pip = pip_value_for(pair)
+    min_pip = 8 * pip
+    tp_sl_ratio = abs(tp - price) / max(1e-9, abs(price - sl))
+
+    # 0번: 지지선/저항선 확인
+    if price > resistance or price < support:
+        reasons.append("❌ 지지선/저항선 돌파 실패 → 거래 배제")
+        signal_score = 0
+
+    # 1번: TP/SL 조건 검증
+    if abs(tp - price) < min_pip or abs(price - sl) < min_pip:
+        reasons.append("❌ TP/SL 거리 너무 짧음 → 거래 배제")
+        signal_score = 0
+
+    # 2번: TP:SL 비율 확인
+    if tp_sl_ratio < 2:
+        reasons.append("❌ TP:SL 비율 < 2:1 → 거래 배제")
+        signal_score = 0
+
+    # 3번: 예상 손익 조건
+    if expected_profit_usd < min_profit:
+        reasons.append("❌ 예상 손익 기준 미달 → 거래 배제")
+        signal_score = 0
+    # ✅ 여기까지
+        
     
     should_execute = False
     # 1️⃣ 기본 진입 조건: GPT가 BUY/SELL 판단 + 점수 4점 이상
