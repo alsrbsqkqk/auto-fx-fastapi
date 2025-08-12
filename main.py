@@ -722,10 +722,6 @@ async def webhook(request: Request):
     trend = detect_trend(candles, rsi, boll_mid)
     liquidity = estimate_liquidity(candles)
     news = fetch_forex_news()
-    support_resistance = {
-        "support": candles["low"].min(),
-        "resistance": candles["high"].max()
-    }
     news_score, news_msg = news_risk_score(pair)
     high_low_analysis = analyze_highs_lows(candles)
     atr = calculate_atr(candles).iloc[-1]
@@ -868,6 +864,7 @@ async def webhook(request: Request):
             tp, sl = sl, tp
 
         gpt_feedback += f"\n⚠️ TP/SL 추출 실패 → 현실적 계산 적용 (ATR: {atr}, pips: {atr_pips})"
+        tp, sl = adjust_tp_sl_for_structure(pair, price, tp, sl, support, resistance, atr)
 
     
     should_execute = False
