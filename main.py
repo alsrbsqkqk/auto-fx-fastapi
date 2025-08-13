@@ -883,12 +883,11 @@ async def webhook(request: Request):
         reasons.append("❌ TP:SL 비율 < 2:1 → 거래 배제")
         signal_score = 0
 
-    # 3번: 예상 손익 조건
-    if expected_profit_usd < min_profit:
-        reasons.append("❌ 예상 손익 기준 미달 → 거래 배제")
-        signal_score = 0
-    # ✅ 여기까지
-        
+    
+    result = {}
+    price_movements = []
+    pnl = None
+      
     
     should_execute = False
     # 1️⃣ 기본 진입 조건: GPT가 BUY/SELL 판단 + 점수 4점 이상
@@ -905,13 +904,7 @@ async def webhook(request: Request):
         digits = 3 if pair.endswith("JPY") else 5
         print(f"[DEBUG] 조건 충족 → 실제 주문 실행: {pair}, units={units}, tp={tp}, sl={sl}, digits={digits}")
         result = place_order(pair, units, tp, sl, digits)
-        
-
-    result = {}
-    price_movements = []
-    pnl = None
     
-
         executed_time = datetime.utcnow()
         candles_post = get_candles(pair, "M30", 8)
         price_movements = candles_post[["high", "low"]].to_dict("records")
