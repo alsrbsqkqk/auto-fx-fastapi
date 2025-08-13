@@ -219,6 +219,39 @@ def additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, tre
 # === pip/거리 헬퍼 ===
 def pip_value_for(pair: str) -> float:
     return 0.01 if pair.endswith("JPY") else 0.0001
+    
+# ★ 추가: ATR을 pips로 변환
+def atr_in_pips(atr_value: float, pair: str) -> float:
+    pv = pip_value_for(pair)
+    try:
+        return float(atr_value) / pv if atr_value is not None else 0.0
+    except:
+        return 0.0
+
+# ★ 추가: 통합 임계치(모든 페어 공통)
+def dynamic_thresholds(pair: str, atr_value: float):
+    pv = pip_value_for(pair)
+    ap = max(8.0, atr_in_pips(atr_value, pair))     # ATR(pips), 최소 8pip
+
+    near_pips          = int(max(8,  min(14, 0.35 * ap)))  # 지지/저항 근접 금지
+    box_threshold_pips = int(max(12, min(30, 0.80 * ap)))  # 박스 폭 임계
+    breakout_buf_pips  = int(max(1,  min(3,  0.10 * ap)))  # 돌파/이탈 확인 버퍼
+
+    # MACD 교차 임계: pip 기준(강=20pip, 약=10pip)
+    macd_strong = 20 * pv
+    macd_weak   = 10 * pv
+
+    return {
+        "near_pips": near_pips,
+        "box_threshold_pips": box_threshold_pips,
+        "breakout_buf_pips": breakout_buf_pips,
+        "macd_strong": macd_strong,
+        "macd_weak": macd_weak,
+        "pip_value": pv
+    }
+
+
+
 
 def pips_between(a: float, b: float, pair: str) -> float:
     return abs(a - b) / pip_value_for(pair)
@@ -297,6 +330,11 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     score, base_reasons = must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles, trend, atr, price, bollinger_upper, bollinger_lower, support, resistance, support_distance, resistance_distance, pip_size)
     extra_score, extra_reasons = additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, trend)
 
+    # ★ 통합 임계치 준비 (pip/ATR 기반)
+    thr = dynamic_thresholds(pair, atr)
+    pv = thr["pip_value"]           # pip 크기 (JPY=0.01, 그 외=0.0001)
+    NEAR_PIPS = thr["near_pips"]    # 지지/저항 근접 금지 임계(pips)
+
     signal_score += score + extra_score
     reasons.extend(base_reasons + extra_reasons)
     # ✅ 캔들 패턴과 추세 강한 일치 시 보너스 점수 부여
@@ -318,15 +356,18 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
         reasons.append("🕒 전략 외 시간대 → 유동성 부족 / 성공률 저하로 관망")
         return 0, reasons
     
-    # ✅ 저항선과 너무 가까운 거리에서의 BUY 진입 방지 (구조상 불리한 진입 회피)
-    if signal == "BUY" and resistance_distance / pip_size < 6:
-        reasons.append("⚠️ 저항선 6pip 이내 → 구조상 불리 → 관망")
+    # --- 저항/지지 근접 금지(동적 임계 적용) ---
+    dist_to_res_pips = abs((resistance or price) - price) / pv
+    dist_to_sup_pips = abs(price - (support or price)) / pv
+
+    if signal == "BUY" and dist_to_res_pips <= NEAR_PIPS:
+        reasons.append(f"⛔ 저항선 {dist_to_res_pips:.1f} pip 이내(BUY 금지)")
         return 0, reasons
 
-    # ✅ 지지선과 너무 가까운 거리에서의 SELL 진입 방지 (구조상 불리한 진입 회피)
-    if signal == "SELL" and abs(price - support) / pip_size < 6:
-        reasons.append("⚠️ 지지선 6pip 이내 → 구조상 불리 → 관망")
+    if signal == "SELL" and dist_to_sup_pips <= NEAR_PIPS:
+        reasons.append(f"⛔ 지지선 {dist_to_sup_pips:.1f} pip 이내(SELL 금지)")
         return 0, reasons
+        
     conflict_flag = conflict_check(rsi, pattern, trend, signal)
 
     # 보완 조건 정의: 극단적 RSI + Stoch RSI or MACD 반전 조짐
@@ -459,55 +500,29 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
         reasons.append("📦 박스권 유지 중 → 관망 경계")
     
 
-    if pair == "USD_JPY":
-        if (macd - macd_signal) > 0.0002 and trend == "UPTREND":
-            signal_score += 4
-            reasons.append("USDJPY 강화: MACD 골든크로스 + 상승추세 일치 → breakout 강세")
-        elif (macd_signal - macd) > 0.0002 and trend == "DOWNTREND":
-            signal_score += 4
-            reasons.append("USDJPY 강화: MACD 데드크로스 + 하락추세 일치 → 하락 강화")
-        elif abs(macd - macd_signal) > 0.0005:
-            signal_score += 1
-            reasons.append("USDJPY MACD 교차 발생 (추세불명확)")
-        else:
-            reasons.append("USDJPY MACD 미세변동 → 가점 보류")
+        # --- MACD 교차 가점: 모든 페어 공통 (pip/ATR 스케일 적용) ---
+    macd_diff = macd - macd_signal
+    strong = thr["macd_strong"]   # 20 pip에 해당하는 가격 단위
+    weak   = thr["macd_weak"]     # 10 pip에 해당하는 가격 단위
+    micro  = 2 * pv               # 미세변동(≈2 pip) 판단용
 
-            # ✅ 히스토그램 증가 보조 판단 (미세하지만 상승 흐름일 경우)
-            macd_hist = macd - macd_signal
-            if macd_hist > 0:
-                signal_score += 1
-                reasons.append("MACD 미세하지만 히스토그램 증가 → 상승 초기 흐름")
-            macd_diff = macd - macd_signal
-            if abs(macd_diff) < 0.0001:
-                reasons.append("⚠️ MACD 미세변동 → 신뢰도 낮음")
-            elif macd_diff > 0 and macd > 0:
-                reasons.append("🟢 MACD 양수 유지 → 상승 흐름 유지")
-            elif macd_diff < 0 and macd < 0:
-                reasons.append("🔴 MACD 음수 지속 → 약세 흐름 유지")
-      
-            
+    if (macd_diff > strong) and trend == "UPTREND":
+        signal_score += 3
+        reasons.append("MACD 골든크로스(강) + 상승추세 일치")
+    elif (macd_diff < -strong) and trend == "DOWNTREND":
+        signal_score += 3
+        reasons.append("MACD 데드크로스(강) + 하락추세 일치")
+    elif abs(macd_diff) >= weak:
+        signal_score += 1
+        reasons.append("MACD 교차(약) → 초입 가점")
     else:
-        if (macd - macd_signal) > 0.0002 and trend == "UPTREND":
-            signal_score += 3
-            reasons.append("MACD 골든크로스 + 상승추세 일치 → breakout 강세")
-        elif (macd_signal - macd) > 0.0002 and trend == "DOWNTREND":
-            signal_score += 3
-            reasons.append("MACD 데드크로스 + 하락추세 일치 → 하락 강화")
-        elif abs(macd - macd_signal) > 0.0005:
-            signal_score += 1
-            reasons.append("MACD 교차 발생 (추세불명확)")
-        if macd < macd_signal and trend == "DOWNTREND":
-            signal_score += 1
-            reasons.append("MACD 약한 데드 + 하락추세 → 약한 SELL 지지")
-        else:
-            reasons.append("MACD 미세변동 → 가점 보류")
-        macd_diff = macd - macd_signal
-        if abs(macd_diff) < 0.0001:
-            reasons.append("⚠️ MACD 미세변동 → 신뢰도 낮음")
-        elif macd_diff > 0 and macd > 0:
-            reasons.append("🟢 MACD 양수 유지 → 상승 흐름 유지")
-        elif macd_diff < 0 and macd < 0:
-            reasons.append("🔴 MACD 음수 지속 → 약세 흐름 유지")
+        reasons.append("MACD 미세변동 → 가점 보류")
+
+    # (선택) 히스토그램 보조 판단은 유지하되 임계도 pip화
+    macd_hist = macd_diff
+    if macd_hist > 0 and abs(macd_diff) >= micro:
+        signal_score += 1
+        reasons.append("MACD 히스토그램 증가 → 상승 초기 흐름")
 
 
     if stoch_rsi == 0.0:
@@ -578,22 +593,27 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     if not recent.empty:
         box_high = recent['high'].max()
         box_low  = recent['low'].min()
-        near_top_pips = pips_between(price, box_high, pair)
-        near_low_pips = pips_between(price, box_low, pair)
 
-        # 상단 근접 매수 금지(확정 돌파 or 리테스트만 허용)
+        # pip 단위 거리 계산(동적)
+        near_top_pips = abs(box_high - price) / pv
+        near_low_pips = abs(price - box_low) / pv
+
+        # 돌파/이탈 확인을 위한 가격 버퍼(동적)
+        buf_price = thr["breakout_buf_pips"] * pv  # 가격단위
+
+        # 상단 근접 매수 금지 (확정 돌파 or 리테스트만 허용)
         if signal == "BUY" and box_info.get("in_box") and box_info.get("breakout") is None:
-            confirmed_top_break = recent.iloc[-1]['close'] > (box_high + 2 * pip_value_for(pair))
-            retest_support = (recent.iloc[-1]['low'] > box_high - 2 * pip_value_for(pair)) and (near_top_pips <= 4)
-            if near_top_pips <= 6 and not (confirmed_top_break or retest_support):
+            confirmed_top_break = recent.iloc[-1]['close'] > (box_high + buf_price)
+            retest_support = (recent.iloc[-1]['low'] > box_high - buf_price) and (near_top_pips <= NEAR_PIPS)
+            if near_top_pips <= NEAR_PIPS and not (confirmed_top_break or retest_support):
                 reasons.append("⛔ 박스 상단 근접 매수 금지(돌파확정/리테스트만)")
                 return 0, reasons
 
-        # 하단 근접 매도 금지(확정 이탈 or 리테스트만 허용)
+        # 하단 근접 매도 금지 (확정 이탈 or 리테스트만 허용)
         if signal == "SELL" and box_info.get("in_box") and box_info.get("breakout") is None:
-            confirmed_bottom_break = recent.iloc[-1]['close'] < (box_low - 2 * pip_value_for(pair))
-            retest_resist = (recent.iloc[-1]['high'] < box_low + 2 * pip_value_for(pair)) and (near_low_pips <= 4)
-            if near_low_pips <= 6 and not (confirmed_bottom_break or retest_resist):
+            confirmed_bottom_break = recent.iloc[-1]['close'] < (box_low - buf_price)
+            retest_resist = (recent.iloc[-1]['high'] < box_low + buf_price) and (near_low_pips <= NEAR_PIPS)
+            if near_low_pips <= NEAR_PIPS and not (confirmed_bottom_break or retest_resist):
                 reasons.append("⛔ 박스 하단 근접 매도 금지(이탈확정/리테스트만)")
                 return 0, reasons
                 
@@ -1007,20 +1027,35 @@ def calculate_bollinger_bands(series, window=20):
     lower = mid - 2 * std
     return upper, mid, lower
     
-def detect_box_breakout(candles, pair, box_window=10, box_threshold_pips=20):
+def detect_box_breakout(candles, pair, box_window=10, box_threshold_pips=None):
     """
-    박스권 돌파 감지 (상향/하향 돌파 모두 반환)
+    박스권 돌파 감지 (통합/동적 임계치 버전)
+    - box_threshold_pips가 None이면 ATR 기반으로 동적으로 결정
     """
-    pip_value = 0.01 if pair.endswith("JPY") else 0.0001
-    recent_candles = candles.tail(box_window)
-    high_max = recent_candles['high'].max()
-    low_min = recent_candles['low'].min()
-    box_range = (high_max - low_min) / pip_value
-
-    if box_range > box_threshold_pips:
+    if candles is None or candles.empty:
         return {"in_box": False, "breakout": None}
 
-    last_close = recent_candles['close'].iloc[-1]
+    # ATR 기반 임계치 계산
+    atr_series = calculate_atr(candles)
+    last_atr = float(atr_series.iloc[-1]) if not atr_series.empty else 0.0
+    thr = dynamic_thresholds(pair, last_atr)
+
+    # 외부에서 임계치가 안 오면 동적값 사용
+    if box_threshold_pips is None:
+        box_threshold_pips = thr["box_threshold_pips"]
+
+    pv = thr["pip_value"]  # pip 크기(USDJPY=0.01, 그 외=0.0001)
+
+    recent = candles.tail(box_window)
+    high_max = recent["high"].max()
+    low_min  = recent["low"].min()
+    box_range_pips = (high_max - low_min) / pv
+
+    # 박스 폭이 임계보다 크면 '박스 아님'
+    if box_range_pips > box_threshold_pips:
+        return {"in_box": False, "breakout": None}
+
+    last_close = recent["close"].iloc[-1]
 
     if last_close > high_max:
         return {"in_box": True, "breakout": "UP"}
@@ -1028,6 +1063,7 @@ def detect_box_breakout(candles, pair, box_window=10, box_threshold_pips=20):
         return {"in_box": True, "breakout": "DOWN"}
     else:
         return {"in_box": True, "breakout": None}
+# === 교체 끝 ===
 
 def detect_trend(candles, rsi, mid_band):
     close = candles["close"]
