@@ -107,7 +107,6 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
         opportunity_score -= 0.5
         reasons.append("⚠️ ATR 낮음 → 진입 후 변동 부족, 리스크 대비 비효율")
     
-    return opportunity_score, reasons
 
 
     # 강한 반전 신호 (1점)
@@ -321,12 +320,12 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     
     # ✅ 저항선과 너무 가까운 거리에서의 BUY 진입 방지 (구조상 불리한 진입 회피)
     if signal == "BUY" and resistance_distance / pip_size < 6:
-        reasons.append("⚠️ 저항선 10pip 이내 → 구조상 불리 → 관망")
+        reasons.append("⚠️ 저항선 6pip 이내 → 구조상 불리 → 관망")
         return 0, reasons
 
     # ✅ 지지선과 너무 가까운 거리에서의 SELL 진입 방지 (구조상 불리한 진입 회피)
     if signal == "SELL" and abs(price - support) / pip_size < 6:
-        reasons.append("⚠️ 지지선 10pip 이내 → 구조상 불리 → 관망")
+        reasons.append("⚠️ 지지선 6pip 이내 → 구조상 불리 → 관망")
         return 0, reasons
     conflict_flag = conflict_check(rsi, pattern, trend, signal)
 
@@ -853,10 +852,6 @@ async def webhook(request: Request):
     min_pip = 8 * pip
     tp_sl_ratio = abs(tp - price) / max(1e-9, abs(price - sl))
 
-    # 0번: 지지선/저항선 확인
-    if price > resistance or price < support:
-        reasons.append("❌ 지지선/저항선 돌파 실패 → 거래 배제")
-        signal_score = 0
 
     # 1번: TP/SL 조건 검증
     if abs(tp - price) < min_pip or abs(price - sl) < min_pip:
@@ -895,11 +890,7 @@ async def webhook(request: Request):
     result = {}
     price_movements = []
     pnl = None
-    if decision in ["BUY", "SELL"] and tp and sl:
-        units = 100000 if decision == "BUY" else -100000
-        digits = 3 if pair.endswith("JPY") else 5
-        result = place_order(pair, units, tp, sl, digits)
-        print("✅ STEP 9: 주문 결과 확인 |", result)
+    
 
         executed_time = datetime.utcnow()
         candles_post = get_candles(pair, "M30", 8)
@@ -1016,7 +1007,7 @@ def calculate_bollinger_bands(series, window=20):
     lower = mid - 2 * std
     return upper, mid, lower
     
-def detect_box_breakout(candles, pair, box_window=10, box_threshold_pips=30):
+def detect_box_breakout(candles, pair, box_window=10, box_threshold_pips=20):
     """
     박스권 돌파 감지 (상향/하향 돌파 모두 반환)
     """
@@ -1254,9 +1245,14 @@ def parse_gpt_feedback(text):
     tp_line = next((line for line in text.splitlines() if "TP:" in line.upper() or "TP 제안 값" in line or "목표" in line), "")
     sl_line = next((line for line in text.splitlines() if "SL:" in line.upper() and re.search(r"\d+\.\d+", line)), "")
     if not sl_line:
-        print("❗ SL 라인 탐색 실패 → GPT 파서에서 예외로 처리")
-        decision = "WAIT"
-        return decision, None, None
+        sl = None  # 결정은 유지
+    # 아래처럼 결정 추출을 더 확실하게:
+    m = re.search(r"진입판단\s*[:：]?\s*(BUY|SELL|WAIT)", text.upper())
+    if m: decision = m.group(1)
+    # TP/SL 숫자 인식도 유연화:
+    def pick_price(line):
+        nums = re.findall(r"\d{1,2}\.\d{3,5}", line)
+        return float(nums[-1]) if nums else None
 
 
     def extract_avg_price(line):
