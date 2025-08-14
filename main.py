@@ -475,9 +475,9 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
             reasons.append("📈 눌림목 조건 감지: RSI 중립 / Stoch 바닥 반등 / MACD 양수 → 반등 기대")
             
     if signal == "SELL" and trend == "DOWNTREND":
-    if 45 <= rsi <= 55 and 0.7 <= stoch_rsi <= 1.0 and macd < 0:
-        signal_score += 1.5
-        reasons.append("📉 눌림목 SELL 조건 감지: RSI 중립 / Stoch 과매수 반락 / MACD 음수 유지")
+        if 45 <= rsi <= 55 and 0.7 <= stoch_rsi <= 1.0 and macd < 0:
+            signal_score += 1.5
+            reasons.append("📉 눌림목 SELL 조건 감지: RSI 중립 / Stoch 과매수 반락 / MACD 음수 유지")
     
     if 45 <= rsi <= 60 and signal == "BUY":
         signal_score += 1
