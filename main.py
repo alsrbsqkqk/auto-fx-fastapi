@@ -467,6 +467,17 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
         if macd > 0:
             signal_score += 1
             reasons.append("GBPUSD 강화: MACD 양수 유지 (상승 흐름 유지)")
+
+    # === 눌림목 BUY 조건 점수 가산 (모든 페어 공통) ===
+    if signal == "BUY" and trend == "UPTREND":
+        if 45 <= rsi <= 55 and 0.0 <= stoch_rsi <= 0.3 and macd > 0:
+            signal_score += 1.5
+            reasons.append("📈 눌림목 조건 감지: RSI 중립 / Stoch 바닥 반등 / MACD 양수 → 반등 기대")
+            
+    if signal == "SELL" and trend == "DOWNTREND":
+    if 45 <= rsi <= 55 and 0.7 <= stoch_rsi <= 1.0 and macd < 0:
+        signal_score += 1.5
+        reasons.append("📉 눌림목 SELL 조건 감지: RSI 중립 / Stoch 과매수 반락 / MACD 음수 유지")
     
     if 45 <= rsi <= 60 and signal == "BUY":
         signal_score += 1
@@ -812,12 +823,12 @@ async def webhook(request: Request):
     gpt_feedback = "GPT 분석 생략: 점수 미달"
     decision, tp, sl = "WAIT", None, None
 
-    if signal_score >= 5:
+    if signal_score >= 4.5:
         gpt_feedback = analyze_with_gpt(payload)
         print("✅ STEP 6: GPT 응답 수신 완료")
         decision, tp, sl = parse_gpt_feedback(gpt_feedback)
     else:
-        print("🚫 GPT 분석 생략: 점수 5점 미만")
+        print("🚫 GPT 분석 생략: 점수 4.5점 미만")
     
     
     print(f"✅ STEP 7: GPT 해석 완료 | decision: {decision}, TP: {tp}, SL: {sl}")
