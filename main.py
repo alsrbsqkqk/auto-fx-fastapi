@@ -378,8 +378,8 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     # ✅ 거래 제한 시간 필터 (애틀랜타 기준)
     now_utc = datetime.utcnow()
     now_atlanta = now_utc - timedelta(hours=4)
-    # ✅ 전략 시간대: 오전 09~14시 또는 저녁 19~22시
-    if not ((9 <= now_atlanta.hour <= 14) or (19 <= now_atlanta.hour <= 22)):
+    # ✅ 전략 시간대: 오전 09~5시 또는 저녁 7시~10시
+    if not ((9 <= now_atlanta.hour <= 17) or (19 <= now_atlanta.hour <= 22)):
         reasons.append("🕒 전략 외 시간대 → 유동성 부족 / 성공률 저하로 관망")
         return 0, reasons
     
