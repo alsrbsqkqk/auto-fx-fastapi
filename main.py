@@ -733,7 +733,7 @@ async def webhook(request: Request):
     # ✅ 지지/저항 계산 - timeframe 키 "H1" 로, atr에는 Series 전달
     pairs = ["USDJPY", "EURUSD", "GBPJPY"]  # 필요한 통화쌍 리스트
     for pair in pairs:
-        support, resistance = get_enhanced_support_resistance(candles_df, current_price, atr_series, "H1", pair)
+        support, resistance = get_enhanced_support_resistance(candles, current_price, atr_series, "H1", pair)
         pip_size = 0.01 if "JPY" in pair else 0.0001  # 통화쌍마다 pip 크기 설정
         
         print(f"[{pair}] Support: {support}, Resistance: {resistance}")
