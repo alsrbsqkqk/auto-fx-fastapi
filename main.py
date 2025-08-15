@@ -163,7 +163,7 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     
 def get_enhanced_support_resistance(candles, price, atr, timeframe, window=20, min_touch_count=1):
     # 자동 window 설정 (타임프레임 기반)
-    window_map = {'M15': 20, 'M30': 10, 'H1': 6, 'H4': 4}
+    window_map = {'M15': 20, 'M30': 15, 'H1': 12, 'H4': 6}
     window = window_map.get(timeframe, window)
     
     if price is None:
@@ -183,7 +183,7 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, window=20, m
     # Support
     if not support_candidates.empty:
         support_value = support_candidates.idxmax()
-        support_rows = candles[candles["low"].round(2) == support_value]
+        support_rows = candles["low"].round(precision) == support_value
         if not support_rows.empty:
             support_price = float(support_rows["low"].iloc[-1])
         else:
@@ -194,7 +194,7 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, window=20, m
     # Resistance
     if not resistance_candidates.empty:
         resistance_value = resistance_candidates.index.min()
-        resistance_rows = candles[candles["high"].round(2) == resistance_value]
+        resistance_rows = candles["high"].round(precision) == resistance_value
         if not resistance_rows.empty:
             resistance_price = float(resistance_rows["high"].iloc[0])
         else:
