@@ -1153,7 +1153,7 @@ def fetch_news_events():
     return events
 
 def filter_relevant_news(pair, within_minutes=90):
-    currency = pair.split("_")[0] if pair.startswith("USD") else pair.split("_")[1]
+    currency = pair[:3] if pair.startswith("USD") else pair[3:]
     now_utc = datetime.utcnow().replace(tzinfo=pytz.UTC)
     events = fetch_news_events()
     relevant = []
