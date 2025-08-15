@@ -171,6 +171,17 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, window=20, m
     highs = candles["high"].tail(window).astype(float)
     lows = candles["low"].tail(window).astype(float)
 
+def get_dense_level(prices, pip, group_size=3):
+    prices_sorted = sorted(prices)
+    clusters = []
+    for i in range(len(prices_sorted) - group_size + 1):
+        cluster = prices_sorted[i:i+group_size]
+        if max(cluster) - min(cluster) <= pip * 5:
+            clusters.append(cluster)
+    if clusters:
+        return round(np.mean(clusters[-1]), 5)
+    return round(min(prices), 5) if prices else None
+    
     # 소수점 반올림 위치를 통화쌍에 따라 다르게 적용
     precision = 2 if "JPY" in pair else 4  # JPY면 둘째자리, 그 외엔 넷째자리
 
@@ -180,26 +191,13 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, window=20, m
     support_candidates = support_zone[support_zone >= min_touch_count]
     resistance_candidates = resistance_zone[resistance_zone >= min_touch_count]
 
-    # Support
-    if not support_candidates.empty:
-        support_value = support_candidates.idxmax()
-        support_rows = candles["low"].round(precision) == support_value
-        if not support_rows.empty:
-            support_price = float(support_rows["low"].iloc[-1])
-        else:
-            support_price = float(lows.min())
-    else:
+    # 📌 밀집된 support 구간 평균
+    support_price = get_dense_level(list(support_candidates.index), pip)
+    if support_price is None:
         support_price = float(lows.min())
 
-    # Resistance
-    if not resistance_candidates.empty:
-        resistance_value = resistance_candidates.index.min()
-        resistance_rows = candles["high"].round(precision) == resistance_value
-        if not resistance_rows.empty:
-            resistance_price = float(resistance_rows["high"].iloc[0])
-        else:
-            resistance_price = float(highs.max())
-    else:
+    resistance_price = get_dense_level(list(resistance_candidates.index), pip)
+    if resistance_price is None:
         resistance_price = float(highs.max())
 
     # Ensure all are floats
