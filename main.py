@@ -734,6 +734,10 @@ async def webhook(request: Request):
     pairs = ["USDJPY", "EURUSD", "GBPJPY"]  # 필요한 통화쌍 리스트
     for pair in pairs:
         support, resistance = get_enhanced_support_resistance(candles, current_price, atr_series, "H1", pair)
+        support_resistance = {
+            "support": support,
+            "resistance": resistance
+        }
         pip_size = 0.01 if "JPY" in pair else 0.0001  # 통화쌍마다 pip 크기 설정
         
         print(f"[{pair}] Support: {support}, Resistance: {resistance}")
