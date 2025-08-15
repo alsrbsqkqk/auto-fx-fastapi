@@ -762,13 +762,19 @@ async def webhook(request: Request):
     atr_series = calculate_atr(candles)
 
     # ✅ 지지/저항 계산 - timeframe 키 "H1" 로, atr에는 Series 전달
-    result = get_enhanced_support_resistance(...)
-    if result is None:
+    result = get_enhanced_support_resistance(
+        candles,
+        price=current_price,
+        atr=atr_series,
+        timeframe="H1"
+    )
+    if not result:
         support, resistance = None, None
     else:
         support, resistance = result
-        candles, price=current_price, atr=atr_series, timeframe="H1"
-    )
+
+
+
 
     support_resistance = {"support": support, "resistance": resistance}
     support_distance = abs(price - support)
