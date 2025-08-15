@@ -18,7 +18,7 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     reasons = []
 
     if stoch_rsi < 0.05 and rsi > 50 and macd > macd_signal:
-        opportunity_score += 1.5
+        opportunity_score += 2
         reasons.append("💡 Stoch RSI 극단 과매도 + RSI 50 상단 돌파 + MACD 상승 → 강력한 BUY 기회")
 
     if stoch_rsi > 0.95 and rsi < 50 and macd < macd_signal and abs(macd - macd_signal) < 0.0001:
@@ -26,8 +26,8 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
         reasons.append("📉 MACD 매우 약함 → 신뢰도 낮음")
 
     if rsi < 40 and macd > macd_signal:
-        opportunity_score += 0
-        reasons.append("⚠️ RSI 약세 + MACD 강세 → 방향 충돌 → 점수 0")
+        opportunity_score -= 1
+        reasons.append("⚠️ RSI 약세 + MACD 강세 → 방향 충돌 → 관망 권장")
 
     if 48 < rsi < 52:
         opportunity_score += 0.5
@@ -57,23 +57,12 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
         reasons.append("🔴 하락추세 지속: 매도 기대감 강화")
     # ✅ 중립 추세일 때 추가 조건
     elif trend == "NEUTRAL":
-        condition_count = 0
-        if 45 < rsi < 60:
-            condition_count += 1
-        if macd > macd_signal:
-            condition_count += 1
-        if 0.2 < stoch_rsi < 0.8:
-            condition_count += 1
-
-        if condition_count >= 2:
+        if (45 < rsi < 60) and (macd > macd_signal) and (0.2 < stoch_rsi < 0.8):
             opportunity_score += 0.5
-            reasons.append("🟡 중립 추세에서 2개 이상 조건 충족 → 제한적 기대 가능")
-        elif condition_count == 1:
-            opportunity_score += 0.1
-            reasons.append("⚠️ 중립 추세에서 조건 1개 충족 → 신호 약함")
+            reasons.append("🟡 중립 추세 + 조건 충족 → 약한 기대감")
         else:
-            opportunity_score -= 0.3
-            reasons.append("⚠️ 중립 추세에서 조건 부족 → 신뢰도 낮음")
+            opportunity_score -= 0.5
+            reasons.append("⚠️ 중립 추세 + 신호 불충분 → 신뢰도 낮음 (감점)")
 
     
     if pattern in ["HAMMER", "SHOOTING_STAR"]:
@@ -97,14 +86,7 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
         opportunity_score += 0.5
     else:
         opportunity_score += 0.0  # 감점 없음
-    # 6. 방향성 모순 감점 조건
-    if macd > macd_signal and (rsi < 40 or stoch_rsi < 0.3):
-        opportunity_score -= 0.3
-        reasons.append("⚠️ MACD 매수 시그널 vs RSI/Stoch RSI 약세 → 방향성 모순")
 
-    if macd < macd_signal and (rsi > 60 or stoch_rsi > 0.7):
-        opportunity_score -= 0.3
-        reasons.append("⚠️ MACD 매도 시그널 vs RSI/Stoch RSI 강세 → 방향성 모순")
     
     # 3. 추세 중립 + MACD 약세 = 확신 부족
     if trend == "NEUTRAL" and macd < macd_signal:
@@ -113,26 +95,17 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
 
     # 4. ATR 극저 (강한 무변동장)
     if atr < 0.001:
-        if opportunity_score >= 2:
-            reasons.append("⚠️ ATR 낮음, 한글화된 조건들이 있으면 감점 무시")
-        else:
-            opportunity_score -= 0.3
-            reasons.append("⚠️ ATR 낮음 -> 변동성 높지 않음")
-
-    if abs(macd - macd_signal) < 0.0002 and opportunity_score < 2:
-        opportunity_score -= 0.3
-        reasons.append("⚠️ MACD 시그널 낮음 + 확정성 감소")
-
-    if 40 < rsi < 50 and opportunity_score < 2:
+        opportunity_score -= 0.5
+        reasons.append("⚠️ ATR 매우 낮음 → 변동성 매우 부족한 장세")
+    if abs(macd - macd_signal) < 0.0002:
         opportunity_score -= 0.2
-        reasons.append("⚠️ RSI 중간대 + 반드 높지 않음")
-
-    if atr < 0.0012 and opportunity_score < 2:
+        reasons.append("⚠️ MACD 신호 미약 → 방향성 부정확으로 감점")
+    if 40 < rsi < 50:
         opportunity_score -= 0.2
-        reasons.append("⚠️ ATR 낮음 + 진입 후 변동 높지 않음")
-
-    return opportunity_score, reasons
-
+        reasons.append("⚠️ RSI 중립구간 (40~50) → 방향성 모호, 진입 보류")
+    if atr < 0.0012:
+        opportunity_score -= 0.5
+        reasons.append("⚠️ ATR 낮음 → 진입 후 변동 부족, 리스크 대비 비효율")
     
 
 
@@ -162,10 +135,6 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     return opportunity_score, reasons
     
 def get_enhanced_support_resistance(candles, price, atr, timeframe, window=20, min_touch_count=1):
-    # ✅ 방어 코드 추가: 값이 None이거나 비었을 경우 대비
-    if price is None or candles is None or candles.empty or atr is None or atr.empty:
-        return None
-    
     # 자동 window 설정 (타임프레임 기반)
     window_map = {'M15': 20, 'M30': 15, 'H1': 12, 'H4': 6}
     window = window_map.get(timeframe, window)
@@ -175,39 +144,35 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, window=20, m
     highs = candles["high"].tail(window).astype(float)
     lows = candles["low"].tail(window).astype(float)
 
-
-
-def get_dense_level(prices, pip, group_size=3):
-    prices_sorted = sorted(prices)
-    clusters = []
-    for i in range(len(prices_sorted) - group_size + 1):
-        cluster = prices_sorted[i:i+group_size]
-        if max(cluster) - min(cluster) <= pip * 5:
-            clusters.append(cluster)
-    if clusters:
-        return round(np.mean(clusters[-1]), 5)
-    return round(min(prices), 5) if prices else None
-    
-    # 소수점 반올림 위치를 통화쌍에 따라 다르게 적용
-    precision = 2 if "JPY" in pair else 4  # JPY면 둘째자리, 그 외엔 넷째자리
-
+    precision = 2 if pair.endswith("JPY") else 4  # 또는 3으로 테스트
     support_zone = lows[lows < price].round(precision).value_counts()
     resistance_zone = highs[highs > price].round(precision).value_counts()
 
     support_candidates = support_zone[support_zone >= min_touch_count]
     resistance_candidates = resistance_zone[resistance_zone >= min_touch_count]
 
-    # 📌 밀집된 support 구간 평균
-    support_price = get_dense_level(list(support_candidates.index), pip)
-    if support_price is None:
+    # Support
+    if not support_candidates.empty:
+        support_value = support_candidates.idxmax()
+        support_rows = candles[candles["low"].round(2) == support_value]
+        if not support_rows.empty:
+            support_price = float(support_rows["low"].iloc[-1])
+        else:
+            support_price = float(lows.min())
+    else:
         support_price = float(lows.min())
 
-    resistance_price = get_dense_level(list(resistance_candidates.index), pip)
-    if resistance_price is None:
+    # Resistance
+    if not resistance_candidates.empty:
+        resistance_value = resistance_candidates.index.min()
+        resistance_rows = candles[candles["high"].round(2) == resistance_value]
+        if not resistance_rows.empty:
+            resistance_price = float(resistance_rows["high"].iloc[0])
+        else:
+            resistance_price = float(highs.max())
+    else:
         resistance_price = float(highs.max())
 
-    return round(support_price, 5), round(resistance_price, 5)
-    
     # Ensure all are floats
     price = float(price)
     min_distance = max(0.0005, float(atr.iloc[-1]) * 0.8)
@@ -387,10 +352,10 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     # ✅ 거래 제한 시간 필터 (애틀랜타 기준)
     now_utc = datetime.utcnow()
     now_atlanta = now_utc - timedelta(hours=4)
-    # ✅ 전략 시간대: 오전 09~5시 또는 저녁 7시~10시
-    #if not ((9 <= now_atlanta.hour <= 17) or (19 <= now_atlanta.hour <= 22)):
-    #    reasons.append("🕒 전략 외 시간대 → 유동성 부족 / 성공률 저하로 관망")
-    #    return 0, reasons
+    # ✅ 전략 시간대: 오전 09~14시 또는 저녁 19~22시
+    if not ((9 <= now_atlanta.hour <= 14) or (19 <= now_atlanta.hour <= 22)):
+        reasons.append("🕒 전략 외 시간대 → 유동성 부족 / 성공률 저하로 관망")
+        return 0, reasons
     
     # --- 저항/지지 근접 금지(동적 임계 적용) ---
     dist_to_res_pips = abs((resistance or price) - price) / pv
@@ -762,19 +727,9 @@ async def webhook(request: Request):
     atr_series = calculate_atr(candles)
 
     # ✅ 지지/저항 계산 - timeframe 키 "H1" 로, atr에는 Series 전달
-    result = get_enhanced_support_resistance(
-        candles,
-        price=current_price,
-        atr=atr_series,
-        timeframe="H1"
+    support, resistance = get_enhanced_support_resistance(
+        candles, price=current_price, atr=atr_series, timeframe="H1"
     )
-    if not result:
-        support, resistance = None, None
-    else:
-        support, resistance = result
-
-
-
 
     support_resistance = {"support": support, "resistance": resistance}
     support_distance = abs(price - support)
