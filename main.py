@@ -731,17 +731,16 @@ async def webhook(request: Request):
     atr_series = calculate_atr(candles)
 
     # ✅ 지지/저항 계산 - timeframe 키 "H1" 로, atr에는 Series 전달
-    support, resistance = get_enhanced_support_resistance(
-        candles, price=current_price, atr=atr_series, timeframe="H1"
-    )
-
-    support_resistance = {"support": support, "resistance": resistance}
-    support_distance = abs(price - support)
-    resistance_distance = abs(resistance - price)
-
-    # ✅ 현재가와 저항선 거리 계산 (pip 기준 거리 필터 적용을 위함)
-    pip_size = 0.01 if "JPY" in pair else 0.0001
-    resistance_distance = abs(resistance - price)
+    pairs = ["USDJPY", "EURUSD", "GBPJPY"]  # 필요한 통화쌍 리스트
+    for pair in pairs:
+        support, resistance = get_enhanced_support_resistance(candles_df, current_price, atr_series, "H1", pair)
+        pip_size = 0.01 if "JPY" in pair else 0.0001  # 통화쌍마다 pip 크기 설정
+        
+        print(f"[{pair}] Support: {support}, Resistance: {resistance}")
+        
+        support_distance = abs(current_price - support)
+        resistance_distance = abs(resistance - current_price)
+    
 
     if candles is None or candles.empty:
         return JSONResponse(content={"error": "캔들 데이터를 불러올 수 없음"}, status_code=400)
