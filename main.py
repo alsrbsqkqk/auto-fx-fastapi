@@ -749,8 +749,7 @@ async def webhook(request: Request):
         "support": support_resistance["support"],
         "resistance": support_resistance["resistance"],
         }
-        update_sheet(payload)  # ✅ 기록도 반복문 안에서!
-        send_alert(payload)    # ✅ 알림도 반복문 안에서!
+
             
         
         
