@@ -171,8 +171,11 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, window=20, m
     highs = candles["high"].tail(window).astype(float)
     lows = candles["low"].tail(window).astype(float)
 
-    support_zone = lows[lows < price].round(2).value_counts()
-    resistance_zone = highs[highs > price].round(2).value_counts()
+    # 소수점 반올림 위치를 통화쌍에 따라 다르게 적용
+    precision = 2 if "JPY" in pair else 4  # JPY면 둘째자리, 그 외엔 넷째자리
+
+    support_zone = lows[lows < price].round(precision).value_counts()
+    resistance_zone = highs[highs > price].round(precision).value_counts()
 
     support_candidates = support_zone[support_zone >= min_touch_count]
     resistance_candidates = resistance_zone[resistance_zone >= min_touch_count]
