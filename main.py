@@ -134,7 +134,11 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
 
     return opportunity_score, reasons
     
-def get_enhanced_support_resistance(candles, price, atr, timeframe, window=20, min_touch_count=1):
+def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window=20, min_touch_count=1):
+    # ✅ 방어 코드: None 또는 빈 데이터 방지
+    if price is None or candles is None or candles.empty or atr is None or atr.empty:
+        return None
+   
     # 자동 window 설정 (타임프레임 기반)
     window_map = {'M15': 20, 'M30': 15, 'H1': 12, 'H4': 6}
     window = window_map.get(timeframe, window)
@@ -144,7 +148,7 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, window=20, m
     highs = candles["high"].tail(window).astype(float)
     lows = candles["low"].tail(window).astype(float)
 
-    precision = 2 if pair.endswith("JPY") else 4  # 또는 3으로 테스트
+    precision = 2 if pair.upper().endswith("JPY") else 4
     support_zone = lows[lows < price].round(precision).value_counts()
     resistance_zone = highs[highs > price].round(precision).value_counts()
 
