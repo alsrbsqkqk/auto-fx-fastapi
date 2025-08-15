@@ -134,13 +134,9 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
 
     return opportunity_score, reasons
     
-def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window=20, min_touch_count=1):
-    # ✅ 방어 코드: None 또는 빈 데이터 방지
-    if price is None or candles is None or candles.empty or atr is None or atr.empty:
-        return None
-   
+def get_enhanced_support_resistance(candles, price, atr, timeframe, window=20, min_touch_count=1):
     # 자동 window 설정 (타임프레임 기반)
-    window_map = {'M15': 20, 'M30': 15, 'H1': 12, 'H4': 6}
+    window_map = {'M15': 20, 'M30': 10, 'H1': 6, 'H4': 4}
     window = window_map.get(timeframe, window)
     
     if price is None:
@@ -148,9 +144,8 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window
     highs = candles["high"].tail(window).astype(float)
     lows = candles["low"].tail(window).astype(float)
 
-    precision = 2 if pair.upper().endswith("JPY") else 4
-    support_zone = lows[lows < price].round(precision).value_counts()
-    resistance_zone = highs[highs > price].round(precision).value_counts()
+    support_zone = lows[lows < price].round(2).value_counts()
+    resistance_zone = highs[highs > price].round(2).value_counts()
 
     support_candidates = support_zone[support_zone >= min_touch_count]
     resistance_candidates = resistance_zone[resistance_zone >= min_touch_count]
@@ -731,33 +726,17 @@ async def webhook(request: Request):
     atr_series = calculate_atr(candles)
 
     # ✅ 지지/저항 계산 - timeframe 키 "H1" 로, atr에는 Series 전달
-    pairs = ["USDJPY", "EURUSD", "GBPJPY"]  # 필요한 통화쌍 리스트
-    for pair in pairs:
-        support, resistance = get_enhanced_support_resistance(candles, current_price, atr_series, "H1", pair)
-        support_resistance = {
-            "support": support,
-            "resistance": resistance
-        }
-        pip_size = 0.01 if "JPY" in pair else 0.0001  # 통화쌍마다 pip 크기 설정
-        support_distance = abs(current_price - support)
-        resistance_distance = abs(resistance - current_price)
-        
-        
-        payload = {
-        "pair": pair,  # ✅ 각 통화쌍별로 정확하게 들어감
-        "price": current_price,
-        "support": support_resistance["support"],
-        "resistance": support_resistance["resistance"],
-        }
+    support, resistance = get_enhanced_support_resistance(
+        candles, price=current_price, atr=atr_series, timeframe="H1"
+    )
 
-            
-        
-        
-        print(f"[{pair}] Support: {support}, Resistance: {resistance}")
-        
-        support_distance = abs(current_price - support)
-        resistance_distance = abs(resistance - current_price)
-    
+    support_resistance = {"support": support, "resistance": resistance}
+    support_distance = abs(price - support)
+    resistance_distance = abs(resistance - price)
+
+    # ✅ 현재가와 저항선 거리 계산 (pip 기준 거리 필터 적용을 위함)
+    pip_size = 0.01 if "JPY" in pair else 0.0001
+    resistance_distance = abs(resistance - price)
 
     if candles is None or candles.empty:
         return JSONResponse(content={"error": "캔들 데이터를 불러올 수 없음"}, status_code=400)
@@ -1170,7 +1149,7 @@ def fetch_news_events():
     return events
 
 def filter_relevant_news(pair, within_minutes=90):
-    currency = pair[:3] if pair.startswith("USD") else pair[3:]
+    currency = pair.split("_")[0] if pair.startswith("USD") else pair.split("_")[1]
     now_utc = datetime.utcnow().replace(tzinfo=pytz.UTC)
     events = fetch_news_events()
     relevant = []
