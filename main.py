@@ -739,6 +739,20 @@ async def webhook(request: Request):
             "resistance": resistance
         }
         pip_size = 0.01 if "JPY" in pair else 0.0001  # 통화쌍마다 pip 크기 설정
+        support_distance = abs(current_price - support)
+        resistance_distance = abs(resistance - current_price)
+        
+        
+        payload = {
+        "pair": pair,  # ✅ 각 통화쌍별로 정확하게 들어감
+        "price": current_price,
+        "support": support_resistance["support"],
+        "resistance": support_resistance["resistance"],
+        }
+        update_sheet(payload)  # ✅ 기록도 반복문 안에서!
+        send_alert(payload)    # ✅ 알림도 반복문 안에서!
+            
+        
         
         print(f"[{pair}] Support: {support}, Resistance: {resistance}")
         
