@@ -43,7 +43,7 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
         opportunity_score += 0.5
         reasons.append("⚙ RSI 중립 + Stoch 과열 → 가중 진입 조건")
     if stoch_rsi > 0.8 and rsi > 60:
-        opportunity_score -= 2
+        opportunity_score -= 1
         reasons.append("⚠️ Stoch RSI 과열 + RSI 상승 피로 → 진입 주의 필요")
         
     if 35 < rsi < 40:
@@ -58,19 +58,34 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     # ✅ 중립 추세일 때 추가 조건
     elif trend == "NEUTRAL":
         if (45 < rsi < 60) and (macd > macd_signal) and (0.2 < stoch_rsi < 0.8):
-            opportunity_score += 0.5
+            opportunity_score += 0.25
             reasons.append("🟡 중립 추세 + 조건 충족 → 약한 기대감")
         else:
-            opportunity_score -= 0.5
+            opportunity_score -= 0.25
             reasons.append("⚠️ 중립 추세 + 신호 불충분 → 신뢰도 낮음 (감점)")
 
     
     if pattern in ["HAMMER", "SHOOTING_STAR"]:
         opportunity_score += 0.5
         reasons.append(f"🕯 {pattern} 캔들: 심리 반전 가능성")
+    else:
+        reasons.append("⚪ 주요 캔들 패턴 없음 → 중립 처리 (감점 없음)")
     if atr < 0.0005:
         opportunity_score -= 0.5
         reasons.append("📉 ATR 낮음 → 변동성 부족, 시그널 신뢰도 약화")
+    
+    # 5. 지지선/저항선 신뢰도 평가 (TP/SL 사이 거리 기반)
+    sr_range = abs(support - resistance)
+
+    if sr_range < 0.1:
+        opportunity_score -= 0.25
+        reasons.append("⚠️ 지지선-저항선 간격 좁음 → 신뢰도 낮음 (감점)")
+    elif sr_range > atr:
+        opportunity_score += 0.25
+        reasons.append("🟢 지지선-저항선 간격 넓음 → 뚜렷한 기술적 영역 (가점)")
+    else:
+        reasons.append("⚪ 지지선-저항선 평균 거리 → 중립 처리")
+    
         # 1. RSI와 추세가 충돌
     if trend == "DOWNTREND" and rsi > 50:
         opportunity_score -= 0.5
@@ -78,7 +93,7 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
 
     # 2. MACD 약세인데 RSI/Stoch RSI가 강세면 경고
     if macd < macd_signal and (rsi > 50 or stoch_rsi > 0.6):
-        opportunity_score -= 0.5
+        opportunity_score -= 0.25
         reasons.append("⚠️ MACD 하락 중 RSI or Stoch RSI 매수 신호 → 조건 불일치 감점")
 
 
