@@ -49,11 +49,11 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     
     if rsi >= 70:
         if trend == "UPTREND" and macd > macd_signal:
-        opportunity_score += 0.5
-        reasons.append("🔄 RSI 70 이상이지만 상승추세 + MACD 상승 → 조건부 진입 허용")
+            opportunity_score += 0.5
+            reasons.append("🔄 RSI 70 이상이지만 상승추세 + MACD 상승 → 조건부 진입 허용")
         else:
-        opportunity_score -= 0.5
-        reasons.append("❌ RSI 70 이상: 과매수로 진입 위험 높음 → 관망 권장")
+            opportunity_score -= 0.5
+            reasons.append("❌ RSI 70 이상: 과매수로 진입 위험 높음 → 관망 권장")
     
     # ✅ 2. RSI 과매도 기준 완화 (SELL 조건 - score_signal_with_filters 내부)
     # 기존 없음 → 추가:
