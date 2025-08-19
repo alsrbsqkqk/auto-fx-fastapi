@@ -928,6 +928,42 @@ async def webhook(request: Request):
     if should_execute:
         units = 100000 if decision == "BUY" else -100000
         digits = 3 if pair.endswith("JPY") else 5
+
+        # --- TP/SL 유효성 검사 & 안전 보정 (ADD HERE, after digits line) ---
+        p = pip_value_for(pair)     # 이미 있는 함수 사용
+        min_pips = 8
+        rr_min = 2.0
+
+        valid = True
+        # 방향 관계 검증
+        if decision == "BUY":
+            if not (tp > price and sl < price):
+                valid = False
+        else:  # SELL
+            if not (tp < price and sl > price):
+                valid = False
+
+        # 최소 거리(양쪽 모두 min_pips 이상)
+        if valid and (abs(tp - price) < min_pips * p or abs(price - sl) < min_pips * p):
+            valid = False
+
+        # RR(보상/위험) ≥ 2:1
+        if valid:
+            risk = abs(price - sl)
+            reward = abs(tp - price)
+            if risk == 0 or reward / risk < rr_min:
+                valid = False
+
+        # 유효하지 않으면 보수적 자동 보정
+        if not valid:
+            if decision == "BUY":
+                sl = price - min_pips * p
+                tp = price + 2 * min_pips * p
+            else:
+                sl = price + min_pips * p
+                tp = price - 2 * min_pips * p
+        # --- END ---
+        
         print(f"[DEBUG] 조건 충족 → 실제 주문 실행: {pair}, units={units}, tp={tp}, sl={sl}, digits={digits}")
         result = place_order(pair, units, tp, sl, digits)
     
@@ -1311,13 +1347,11 @@ def parse_gpt_feedback(text):
 
 
     def extract_avg_price(line):
-        matches = re.findall(r"\b\d{1,5}\.\d{1,5}\b", line)  # 가격 패턴만 추출
-        if len(matches) >= 2:
-            return (float(matches[0]) + float(matches[1])) / 2
-        elif matches:
-            return float(matches[0])
-        else:
+        # 가격 후보 전부 뽑고, 그중 '가장 큰 값'을 선택 (ATR 등 소수 작은 값 제거 효과)
+        matches = re.findall(r"\b\d{1,5}\.\d{1,5}\b", line)
+        if not matches:
             return None
+        return max(float(m) for m in matches)
 
     tp = extract_avg_price(tp_line)
     sl = extract_avg_price(sl_line)
