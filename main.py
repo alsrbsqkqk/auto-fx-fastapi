@@ -17,9 +17,15 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     opportunity_score = 0
     reasons = []
 
+    if macd_signal is None:
+        macd_signal = macd  # fallback: macd 자체를 signal로 간주
+        
     if stoch_rsi < 0.05 and rsi > 50 and macd > macd_signal:
         opportunity_score += 2
         reasons.append("💡 Stoch RSI 극단 과매도 + RSI 50 상단 돌파 + MACD 상승 → 강력한 BUY 기회")
+    if stoch_rsi < 0.1 and rsi < 40 and macd < 0:
+        opportunity_score += 1
+        reasons.append("⚠️ macd_signal 없어도 조건 일부 충족 → 약한 SELL 진입 허용")  
 
     if stoch_rsi > 0.95 and rsi < 50 and macd < macd_signal and abs(macd - macd_signal) < 0.0001:
         opportunity_score += 2
@@ -52,8 +58,8 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     # ✅ 2. RSI 과매도 기준 완화 (SELL 조건 - score_signal_with_filters 내부)
     # 기존 없음 → 추가:
     if rsi < 30 and trend == "DOWNTREND" and macd < macd_signal:
-    opportunity_score += 0.5
-    reasons.append("🔄 RSI 30 이하지만 하락추세 + MACD 약세 → 추가 진입 조건 만족")
+        opportunity_score += 0.5
+        reasons.append("🔄 RSI 30 이하지만 하락추세 + MACD 약세 → 추가 진입 조건 만족")
     
     if 40 < rsi < 60 and stoch_rsi > 0.8:
         opportunity_score += 0.5
