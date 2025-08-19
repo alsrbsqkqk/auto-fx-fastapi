@@ -35,9 +35,25 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     if 60 < rsi < 65:
         opportunity_score += 0.5
         reasons.append("🔴 RSI 60~65: 과매수 초기 피로감 (SELL 경계)")
+    # ✅ NEUTRAL 추세이지만 RSI + MACD가 강한 경우 강제 진입 기회 부여
+    if trend == "NEUTRAL" and rsi > 65 and macd > 0.1:
+        opportunity_score += 0.75
+        reasons.append("📌 추세 중립이나 RSI > 65 & MACD 강세 → 관망보다 진입 우위 가능성 높음")
+
+    
     if rsi >= 70:
-        opportunity_score -= 1
+        if trend == "UPTREND" and macd > macd_signal:
+        opportunity_score += 0.5
+        reasons.append("🔄 RSI 70 이상이지만 상승추세 + MACD 상승 → 조건부 진입 허용")
+        else:
+        opportunity_score -= 0.5
         reasons.append("❌ RSI 70 이상: 과매수로 진입 위험 높음 → 관망 권장")
+    
+    # ✅ 2. RSI 과매도 기준 완화 (SELL 조건 - score_signal_with_filters 내부)
+    # 기존 없음 → 추가:
+    if rsi < 30 and trend == "DOWNTREND" and macd < macd_signal:
+    opportunity_score += 0.5
+    reasons.append("🔄 RSI 30 이하지만 하락추세 + MACD 약세 → 추가 진입 조건 만족")
     
     if 40 < rsi < 60 and stoch_rsi > 0.8:
         opportunity_score += 0.5
@@ -554,9 +570,13 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     if stoch_rsi == 0.0:
         signal_score += 1
         reasons.append("🟢 Stoch RSI 0.0 → 극단적 과매도 → 반등 기대")
-    elif stoch_rsi == 1.0:
-        signal_score -= 1
-        reasons.append("🔴 Stoch RSI 1.0 → 극단적 과매수 → 피로감 주의")
+   
+    if stoch_rsi == 1.0:
+        if trend == "UPTREND" and macd > 0:
+            reasons.append("🔄 Stoch RSI 과열이지만 상승추세 + MACD 양수 → 감점 생략")
+        else:
+            signal_score -= 1
+            reasons.append("🔴 Stoch RSI 1.0 → 극단적 과매수 → 피로감 주의")
     
     if stoch_rsi > 0.8:
         if trend == "UPTREND" and rsi < 70:
