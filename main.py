@@ -92,9 +92,6 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
         reasons.append(f"🕯 {pattern} 캔들: 심리 반전 가능성")
     else:
         reasons.append("⚪ 주요 캔들 패턴 없음 → 중립 처리 (감점 없음)")
-    if atr < 0.0005:
-        opportunity_score -= 0.5
-        reasons.append("📉 ATR 낮음 → 변동성 부족, 시그널 신뢰도 약화")
     
     # 5. 지지선/저항선 신뢰도 평가 (TP/SL 사이 거리 기반)
     sr_range = abs(support - resistance)
@@ -140,7 +137,6 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     if 40 < rsi < 50:
         opportunity_score -= 0.2
         reasons.append("⚠️ RSI 중립구간 (40~50) → 방향성 모호, 진입 보류")
-    if atr < 0.0012:
         opportunity_score -= 0.5
         reasons.append("⚠️ ATR 낮음 → 진입 후 변동 부족, 리스크 대비 비효율")
     
@@ -268,11 +264,14 @@ def atr_in_pips(atr_value: float, pair: str) -> float:
 # ★ 추가: 통합 임계치(모든 페어 공통)
 def dynamic_thresholds(pair: str, atr_value: float):
     pv = pip_value_for(pair)
-    ap = max(8.0, atr_in_pips(atr_value, pair))     # ATR(pips), 최소 8pip
+    ap = max(6.0, atr_in_pips(atr_value, pair))     # ATR(pips), 최소 8pip
 
-    near_pips          = int(max(8,  min(14, 0.35 * ap)))  # 지지/저항 근접 금지
-    box_threshold_pips = int(max(12, min(30, 0.80 * ap)))  # 박스 폭 임계
-    breakout_buf_pips  = int(max(1,  min(3,  0.10 * ap)))  # 돌파/이탈 확인 버퍼
+    # 🔧 변경: EUR/USD, GBP/USD는 근접 금지 하한 6 pip, 나머지는 8 pip
+    min_near = 6 if pair in ("EUR_USD", "GBP_USD") else 8
+
+    near_pips          = int(max(min_near, min(14, 0.35 * ap)))  # 지지/저항 근접 금지
+    box_threshold_pips = int(max(12,     min(30, 0.80 * ap)))    # 박스 폭 임계
+    breakout_buf_pips  = int(max(1,      min(3,  0.10 * ap))) 
 
     # MACD 교차 임계: pip 기준(강=20pip, 약=10pip)
     macd_strong = 20 * pv
@@ -538,6 +537,21 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
         reasons.append("📈 최근 고점 갱신 → 상승세 유지 가능성↑")
     if high_low_flags["new_low"]:
         reasons.append("📉 최근 저점 갱신 → 하락세 지속 가능성↑")
+
+    if trend == "NEUTRAL" \
+       and box_info.get("in_box") \
+       and box_info.get("breakout") in ("UP", "DOWN") \
+       and (high_low_flags.get("new_high") or high_low_flags.get("new_low")):
+
+        # 신호 일치(+3) 블록과 중복 가점 방지
+        aligns = ((box_info["breakout"] == "UP"   and signal == "BUY") or
+              (box_info["breakout"] == "DOWN" and signal == "SELL"))
+
+        if not aligns:
+            signal_score += 1.5
+            reasons.append("🟡 NEUTRAL 예외: 박스 이탈 + 고/저 갱신 → 기본 가점(+1.5)")
+
+    
     if box_info["in_box"] and box_info["breakout"] == "UP" and signal == "BUY":
         signal_score += 3
         reasons.append("📦 박스권 상단 돌파 + 매수 신호 일치 (breakout 가점 강화)")
@@ -939,9 +953,10 @@ async def webhook(request: Request):
             reasons.append("TP:SL 비율 < 2:1 + 점수 미달 → 거래 배제")
             return 0, reasons
     # ✅ ATR 조건 강화 (보완)
-    if atr_value < 0.0009:
-        reasons.append("⚠️ ATR 너무 낮음 → 변동성 부족으로 거래 제한")
-        return 0, reasons
+    last_atr = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr)
+    if last_atr < 0.0009:
+        signal_score -= 1
+        reasons.append("⚠️ ATR 낮음(0.0009↓) → 보수적 감점(-1)")
 
     
     result = {}
