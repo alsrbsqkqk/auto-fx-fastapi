@@ -126,9 +126,9 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
 
     
     # 3. 추세 중립 + MACD 약세 = 확신 부족
-    if trend == "NEUTRAL" and macd < macd_signal:
-        opportunity_score -= 0.0
-        reasons.append("⚠️ 추세 중립 + MACD 하락 → 확신 부족한 시그널")
+    if trend == "NEUTRAL" and rsi > 45 and stoch_rsi < 0.2 and macd > 0:
+        opportunity_score += 1.0
+        reasons.append("중립 추세 + RSI/스토캐스틱 반등 + MACD 양수 → 진입 기대")
 
     # 4. ATR 극저 (강한 무변동장)
     if atr < 0.001:
@@ -386,12 +386,12 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
         reasons.append("✅ 강한 하락추세 + 매도 캔들 패턴 일치 → 보너스 + 기회 점수 강화")
     
     # ✅ 거래 제한 시간 필터 (애틀랜타 기준)
-    now_utc = datetime.utcnow()
-    now_atlanta = now_utc - timedelta(hours=4)
+    #now_utc = datetime.utcnow()
+    #now_atlanta = now_utc - timedelta(hours=4)
     # ✅ 전략 시간대: 오전 09~14시 또는 저녁 19~22시
-    if not ((9 <= now_atlanta.hour <= 14) or (19 <= now_atlanta.hour <= 22)):
-        reasons.append("🕒 전략 외 시간대 → 유동성 부족 / 성공률 저하로 관망")
-        return 0, reasons
+    #if not ((9 <= now_atlanta.hour <= 14) or (19 <= now_atlanta.hour <= 22)):
+    #    reasons.append("🕒 전략 외 시간대 → 유동성 부족 / 성공률 저하로 관망")
+    #    return 0, reasons
     
     # --- 저항/지지 근접 금지(동적 임계 적용) ---
     dist_to_res_pips = abs((resistance or price) - price) / pv
@@ -921,7 +921,7 @@ async def webhook(request: Request):
 
     # ✅ 여기서부터 검증 블록 삽입
     pip = pip_value_for(pair)
-    min_pip = 8 * pip
+    min_pip = 5 * pip
     tp_sl_ratio = abs(tp - price) / max(1e-9, abs(price - sl))
 
 
@@ -931,9 +931,13 @@ async def webhook(request: Request):
         signal_score = 0
 
     # 2번: TP:SL 비율 확인
-    if tp_sl_ratio < 2:
-        reasons.append("❌ TP:SL 비율 < 2:1 → 거래 배제")
-        signal_score = 0
+    if tp_sl_ratio < 1.6:
+        if signal_score >= 4.5:
+            signal_score -= 1
+            reasons.append("TP:SL 비율 < 2:1 → 감점 적용, 전략 점수 충분하므로 조건부 진입 허용")
+        else:
+            reasons.append("TP:SL 비율 < 2:1 + 점수 미달 → 거래 배제")
+            return 0, reasons
 
     
     result = {}
