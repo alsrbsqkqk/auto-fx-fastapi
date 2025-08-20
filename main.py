@@ -938,6 +938,10 @@ async def webhook(request: Request):
         else:
             reasons.append("TP:SL 비율 < 2:1 + 점수 미달 → 거래 배제")
             return 0, reasons
+    # ✅ ATR 조건 강화 (보완)
+    if atr_value < 0.0009:
+        reasons.append("⚠️ ATR 너무 낮음 → 변동성 부족으로 거래 제한")
+        return 0, reasons
 
     
     result = {}
