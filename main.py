@@ -1489,9 +1489,9 @@ def analyze_with_gpt(payload):
             "(3) 지지선(support), 저항선(resistance)은 최근 1시간봉 기준 마지막 6봉의 고점/저점에서 이미 계산되어 JSON에 포함되어 있어. support와 resistance는 주어진 숫자만을 사용하며, 수치를 임의로 변경하지 마십시오. "
             "이 숫자만 참고하고 그 외 고점/저점은 무시해.\n\n"
 
-            "(4) 추세 판단 시 캔들 패턴뿐 아니라 보조지표(RSI, MACD, Stoch RSI)의 흐름과 방향성도 함께 고려해.
-                특히 각 보조지표의 최근 14봉 추세 데이터(rsi_trend, macd_trend, stoch_rsi_trend)도 같이 확인해서 
-                상승/하락 흐름, 속도, 꺾임 여부 등을 함께 분석하라.\n\n
+            "(4) 추세 판단 시 캔들 패턴뿐 아니라 보조지표(RSI, MACD, Stoch RSI)의 흐름과 방향성도 함께 고려해.\n"
+            "특히 각 보조지표의 최근 14봉 추세 데이터(rsi_trend, macd_trend, stoch_rsi_trend)도 같이 확인해서\n"
+            "상승/하락 흐름, 속도, 꺾임 여부 등을 함께 분석하라.\n\n"
             
 
             "(5) 리포트 마지막에는 아래 형식으로 진입판단을 명확하게 작성해:\n"
