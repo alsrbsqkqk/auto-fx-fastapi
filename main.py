@@ -1490,7 +1490,8 @@ def analyze_with_gpt(payload):
             "이 숫자만 참고하고 그 외 고점/저점은 무시해.\n\n"
 
             "(4) 추세 판단 시 캔들 패턴뿐 아니라 보조지표(RSI, MACD, Stoch RSI)의 흐름과 방향성도 함께 고려해.\n"
-            "특히 각 보조지표의 최근 14봉 추세 데이터(rsi_trend, macd_trend, stoch_rsi_trend)도 같이 확인해서\n"
+            f"특히 각 보조지표의 최근 14봉 추세 데이터는 다음과 같아:\n"
+            f"RSI: {rsi_trend}, MACD: {macd_trend}, Stoch RSI: {stoch_rsi_trend}\n"
             "상승/하락 흐름, 속도, 꺾임 여부 등을 함께 분석하라.\n\n"
             
 
