@@ -167,7 +167,7 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
 
     return opportunity_score, reasons
     
-def get_enhanced_support_resistance(candles, price, atr, timeframe, window=20, min_touch_count=1):
+def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window=20, min_touch_count=1):
     # 자동 window 설정 (타임프레임 기반)
     window_map = {'M15': 20, 'M30': 10, 'H1': 6, 'H4': 4}
     window = window_map.get(timeframe, window)
@@ -177,8 +177,10 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, window=20, m
     highs = candles["high"].tail(window).astype(float)
     lows = candles["low"].tail(window).astype(float)
 
-    support_zone = lows[lows < price].round(2).value_counts()
-    resistance_zone = highs[highs > price].round(2).value_counts()
+    pip = pip_value_for(pair)
+    round_digits = int(abs(np.log10(pip)))
+    support_zone = lows[lows < price].round(round_digits).value_counts()
+    resistance_zone = highs[highs > price].round(round_digits).value_counts()
 
     support_candidates = support_zone[support_zone >= min_touch_count]
     resistance_candidates = resistance_zone[resistance_zone >= min_touch_count]
@@ -782,7 +784,7 @@ async def webhook(request: Request):
 
     # ✅ 지지/저항 계산 - timeframe 키 "H1" 로, atr에는 Series 전달
     support, resistance = get_enhanced_support_resistance(
-        candles, price=current_price, atr=atr_series, timeframe="H1"
+        candles, price=current_price, atr=atr_series, timeframe="H1", pair=pair
     )
 
     support_resistance = {"support": support, "resistance": resistance}
