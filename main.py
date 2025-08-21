@@ -865,7 +865,7 @@ async def webhook(request: Request):
         "new_low": bool(high_low_analysis["new_low"]),
         "atr": atr,
         "signal_score": signal_score,
-        "score_components": reasons
+        "score_components": reasons,
         "rsi_trend": rsi_trend,
         "macd_trend": macd_trend,
         "macd_signal_trend": macd_signal_trend,
