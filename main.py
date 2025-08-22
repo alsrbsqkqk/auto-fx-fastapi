@@ -437,8 +437,8 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
         if extreme_buy or extreme_sell or macd_reversal_buy or macd_reversal_sell:
             reasons.append("🔄 추세-패턴 충돌 BUT 강한 역추세 조건 충족 → 진입 허용")
         else:
-        signal_score -= 1
-        reasons.append("⚠️ 추세+패턴 충돌 + 보완 조건 미충족 → 감점")
+            signal_score -= 1
+            reasons.append("⚠️ 추세+패턴 충돌 + 보완 조건 미충족 → 감점")
 
         # === 저항/지지 근접 추격 진입 금지 규칙 ===
     # BUY: 저항 3pip 이내면 금지. 돌파(확정) 없고 10pip 이내도 금지
