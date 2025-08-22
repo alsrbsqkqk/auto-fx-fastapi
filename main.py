@@ -1511,7 +1511,8 @@ def analyze_with_gpt(payload):
         "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
         "Content-Type": "application/json"
     }
-
+    
+    macd_signal = payload.get("macd_signal", None)
     rsi_trend = payload.get("rsi_trend", [])
     macd_trend = payload.get("macd_trend", [])
     stoch_rsi_trend = payload.get("stoch_rsi_trend", [])
