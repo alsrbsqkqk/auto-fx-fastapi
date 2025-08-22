@@ -469,8 +469,8 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
         under2 = (len(last2) > 1 and last2.iloc[-2]['close'] < support - 2 * pip_value_for(pair)) if not last2.empty else False
         confirmed_breakdown = under1 or (under1 and under2)
 
-        if not confirmed_breakdown and dist_to_sup_pips <= 10:
-            reasons.append("⛔ 지지선 이탈 미확인 + 10pip 이내 → 추격 매도 금지")
+        if not confirmed_breakdown and dist_to_sup_pips <= 5:
+            reasons.append("⛔ 지지선 이탈 미확인 + 5pip 이내 → 추격 매도 금지")
             return 0, reasons
 
     # ✅ RSI, MACD, Stoch RSI 모두 중립 + Trend도 NEUTRAL → 횡보장 진입 방어
