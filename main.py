@@ -1507,48 +1507,52 @@ def adjust_tp_sl_for_structure(pair, entry, tp, sl, support, resistance, atr):
     digits = 3 if pair.endswith("JPY") else 5
     return round(tp, digits), round(sl, digits)   
 def analyze_with_gpt(payload):
-    headers = {"Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}", "Content-Type": "application/json"}
+    headers = {
+        "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
+        "Content-Type": "application/json"
+    }
+
+    rsi_trend = payload.get("rsi_trend", [])
+    macd_trend = payload.get("macd_trend", [])
+    stoch_rsi_trend = payload.get("stoch_rsi_trend", [])
+
     messages = [
-        {"role": "system", 
-         "content": (
-            "너는 실전 FX 트레이딩 전략 조력자야.\n"
-            "(1) 아래 JSON 데이터를 기반으로 전략 리포트를 작성해. score_components 리스트는 각각의 전략 요소가 신호 판단에 어떤 기여를 했는지를 설명해.\n"
-            "모든 요소를 종합적으로 분석해서 진입 판단(BUY, SELL, WAIT)과 TP, SL 값을 제시해. 너의 판단이 관망일때는 그냥 wait으로 판단해\n"
-            "판단할 때는 아래 고차원 전략 사고 프레임을 참고해:\n"
-            "- GI = (O × C × P × S) / (A + B): 관찰, 연결, 패턴, 종합을 강화하고 고정관념과 편향은 최소화하라.\n"
-            "- MDA = SUM(Di × Wi × Ii): 시간, 공간, 인과 등 다양한 차원에서 통찰과 영향력을 조합하라.\n"
-            "- IL = (S × E × T) / (L × R): 직관도 논리/경험과 파악하고 직관과 경험 기반 도약도 반영하라.\n\n"
+        {
+            "role": "system",
+            "content": f"""너는 실전 FX 트레이딩 전략 조력자야.
+(1) 아래 JSON 테이블을 기반으로 전략 리포트를 작성해. score_components 리스트는 각각의 전략 요소가 신호 판단에 어떤 기여를 했는지를 설명해.
+- 모든 요소를 종합적으로 분석해서 진입 판단(BUY, SELL, WAIT)과 TP, SL 값을 제시해. 너의 판단이 관망일 때는 그냥 wait으로 판단해.
+- 판단할 때는 아래 고차원 전략 사고 프레임을 참고해.
+- GI = (O × C × P × S) / (A + B): 감정, 연관, 패턴, 종합을 강화하고 고정관념과 편향을 최소화하라.
+- MDA = SUM(Di × Wi × Ii): 시간, 공간, 인과 등 다양한 차원에서 통찰과 영향을 조합하라.
+- IL = (S × E × T) / (L × R): 직관도 논리/경험과 파악하고 직관과 경험 기반 도약도 반영하라.
 
-            "(2) 거래는 기본적으로 1~2시간 내 청산을 목표로 하고, SL과 TP는 ATR의 최소 50% 이상 거리로 설정해. "
-            "최근 5개 캔들의 고점/저점도 참고해서 너가 설정한 TP/SL이 REASONABLE한지 꼭 검토해.\n"
-            "TP와 SL은 현재가에서 각각 8pip 이상 차이나야 하고, TP는 SL보다 넓게 잡아. "
-            "TP:SL 비율은 2:1 이상이면서 최소 10pip 이상 차이 나야 해. 비율은 TP가 2이고 SL이 1이다. BUY일 땐 TP > 진입가, SL < 진입가 / SELL일 땐 TP < 진입가, SL > 진입가를 반드시 지켜.\n\n"
+(2) 거래는 기본적으로 1~2시간 내 청산을 목표로 하고, SL과 TP는 ATR의 최소 50% 이상 거리를 설정해.
+- 최근 5개 캔들의 고점/저점을 참고해서 너가 설정한 TP/SL이 REASONABLE한지 꼭 검토해.
+- TP와 SL은 현재까지의 각각 8pip 이상 차이 나야 하고, TP는 SL보다 넓게 잡아.
+- TP:SL 비율은 2:1 이상이어야 최소 10pip 이상 이익. 비율은 TP가 20이고 SL이 10이면 BUY일 땐 TP > 진입가, SL < 진입가 / SELL일 땐 반대.
 
-            "(3) 지지선(support), 저항선(resistance)은 최근 1시간봉 기준 마지막 6봉의 고점/저점에서 이미 계산되어 JSON에 포함되어 있어. support와 resistance는 주어진 숫자만을 사용하며, 수치를 임의로 변경하지 마십시오. "
-            "이 숫자만 참고하고 그 외 고점/저점은 무시해.\n\n"
+(3) 지지선(support), 저항선(resistance)은 최근 1시간봉 기준 마지막 6봉의 고점/저점에서 이미 계산되어 JSON에 포함되어 있어. support와 resistance를 적극 활용해.
+- 이 숫자만 참고하고 그 외 고점/저점은 무시해.
 
-            "(4) 추세 판단 시 캔들 패턴뿐 아니라 보조지표(RSI, MACD, Stoch RSI)의 흐름과 방향성도 함께 고려해.\n"
-            f"특히 각 보조지표의 최근 14봉 추세 데이터는 다음과 같아:\n"
-            rsi_trend = payload.get("rsi_trend", [])
-            macd_trend = payload.get("macd_trend", [])
-            stoch_rsi_trend = payload.get("stoch_rsi_trend", [])
-            f"RSI: {rsi_trend}, MACD: {macd_trend}, Stoch RSI: {stoch_rsi_trend}\n"
-            "상승/하락 흐름, 속도, 꺾임 여부 등을 함께 분석하라.\n\n"
-            
+(4) 추세 판단 시 캔들 패턴뿐 아니라 보조지표(RSI, MACD, Stoch RSI)의 흐름과 방향성도 함께 고려해.
+- 특히 각 보조지표의 최근 14봉 추세 데이터는 다음과 같아:
+RSI: {rsi_trend}, MACD: {macd_trend}, Stoch RSI: {stoch_rsi_trend}
+- 상승/하락 흐름, 속도, 꺾임 여부 등을 함께 분석하라.
 
-            "(5) 리포트 마지막에는 아래 형식으로 진입판단을 명확하게 작성해:\n"
-            "진입판단: BUY (또는 SELL, WAIT)\n"
-            "TP: 1.08752\n"
-            "SL: 1.08214\n\n"
+(5) 리포트 마지막에는 아래 형식으로 진입판단을 명확하게 작성해:
+"진입판단: BUY (또는 SELL, WAIT)\n"
+"TP: 1.08752\n"
+"SL: 1.08214\n"
 
-            "(6) TP와 SL은 반드시 **단일 수치값만 제시**하고, '약'이나 '~부근' 같은 표현은 절대 쓰지 마. 숫자만 있어야 거래 자동화가 가능해.\n\n"
+(6) TP와 SL은 반드시 **단일 수치만** 제시해야 하고, '~약'이나 '~부근' 같은 표현은 절대 쓰지 마. 숫자만 있어야 거래 자동화가 가능해.
 
-            "(7) 현재가가 저항선에 가까우면 TP는 짧게, 지지선에서 멀다면 SL은 조금 여유롭게 허용해. 하지만 너무 과도하게 넓지 않게 조정해.\n\n"
+(7) 현재가가 저항선에 가까우면 TP는 좁게, 지지선에서 멀다면 SL은 조금 여유롭게 허용해. 하지만 너무 과도하게 넓지 않게 조정해.
 
-            "(8) 피보나치 수렴 또는 확장 여부도 참고하고, 돌파 가능성이 높다면 TP를 약간 확장해도 돼. "
-            "캔들패턴, 신고점/신저점 흐름, 박스권 유지 여부, ATR, 볼린저밴드 폭 등을 종합해서 TP/SL 변동폭을 보수적으로 또는 공격적으로 조정해.\n\n"
+(8) 피보나치 수렴 또는 황금 여부도 참고하고, 틀까 가능성이 높다면 TP를 약간 확정해도 돼.
+- 이동평균선, 시그널선 정렬, 갭 여부, 볼린저 밴드, ATR, 볼린저밴드 폭 등을 종합해서 TP/SL 변동폭을 보수적으로 또는 공격적으로 조정해.
 
-            "나의 최종 목표는 거래당 약 $150 수익을 내는 것이고, 손실은 거래당 $100을 넘지 않도록 설정하는 것이야."
+- 너의 최종 목표는 거래당 약 $150 수익을 내는 것이고, 손실은 거래당 $100을 넘지 않도록 설정하는 것이다."""
          )
         },
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}
