@@ -476,23 +476,26 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     # ✅ RSI, MACD, Stoch RSI 모두 중립 + Trend도 NEUTRAL → 횡보장 진입 방어
     if trend == "NEUTRAL":
         if 45 <= rsi <= 55 and -0.05 < macd < 0.05 and 0.3 < stoch_rsi < 0.7:
-            reasons.append("📉 지표 중립 + 트렌드 NEUTRAL → 횡보장 진입 방지")
-            return 0, reasons
+            signal_score -= 1
+            reasons.append("⚠️ 트렌드 NEUTRAL + 지표 중립 ➜ 신호 약화 (감점)")
   
     # ✅ BUY 과열 진입 방어 (SELL의 대칭 조건)
-    if signal == "BUY" and rsi > 60:
+    if signal1 == "BUY" and rsi > 80:
         if macd < macd_signal and stoch_rsi > 0.85:
-            reasons.append("🛑 과매수 BUY 방어: MACD 하락 전환 + Stoch RSI 과열 → 관망")
-            return 0, reasons
+            signal_score -= 1
+            reasons.append("🔴 과매수 BUY 방어: MACD 하락 + Stoch RSI 과열 ➜ 진입 신호 약화 (감점)")
     
     # ✅ V3 과매도 SELL 방어 필터 추가
-    if signal == "SELL" and rsi < 40:
+    if signal1 == "SELL" and rsi < 40:
         if macd > macd_signal and stoch_rsi > 0.5:
             signal_score += 1
-            reasons.append("❗ 과매도 SELL 경계지만 MACD + Stoch RSI 상승 → 조건부 진입 허용")
+            reasons.append("✅ 과매도 SELL이지만 MACD/스토캐스틱 반등 ➜ 진입 여지 있음 (+1)")
+        elif stoch_rsi > 0.3:
+            signal_score -= 0.5
+            reasons.append("⚠️ 과매도 SELL ➜ 반등 가능성 있음 (경고 감점)")
         else:
-            reasons.append("❗ 과매도 SELL 방어 → 관망 강제 (V3 강화)")
-            return 0, reasons
+            signal_score -= 1
+            reasons.append("❌ 과매도 SELL + 반등 신호 없음 ➜ 진입 위험 (감점)")
         
     if rsi < 30:
         if pattern in ["HAMMER", "BULLISH_ENGULFING"]:
