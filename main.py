@@ -226,7 +226,7 @@ def additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, tre
 
     # RSI 30 이하
     if rsi < 30:
-        score += 1.5
+        score += 2.5
         reasons.append("🔴 RSI 30 이하 (추가 기회 요인)")
 
     # Stoch RSI 극단
@@ -476,17 +476,24 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
             reasons.append("❗ 과매도 SELL 방어 → 관망 강제 (V3 강화)")
             return 0, reasons
         
-    if rsi < 30 and pattern not in ["HAMMER", "BULLISH_ENGULFING"]:
-        if macd < macd_signal and trend == "DOWNTREND":
-            reasons.append("RSI < 30 but MACD & Trend 약세 지속 → 진입 허용")
+    if rsi < 30:
+        if pattern in ["HAMMER", "BULLISH_ENGULFING"]:
+            score += 2
+            reasons.append("🟢 RSI < 30 + 반등 캔들 패턴 → 진입 강화")
+        elif macd < macd_signal and trend == "DOWNTREND":
+            score += 1.0
+            reasons.append("🟠 RSI < 30 but MACD & Trend 약세 지속 → 주의 진입")
         else:
-            return 0, ["RSI < 30 but 반등 조건 미약 → 관망"]
+            score += 0.5
+            reasons.append("⚠️ RSI < 30 but 반등 조건 미약 → 위험 진입")
 
     if rsi > 70 and pattern not in ["SHOOTING_STAR", "BEARISH_ENGULFING"]:
         if macd > macd_signal and trend == "UPTREND":
-            reasons.append("RSI > 70 but MACD & Trend 강세 → 진입 허용")
+            score += 0.5
+            reasons.append("🟢 RSI > 70 이지만 MACD & Trend 강세 → 진입 허용")
         else:
-            return 0, ["RSI > 70 but 캔들/지표 약함 → 관망"]
+            score -= 2.0
+            reasons.append("🔴 RSI > 70 & 캔들/지표 약함 → 관망 권장")
         
     # === 눌림목 BUY 강화: GBPUSD 한정 ===
     if pair == "GBP_USD" and signal == "BUY":
