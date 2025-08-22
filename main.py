@@ -41,11 +41,29 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     if 60 < rsi < 65:
         opportunity_score += 0.5
         reasons.append("🔴 RSI 60~65: 과매수 초기 피로감 (SELL 경계)")
+    # 📌 약한 과매도: 하락 추세 + stoch_rsi < 0.4 + RSI < 40
+    if stoch_rsi < 0.4 and rsi < 40 and trend == "DOWNTREND":
+        opportunity_score += 0.5
+        reasons.append("🟡 Stoch RSI < 0.4 + RSI < 40 + 하락 추세 → 제한적 매수 조건")
+
+    # 📌 약한 과매수: 상승 추세 + stoch_rsi > 0.6 + RSI > 60
+    if stoch_rsi > 0.6 and rsi > 60 and trend == "UPTREND":
+        opportunity_score -= 0.5
+        reasons.append("🟡 Stoch RSI > 0.6 + RSI > 60 + 상승 추세 → 피로감 주의")
     # ✅ NEUTRAL 추세이지만 RSI + MACD가 강한 경우 강제 진입 기회 부여
     if trend == "NEUTRAL" and rsi > 65 and macd > 0.1:
         opportunity_score += 0.75
         reasons.append("📌 추세 중립이나 RSI > 65 & MACD 강세 → 관망보다 진입 우위 가능성 높음")
 
+    # 💡 강세 반전 패턴 + 과매도
+    if pattern in ["HAMMER", "BULLISH_ENGULFING"] and stoch_rsi < 0.2:
+        opportunity_score += 1
+        reasons.append("🟢 강세 패턴 + Stoch RSI 과매도 → 매수 신호 강화")
+
+    # 💡 약세 반전 패턴 + 과매수
+    if pattern in ["SHOOTING_STAR", "BEARISH_ENGULFING"] and stoch_rsi > 0.8:
+        opportunity_score += 1
+        reasons.append("🔴 약세 패턴 + Stoch RSI 과매수 → 매도 신호 강화")
     
     if rsi >= 70:
         if trend == "UPTREND" and macd > macd_signal:
@@ -386,25 +404,25 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
         opportunity_score += 0.5  # ✅ 패턴-추세 일치 시 추가 점수
         reasons.append("✅ 강한 하락추세 + 매도 캔들 패턴 일치 → 보너스 + 기회 점수 강화")
     
-    # ✅ 거래 제한 시간 필터 (애틀랜타 기준)
-    #now_utc = datetime.utcnow()
-    #now_atlanta = now_utc - timedelta(hours=4)
-    # ✅ 전략 시간대: 오전 09~14시 또는 저녁 19~22시
-    #if not ((9 <= now_atlanta.hour <= 14) or (19 <= now_atlanta.hour <= 22)):
-    #    reasons.append("🕒 전략 외 시간대 → 유동성 부족 / 성공률 저하로 관망")
-    #    return 0, reasons
+    ✅ 거래 제한 시간 필터 (애틀랜타 기준)
+    now_utc = datetime.utcnow()
+    now_atlanta = now_utc - timedelta(hours=4)
+    ✅ 전략 시간대: 오전 08~15시 또는 저녁 18~23시
+    if not ((8 <= now_atlanta.hour <= 15) or (18 <= now_atlanta.hour <= 23)):
+        reasons.append("🕒 전략 외 시간대 → 유동성 부족 / 성공률 저하로 관망")
+        return 0, reasons
     
     # --- 저항/지지 근접 금지(동적 임계 적용) ---
     dist_to_res_pips = abs((resistance or price) - price) / pv
     dist_to_sup_pips = abs(price - (support or price)) / pv
 
+    # ✅ 점수 감점 방식으로 변경
     if signal == "BUY" and dist_to_res_pips <= NEAR_PIPS:
-        reasons.append(f"⛔ 저항선 {dist_to_res_pips:.1f} pip 이내(BUY 금지)")
-        return 0, reasons
-
+        signal_score -= 2
+        reasons.append(f"📉 저항까지 {dist_to_res_pips}pip → 거리 너무 가까움 → 감점")
     if signal == "SELL" and dist_to_sup_pips <= NEAR_PIPS:
-        reasons.append(f"⛔ 지지선 {dist_to_sup_pips:.1f} pip 이내(SELL 금지)")
-        return 0, reasons
+        signal_score -= 2
+        reasons.append(f"📉 지지까지 {dist_to_sup_pips}pip → 거리 너무 가까움 → 감점")
         
     conflict_flag = conflict_check(rsi, pattern, trend, signal)
 
@@ -488,12 +506,12 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
             reasons.append("⚠️ RSI < 30 but 반등 조건 미약 → 위험 진입")
 
     if rsi > 70 and pattern not in ["SHOOTING_STAR", "BEARISH_ENGULFING"]:
-        if macd > macd_signal and trend == "UPTREND":
-            score += 0.5
-            reasons.append("🟢 RSI > 70 이지만 MACD & Trend 강세 → 진입 허용")
+        if macd > macd_signal and macd > 0 and trend == "UPTREND":
+            reasons.append("📈 RSI > 70 but MACD 상승 + UPTREND → 진입 허용")
+            signal_score += 1  # 보정 점수
         else:
-            score -= 2.0
-            reasons.append("🔴 RSI > 70 & 캔들/지표 약함 → 관망 권장")
+            signal_score -= 2  # 감점 처리
+            reasons.append("⚠️ RSI > 70 + 약한 패턴 → 진입 위험 → 감점")
         
     # === 눌림목 BUY 강화: GBPUSD 한정 ===
     if pair == "GBP_USD" and signal == "BUY":
