@@ -418,10 +418,10 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
 
     # ✅ 점수 감점 방식으로 변경
     if signal == "BUY" and dist_to_res_pips <= NEAR_PIPS:
-        signal_score -= 2
+        signal_score -= 1
         reasons.append(f"📉 저항까지 {dist_to_res_pips}pip → 거리 너무 가까움 → 감점")
     if signal == "SELL" and dist_to_sup_pips <= NEAR_PIPS:
-        signal_score -= 2
+        signal_score -= 1
         reasons.append(f"📉 지지까지 {dist_to_sup_pips}pip → 거리 너무 가까움 → 감점")
         
     conflict_flag = conflict_check(rsi, pattern, trend, signal)
@@ -444,9 +444,9 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     # BUY: 저항 3pip 이내면 금지. 돌파(확정) 없고 10pip 이내도 금지
     if signal == "BUY":
         dist_to_res_pips = pips_between(price, resistance, pair)
-        if dist_to_res_pips <= 3:
-            reasons.append(f"⛔ 저항선 {dist_to_res_pips:.1f} pip 이내(BUY 금지)")
-            return 0, reasons
+        if dist_to_res_pips < 3:
+            signal_score -= 2
+            reasons.append(f"📉 저항선 {dist_to_res_pips:.1f} pip 이내 → 신중 진입 필요 (감점)")
 
         last2 = candles.tail(2)
         over1 = (last2.iloc[-1]['close'] > resistance + 2 * pip_value_for(pair)) if not last2.empty else False
@@ -460,9 +460,9 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     # SELL: 지지 3pip 이내면 금지. 이탈(확정) 없고 10pip 이내도 금지
     if signal == "SELL":
         dist_to_sup_pips = pips_between(price, support, pair)
-        if dist_to_sup_pips <= 3:
-            reasons.append(f"⛔ 지지선 {dist_to_sup_pips:.1f} pip 이내(SELL 금지)")
-            return 0, reasons
+        if dist_to_sup_pips < 3:
+            signal_score -= 2
+            reasons.append(f"📉 지지선 {dist_to_sup_pips:.1f} pip 이내 → 신중 진입 필요 (감점)")
 
         last2 = candles.tail(2)
         under1 = (last2.iloc[-1]['close'] < support - 2 * pip_value_for(pair)) if not last2.empty else False
