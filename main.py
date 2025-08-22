@@ -829,10 +829,20 @@ async def webhook(request: Request):
     stoch_rsi = stoch_rsi_series.dropna().iloc[-1] if not stoch_rsi_series.dropna().empty else 0
     macd, macd_signal = calculate_macd(close)
     lookback = 14  # 최근 14봉 기준 추세 분석용
-    rsi_trend = list(rsi.iloc[-lookback:].round(2))
-    macd_trend = list(macd.iloc[-lookback:].round(5))
-    macd_signal_trend = list(macd_signal.iloc[-lookback:].round(5))
-    stoch_rsi_trend = list(stoch_rsi_series.dropna().iloc[-lookback:].round(2))
+    # RSI 트렌드
+    rsi_trend = list(rsi.iloc[-lookback:].round(2)) if not rsi.empty else []
+
+    # MACD 트렌드
+    macd_trend = list(macd.iloc[-lookback:].round(5)) if not macd.empty else []
+
+    # MACD 시그널 트렌드
+    macd_signal_trend = list(macd_signal.iloc[-lookback:].round(5)) if not macd_signal.empty else []
+
+    # Stoch RSI 트렌드
+    if not stoch_rsi_series.dropna().empty:
+        stoch_rsi_trend = list(stoch_rsi_series.dropna().iloc[-lookback:].round(2))
+    else:
+        stoch_rsi_trend = []
     
     print(f"✅ STEP 5: 보조지표 계산 완료 | RSI: {rsi.iloc[-1]}")
     boll_up, boll_mid, boll_low = calculate_bollinger_bands(close)
