@@ -404,10 +404,10 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
         opportunity_score += 0.5  # ✅ 패턴-추세 일치 시 추가 점수
         reasons.append("✅ 강한 하락추세 + 매도 캔들 패턴 일치 → 보너스 + 기회 점수 강화")
     
-    ✅ 거래 제한 시간 필터 (애틀랜타 기준)
+    #✅ 거래 제한 시간 필터 (애틀랜타 기준)
     now_utc = datetime.utcnow()
     now_atlanta = now_utc - timedelta(hours=4)
-    ✅ 전략 시간대: 오전 08~15시 또는 저녁 18~23시
+    #✅ 전략 시간대: 오전 08~15시 또는 저녁 18~23시
     if not ((8 <= now_atlanta.hour <= 15) or (18 <= now_atlanta.hour <= 23)):
         reasons.append("🕒 전략 외 시간대 → 유동성 부족 / 성공률 저하로 관망")
         return 0, reasons
