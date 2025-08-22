@@ -516,23 +516,29 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
             signal_score -= 2  # 감점 처리
             reasons.append("⚠️ RSI > 70 + 약한 패턴 → 진입 위험 → 감점")
         
-    # === 눌림목 BUY 강화: GBPUSD 한정 ===
-    if pair == "GBP_USD" and signal == "BUY":
+    # === 눌림목 BUY 강화: 3종 페어 공통 (EURUSD / GBPUSD / USDJPY) ===
+    BOOST_BUY_PAIRS = {"EUR_USD", "GBP_USD", "USD_JPY"}  # 필요 시 여기에 추가/삭제
+
+    if pair in BOOST_BUY_PAIRS and signal == "BUY":
         if trend == "UPTREND":
             signal_score += 1
-            reasons.append("GBPUSD 강화: UPTREND 유지 → 매수 기대")
+            reasons.append(f"{pair} 강화: UPTREND 유지 → 매수 기대")
+
         if 40 <= rsi <= 50:
             signal_score += 1
-            reasons.append("GBPUSD 강화: RSI 40~50 눌림목 영역")
+            reasons.append(f"{pair} 강화: RSI 40~50 눌림목 영역")
+
         if 0.1 <= stoch_rsi <= 0.3:
             signal_score += 1
-            reasons.append("GBPUSD 강화: Stoch RSI 바닥 반등 초기")
+            reasons.append(f"{pair} 강화: Stoch RSI 바닥 반등 초기")
+
         if pattern in ["HAMMER", "LONG_BODY_BULL"]:
             signal_score += 1
-            reasons.append("GBPUSD 강화: 매수 캔들 패턴 확인")
+            reasons.append(f"{pair} 강화: 매수 캔들 패턴 확인")
+
         if macd > 0:
             signal_score += 1
-            reasons.append("GBPUSD 강화: MACD 양수 유지 (상승 흐름 유지)")
+            reasons.append(f"{pair} 강화: MACD 양수 유지 (상승 흐름 유지)")
 
     # === 눌림목 BUY 조건 점수 가산 (모든 페어 공통) ===
     if signal == "BUY" and trend == "UPTREND":
