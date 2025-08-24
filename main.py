@@ -482,7 +482,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     # ✅ BUY 과열 진입 방어 (SELL의 대칭 조건)
     if signal == "BUY" and rsi > 80:
         if macd < macd_signal and stoch_rsi > 0.85:
-            signal_score -= 1
+            signal_score -= 2.5
             reasons.append("🔴 과매수 BUY 방어: MACD 하락 + Stoch RSI 과열 ➜ 진입 신호 약화 (감점)")
     
     # ✅ V3 과매도 SELL 방어 필터 추가
@@ -491,10 +491,10 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
             signal_score += 1
             reasons.append("✅ 과매도 SELL이지만 MACD/스토캐스틱 반등 ➜ 진입 여지 있음 (+1)")
         elif stoch_rsi > 0.3:
-            signal_score -= 0.5
+            signal_score -= 2.5
             reasons.append("⚠️ 과매도 SELL ➜ 반등 가능성 있음 (경고 감점)")
         else:
-            signal_score -= 1
+            signal_score -= 2.5
             reasons.append("❌ 과매도 SELL + 반등 신호 없음 ➜ 진입 위험 (감점)")
         
     if rsi < 30:
@@ -624,7 +624,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
 
 
     if stoch_rsi == 0.0:
-        signal_score += 1
+        signal_score += 2
         reasons.append("🟢 Stoch RSI 0.0 → 극단적 과매도 → 반등 기대")
    
     if stoch_rsi == 1.0:
