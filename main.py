@@ -197,8 +197,8 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window
 
     pip = pip_value_for(pair)
     round_digits = int(abs(np.log10(pip)))
-    support_zone = lows[lows < price].round(round_digits).value_counts()
-    resistance_zone = highs[highs > price].round(round_digits).value_counts()
+    support_price = float(support_rows["low"].iloc[-1]) if not support_rows.empty else float(lows.min())
+    resistance_price = float(resistance_rows["high"].iloc[-1]) if not resistance_rows.empty else float(highs.max())
 
     support_candidates = support_zone[support_zone >= min_touch_count]
     resistance_candidates = resistance_zone[resistance_zone >= min_touch_count]
@@ -496,17 +496,20 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
         else:
             signal_score -= 2.5
             reasons.append("❌ 과매도 SELL + 반등 신호 없음 ➜ 진입 위험 (감점)")
-        
+
+    if stoch_rsi < 0.1 and pattern is None:
+        score -= 1
+        reasons.append("🔴 Stoch RSI 과매도 + 반등 패턴 없음 → 바닥 반등 기대 낮음 (감점)")
     if rsi < 30:
         if pattern in ["HAMMER", "BULLISH_ENGULFING"]:
             score += 2
             reasons.append("🟢 RSI < 30 + 반등 캔들 패턴 → 진입 강화")
         elif macd < macd_signal and trend == "DOWNTREND":
-            score += 1.0
-            reasons.append("🟠 RSI < 30 but MACD & Trend 약세 지속 → 주의 진입")
+            score -= 1.5
+            reasons.append("🔴 RSI < 30 but MACD & Trend 약세 지속 → 반등 기대 낮음 → 감점")
         else:
-            score += 0.5
-            reasons.append("⚠️ RSI < 30 but 반등 조건 미약 → 위험 진입")
+            score -= 2
+            reasons.append("❌ RSI < 30 but 반등 조건 없음 → 진입 위험 → 감점")
 
     if rsi > 70 and pattern not in ["SHOOTING_STAR", "BEARISH_ENGULFING"]:
         if macd > macd_signal and macd > 0 and trend == "UPTREND":
