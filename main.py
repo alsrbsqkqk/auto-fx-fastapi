@@ -197,8 +197,17 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window
 
     pip = pip_value_for(pair)
     round_digits = int(abs(np.log10(pip)))
-    support_price = float(support_rows["low"].iloc[-1]) if not support_rows.empty else float(lows.min())
-    resistance_price = float(resistance_rows["high"].iloc[-1]) if not resistance_rows.empty else float(highs.max())
+    # 초기화 (UnboundLocalError 방지)
+    support_rows = pd.DataFrame(columns=candles.columns)
+    resistance_rows = pd.DataFrame(columns=candles.columns)
+
+# 존 계산 (pip 자리수로 반올림 후 터치 카운트)
+support_zone = lows.round(round_digits).value_counts()
+resistance_zone = highs.round(round_digits).value_counts()
+
+# 기본값
+support_price = float(lows.min())
+resistance_price = float(highs.max())
 
     support_candidates = support_zone[support_zone >= min_touch_count]
     resistance_candidates = resistance_zone[resistance_zone >= min_touch_count]
@@ -206,7 +215,7 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window
     # Support
     if not support_candidates.empty:
         support_value = support_candidates.idxmax()
-        support_rows = candles[candles["low"].round(2) == support_value]
+        support_rows = candles[candles["low"].round(round_digits) == support_value]
         if not support_rows.empty:
             support_price = float(support_rows["low"].iloc[-1])
         else:
@@ -216,8 +225,8 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window
 
     # Resistance
     if not resistance_candidates.empty:
-        resistance_value = resistance_candidates.index.min()
-        resistance_rows = candles[candles["high"].round(2) == resistance_value]
+        resistance_value = resistance_candidates.idxmax()
+        resistance_rows = candles[candles["high"].round(round_digits) == resistance_value]
         if not resistance_rows.empty:
             resistance_price = float(resistance_rows["high"].iloc[0])
         else:
@@ -227,7 +236,8 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window
 
     # Ensure all are floats
     price = float(price)
-    min_distance = max(0.0005, float(atr.iloc[-1]) * 0.8)
+    last_atr = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr)
+    min_distance = max(5 * pip, last_atr * 0.8)
 
     if price - support_price < min_distance:
         support_price = price - min_distance
