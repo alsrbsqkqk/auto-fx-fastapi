@@ -201,13 +201,13 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window
     support_rows = pd.DataFrame(columns=candles.columns)
     resistance_rows = pd.DataFrame(columns=candles.columns)
 
-# 존 계산 (pip 자리수로 반올림 후 터치 카운트)
-support_zone = lows.round(round_digits).value_counts()
-resistance_zone = highs.round(round_digits).value_counts()
+    # 존 계산 (pip 자리수로 반올림 후 터치 카운트)
+    support_zone = lows.round(round_digits).value_counts()
+    resistance_zone = highs.round(round_digits).value_counts()
 
-# 기본값
-support_price = float(lows.min())
-resistance_price = float(highs.max())
+    # 기본값
+    support_price = float(lows.min())
+    resistance_price = float(highs.max())
 
     support_candidates = support_zone[support_zone >= min_touch_count]
     resistance_candidates = resistance_zone[resistance_zone >= min_touch_count]
