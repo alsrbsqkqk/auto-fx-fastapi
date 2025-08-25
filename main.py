@@ -441,14 +441,16 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     digits = int(abs(np.log10(pip_value_for(pair))))   # EURUSD=4, JPY계열=2
     pv = pip_value_for(pair)
 
-    # 최종 S/R 확정 (반드시 함수 결과 사용)
-    sup = round(support_resistance["support"], digits)
-    res = round(support_resistance["resistance"], digits)
+    # 인자로 받은 값을 원시값으로 잡고, 표시는 반올림
+    sup_raw = float(support)
+    res_raw = float(resistance)
 
-    # 이 sup/res로만 거리 계산
-    dist_to_res_pips = abs(res - price) / pv
-    dist_to_sup_pips = abs(price - sup) / pv
-    # ▲▲▲ 여기까지 ▲▲▲
+    sup = round(sup_raw, digits)
+    res = round(res_raw, digits)
+
+    # 거리는 반올림 전 원시값으로 계산(정확도 ↑)
+    dist_to_res_pips = abs(res_raw - price) / pv
+    dist_to_sup_pips = abs(price - sup_raw) / pv
     
 
     # ✅ 점수 감점 방식으로 변경
