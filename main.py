@@ -211,7 +211,7 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window
     price_rounded = round(price, round_digits)
 
     last_atr = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr)
-    1min_distance = max(5 * pip, 0.8 * last_atr)
+    min_distance = max(5 * pip, 0.8 * last_atr)
 
     support_candidates = support_zone[support_zone >= min_touch_count]
     resistance_candidates = resistance_zone[resistance_zone >= min_touch_count]
