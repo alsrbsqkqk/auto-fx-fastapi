@@ -206,42 +206,51 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window
     resistance_zone = highs.round(round_digits).value_counts()
 
     # 기본값
-    support_price = float(lows.min())
-    resistance_price = float(highs.max())
+    price = float(price)
+    price_rounded = round(price, round_digits)
 
     support_candidates = support_zone[support_zone >= min_touch_count]
     resistance_candidates = resistance_zone[resistance_zone >= min_touch_count]
 
-    # Support
+    # Support (현재가 이하 중 가장 가까운 레벨)
     if not support_candidates.empty:
-        support_value = support_candidates.idxmax()
+        near_support = support_candidates[support_candidates.index <= price_rounded]
+        if not near_support.empty:
+            support_value = near_support.index.max()      # 현재가 바로 아래
+        else:
+            support_value = support_candidates.index.max() # 후보가 전부 위쪽일 때 대비
         support_rows = candles[candles["low"].round(round_digits) == support_value]
         if not support_rows.empty:
-            support_price = float(support_rows["low"].iloc[-1])
-        else:
-            support_price = float(lows.min())
+            support_price = float(support_rows["low"].min())  # 보수적으로 최저가
     else:
         support_price = float(lows.min())
 
-    # Resistance
+    # Resistance (현재가 이상 중 가장 가까운 레벨)
     if not resistance_candidates.empty:
-        resistance_value = resistance_candidates.idxmax()
+        near_resist = resistance_candidates[resistance_candidates.index >= price_rounded]
+        if not near_resist.empty:
+            resistance_value = near_resist.index.min()      # 현재가 바로 위
+        else:
+            resistance_value = resistance_candidates.index.min()
         resistance_rows = candles[candles["high"].round(round_digits) == resistance_value]
         if not resistance_rows.empty:
-            resistance_price = float(resistance_rows["high"].iloc[-1])
-        else:
-            resistance_price = float(highs.max())
+            resistance_price = float(resistance_rows["high"].max())  # 보수적으로 최고가
     else:
         resistance_price = float(highs.max())
 
-    # Ensure all are floats
-    price = float(price)
+    # === 최소 거리 / 방향 보정 ===
     last_atr = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr)
-    min_distance = max(5 * pip, last_atr * 0.8)
+    min_distance = max(5 * pip, 0.8 * last_atr)   # 모든 통화쌍 공통 규칙
 
     if price - support_price < min_distance:
         support_price = price - min_distance
     if resistance_price - price < min_distance:
+        resistance_price = price + min_distance
+
+    # 방향 역전 방지 (혹시라도)
+    if support_price >= price:
+        support_price = price - min_distance
+    if resistance_price <= price:
         resistance_price = price + min_distance
 
     return round(support_price, 5), round(resistance_price, 5)
