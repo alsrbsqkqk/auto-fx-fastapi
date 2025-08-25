@@ -256,6 +256,10 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window
     if resistance_price <= price:
         resistance_price = price + min_distance
 
+    # --- 최종 산티티 클램프: 둘 다 가격과 같은 쪽이거나, 간격이 너무 좁으면 강제 재설정 ---
+    if (support_price >= price) or (resistance_price <= price) or ((resistance_price - support_price) < 2 * min_distance):
+        support_price    = round(price - min_distance, round_digits)
+        resistance_price = round(price + min_distance, round_digits)
     return round(support_price, round_digits), round(resistance_price, round_digits)
 
 
