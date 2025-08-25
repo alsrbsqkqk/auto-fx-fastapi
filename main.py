@@ -932,7 +932,7 @@ async def webhook(request: Request):
         pip_size
     )
 
-    
+    price_digits = int(abs(np.log10(pip_value_for(pair))))  # EURUSD=4, JPY계열=2
     # 📦 Payload 구성
     payload = {
         "pair": pair,
