@@ -437,10 +437,19 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     if not ((8 <= now_atlanta.hour <= 15) or (18 <= now_atlanta.hour <= 23)):
         reasons.append("🕒 전략 외 시간대 → 유동성 부족 / 성공률 저하로 관망")
         return 0, reasons
+    # ▼▼▼ 여기에 붙여넣기 ▼▼▼
+    digits = int(abs(np.log10(pip_value_for(pair))))   # EURUSD=4, JPY계열=2
+    pv = pip_value_for(pair)
+
+    # 최종 S/R 확정 (반드시 함수 결과 사용)
+    sup = round(support_resistance["support"], digits)
+    res = round(support_resistance["resistance"], digits)
+
+    # 이 sup/res로만 거리 계산
+    dist_to_res_pips = abs(res - price) / pv
+    dist_to_sup_pips = abs(price - sup) / pv
+    # ▲▲▲ 여기까지 ▲▲▲
     
-    # --- 저항/지지 근접 금지(동적 임계 적용) ---
-    dist_to_res_pips = abs((resistance or price) - price) / pv
-    dist_to_sup_pips = abs(price - (support or price)) / pv
 
     # ✅ 점수 감점 방식으로 변경
     digits_pip = 1 if pair.endswith("JPY") else 2
@@ -921,8 +930,6 @@ async def webhook(request: Request):
         pip_size
     )
 
-    # 딕셔너리 만들기 전에 한 줄로 정의 (함수의 round_digits와 맞추는 게 가장 안전)
-    price_digits = int(abs(np.log10(pip_value_for(pair))))   # EURUSD=4, JPY계열=2
     
     # 📦 Payload 구성
     payload = {
