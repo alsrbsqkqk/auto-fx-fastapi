@@ -443,12 +443,14 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     dist_to_sup_pips = abs(price - (support or price)) / pv
 
     # ✅ 점수 감점 방식으로 변경
+    digits_pip = 1 if pair.endswith("JPY") else 2
     if signal == "BUY" and dist_to_res_pips <= NEAR_PIPS:
         signal_score -= 1
-        reasons.append(f"📉 저항까지 {dist_to_res_pips}pip → 거리 너무 가까움 → 감점")
+        reasons.append(f"📉 저항까지 {dist_to_res_pips:.{digits_pip}f} pip → 거리 너무 가까움 → 감점")
+        
     if signal == "SELL" and dist_to_sup_pips <= NEAR_PIPS:
         signal_score -= 1
-        reasons.append(f"📉 지지까지 {dist_to_sup_pips}pip → 거리 너무 가까움 → 감점")
+        reasons.append(f"📉 지지까지 {dist_to_sup_pips:.{digits_pip}f} pip → 거리 너무 가까움 → 감점")
         
     conflict_flag = conflict_check(rsi, pattern, trend, signal)
 
@@ -837,7 +839,7 @@ async def webhook(request: Request):
     if candles is not None and not candles.empty and len(candles) >= 2:
         print("🧪 candles.iloc[-1]:", candles.iloc[-1])
         print("📌 columns:", candles.columns)
-        current_price = candles.iloc[-2]['close']
+        current_price = candles.iloc[-1]['close']
     else:
         current_price = None
 
@@ -849,7 +851,7 @@ async def webhook(request: Request):
 
     # ✅ 지지/저항 계산 - timeframe 키 "H1" 로, atr에는 Series 전달
     support, resistance = get_enhanced_support_resistance(
-        candles, price=current_price, atr=atr_series, timeframe="H1", pair=pair
+        candles, price=current_price, atr=atr_series, timeframe="M30", pair=pair
     )
 
     support_resistance = {"support": support, "resistance": resistance}
@@ -896,7 +898,7 @@ async def webhook(request: Request):
     atr = float(atr_series.iloc[-1])
     fibo_levels = calculate_fibonacci_levels(candles["high"].max(), candles["low"].min())
     # 📌 현재가 계산
-    price = candles["close"].iloc[-1]
+    price = current_price
     signal_score, reasons = score_signal_with_filters(
         rsi.iloc[-1],
         macd.iloc[-1],
@@ -919,6 +921,9 @@ async def webhook(request: Request):
         pip_size
     )
 
+    # 딕셔너리 만들기 전에 한 줄로 정의 (함수의 round_digits와 맞추는 게 가장 안전)
+    price_digits = int(abs(np.log10(pip_value_for(pair))))   # EURUSD=4, JPY계열=2
+    
     # 📦 Payload 구성
     payload = {
         "pair": pair,
@@ -932,9 +937,9 @@ async def webhook(request: Request):
         "bollinger_lower": boll_low.iloc[-1],
         "pattern": pattern,
         "trend": trend,
-        "liquidity": liquidity,
-        "support": support_resistance["support"],
-        "resistance": support_resistance["resistance"],
+        "liquidity": liquidity,   
+        "support": round(support_resistance["support"], price_digits),
+        "resistance": round(support_resistance["resistance"], price_digits),
         "news": f"{news} | {news_msg}",
         "new_high": bool(high_low_analysis["new_high"]),
         "new_low": bool(high_low_analysis["new_low"]),
@@ -949,11 +954,7 @@ async def webhook(request: Request):
 
 
 
-    signal_score, reasons = score_signal_with_filters(
-    rsi.iloc[-1], macd.iloc[-1], macd_signal.iloc[-1], stoch_rsi,
-    trend, signal, liquidity, pattern, pair, candles, atr, price, boll_up.iloc[-1], boll_low.iloc[-1], support, resistance, support_distance, resistance_distance, pip_size
-    )
-    
+
     # 🎯 뉴스 리스크 점수 추가 반영
     signal_score += news_score
     reasons.append(f"📰 뉴스 리스크: {news_msg} (점수 {news_score})")
