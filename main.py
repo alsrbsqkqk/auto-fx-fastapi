@@ -1,4 +1,4 @@
-    # ⚠️ V2 업그레이드된 자동 트레이딩 스크립트 (학습 강화, 트렌드 보강, 시트 시간 보정 포함)
+        # ⚠️ V2 업그레이드된 자동 트레이딩 스크립트 (학습 강화, 트렌드 보강, 시트 시간 보정 포함)
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 import os
@@ -492,11 +492,19 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     # SELL: 과매도 + 지지선 근접 → 동적 감점 (차단 X)
     if signal == "SELL" and 0 <= sup_gap < near_span:
         closeness = max(0.0, min(1.0, 1.0 - (sup_gap / near_span)))
-        penalty = 1.0 + 2.0 * closeness
-        if rsi_val <= 20:
+        penalty = 1.0 + 3.0 * (closeness ** 1.2)
+        if rsi_val <= 15:
+            penalty += 1.5
+        elif rsi_val <= 20:
             penalty += 1.0
-        if stoch_last <= 0.10:
+
+        if stoch_last <= 0.05:
+            penalty += 1.0
+        elif stoch_last <= 0.10:
             penalty += 0.5
+        # 하단 볼린저 터치/하회 시 추가 감점 (함수 인자로 boll_low 가 들어오는 구조니까 그대로 사용)
+        if price <= boll_low:
+            penalty += 1.0
 
         # ⬇️ 이 두 줄을 if 안으로 들여쓰기 (closeness와 같은 레벨)
         signal_score -= penalty
@@ -508,11 +516,19 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     # BUY: 과매수 + 저항선 근접 → 동적 감점 (차단 X)
     if signal == "BUY" and 0 <= res_gap < near_span:
         closeness = max(0.0, min(1.0, 1.0 - (res_gap / near_span)))
-        penalty = 1.0 + 2.0 * closeness
-        if rsi_val >= 80:
+        penalty = 1.0 + 3.0 * (closeness ** 1.2)
+        if rsi_val >= 85:
+            penalty += 1.5
+        elif rsi_val >= 80:
             penalty += 1.0
-        if stoch_last >= 0.90:
+
+        if stoch_last >= 0.95:
+            penalty += 1.0
+        elif stoch_last >= 0.90:
             penalty += 0.5
+
+        if price >= boll_up:
+            penalty += 1.0
 
         signal_score -= penalty
         reasons.append(
