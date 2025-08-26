@@ -1,4 +1,4 @@
-        # ⚠️ V2 업그레이드된 자동 트레이딩 스크립트 (학습 강화, 트렌드 보강, 시트 시간 보정 포함)
+    # ⚠️ V2 업그레이드된 자동 트레이딩 스크립트 (학습 강화, 트렌드 보강, 시트 시간 보정 포함)
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 import os
@@ -11,14 +11,6 @@ import numpy as np
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-def last_closed(x):
-    """Series면 직전 닫힌 봉(-2), 숫자면 그대로를 안전하게 반환"""
-    try:
-        if hasattr(x, "iloc") and len(x) >= 2:
-            return float(x.iloc[-2])
-        return float(x.iloc[-1]) if hasattr(x, "iloc") else float(x)
-    except Exception:
-        return float(x) if isinstance(x, (int, float)) else 0.0
 
 # score_signal_with_filters 위쪽에 추가
 def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles, trend, atr, price, bollinger_upper, bollinger_lower, support, resistance, support_distance, resistance_distance, pip_size):
@@ -427,15 +419,6 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
 
     signal_score += score + extra_score
     reasons.extend(base_reasons + extra_reasons)
-
-    # 👉 Stoch RSI 극단값 방향 보정(진입 차단 X, 감점만)
-    if signal == "SELL" and stoch_rsi <= 0.05:
-        signal_score -= 3.0
-        reasons.append("🔻 보정: SELL + StochRSI 바닥(≤0.05) → 반등 리스크 (−3)")
-    elif signal == "BUY" and stoch_rsi >= 0.95:
-        signal_score -= 3.0
-        reasons.append("🔻 보정: BUY + StochRSI 천장(≥0.95) → 반락 리스크 (−3)")    
-        
     # ✅ 캔들 패턴과 추세 강한 일치 시 보너스 점수 부여
     if signal == "BUY" and trend == "UPTREND" and pattern in ["BULLISH_ENGULFING", "HAMMER", "PIERCING_LINE"]:
         signal_score += 1
@@ -479,78 +462,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     if signal == "SELL" and dist_to_sup_pips <= NEAR_PIPS:
         signal_score -= 1
         reasons.append(f"📉 지지까지 {dist_to_sup_pips:.{digits_pip}f} pip → 거리 너무 가까움 → 감점")
-
-    # === ③ 과매도/과매수 + 구조 근접 필터 (ATR 0.3배) ===
-    import math  # 파일 상단에 이미 있으면 중복 import 무시됨
-
-    # === 값 꺼내기 (Series/숫자 모두 안전) ===
-    rsi_val   = last_closed(rsi)
-    atr_val   = last_closed(atr)
-    stoch_last = last_closed(stoch_rsi)
-    boll_low  = last_closed(bollinger_lower)   # ← 추가
-    boll_up   = last_closed(bollinger_upper)   # ← 추가
-    price     = float(price)                   # 혹시 모를 Series 대비
-    # === 0.7×ATR 또는 최소 8pip(JPY는 0.08) 중 더 큰 값 ===
-    near_span  = max((0.8 if pair.endswith("JPY") else 0.7) * atr_val, 8 * pv)   # 깔끔
-    fmt_digits = 3 if pair.endswith("JPY") else 5
-
-    base = 0.7 * atr_val if math.isfinite(atr_val) else 0.0
-
-    try:
-        stoch_last = float(stoch_rsi.iloc[-1]) if hasattr(stoch_rsi, "iloc") else float(stoch_rsi)
-    except Exception:
-        stoch_last = 0.5  # 예비값: 중립
-
-    # 지지/저항까지 '가격' 거리 (양수일 때만 근접으로 본다)
-    sup_gap = (price - float(sup_raw)) if math.isfinite(float(sup_raw)) else float("inf")
-    res_gap = (float(res_raw) - price) if math.isfinite(float(res_raw)) else float("inf")
-    
-    # SELL: 과매도 + 지지선 근접 → 동적 감점 (차단 X)
-    if signal == "SELL" and 0 <= sup_gap < near_span:
-        closeness = max(0.0, min(1.0, 1.0 - (sup_gap / near_span)))
-        penalty = 1.0 + 3.0 * (closeness ** 1.2)
-        if rsi_val <= 15:
-            penalty += 1.5
-        elif rsi_val <= 20:
-            penalty += 1.0
-
-        if stoch_last <= 0.05:
-            penalty += 1.0
-        elif stoch_last <= 0.10:
-            penalty += 0.5
-        # 하단 볼린저 터치/하회 시 추가 감점 (함수 인자로 boll_low 가 들어오는 구조니까 그대로 사용)
-        if price <= boll_low:
-            penalty += 1.0
-
-        # ⬇️ 이 두 줄을 if 안으로 들여쓰기 (closeness와 같은 레벨)
-        signal_score -= penalty
-        reasons.append(
-            f"⚠️ 지지선 근접 {sup_gap/pv:.{fmt_digits}f} pip "
-            f"(임계 {near_span/pv:.{fmt_digits}f} pip) + 과매도 보정 → {penalty:.1f}점 감점"
-        )
-
-    # BUY: 과매수 + 저항선 근접 → 동적 감점 (차단 X)
-    if signal == "BUY" and 0 <= res_gap < near_span:
-        closeness = max(0.0, min(1.0, 1.0 - (res_gap / near_span)))
-        penalty = 1.0 + 3.0 * (closeness ** 1.2)
-        if rsi_val >= 85:
-            penalty += 1.5
-        elif rsi_val >= 80:
-            penalty += 1.0
-
-        if stoch_last >= 0.95:
-            penalty += 1.0
-        elif stoch_last >= 0.90:
-            penalty += 0.5
-
-        if price >= boll_up:
-            penalty += 1.0
-
-        signal_score -= penalty
-        reasons.append(
-            f"⚠️ 저항선 근접 {res_gap/pv:.{fmt_digits}f} pip "
-            f"(임계 {near_span/pv:.{fmt_digits}f} pip) + 과매수 보정 → {penalty:.1f}점 감점"
-        )
+        
     conflict_flag = conflict_check(rsi, pattern, trend, signal)
 
     # 보완 조건 정의: 극단적 RSI + Stoch RSI or MACD 반전 조짐
@@ -561,22 +473,11 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
 
     # 완화된 조건: 강력한 역추세 진입 근거가 있을 경우 관망 무시
     if conflict_flag:
-        conflict_penalty = 1.0   # 기본 감점
-        # 강한 역추세 근거가 있으면 감점 일부 완화
-        if macd_reversal_buy or macd_reversal_sell:
-            conflict_penalty -= 1.0
-        if extreme_buy or extreme_sell:
-            conflict_penalty -= 0.5
-
-        # 최소/최대 범위 고정(너무 과소/과대 방지)
-        conflict_penalty = min(1.5, max(0.2, conflict_penalty))
-
-        signal_score -= conflict_penalty
-        reasons.append(f"↔️ 추세·패턴 충돌 보정 → {conflict_penalty:.1f}점 감점")
-    else:
-        # 추세 일치 보너스는 작게(신호 쏠림 방지)
-        signal_score += 0.2
-        reasons.append("✅ 추세 일치 +0.2")
+        if extreme_buy or extreme_sell or macd_reversal_buy or macd_reversal_sell:
+            reasons.append("🔄 추세-패턴 충돌 BUT 강한 역추세 조건 충족 → 진입 허용")
+        else:
+            signal_score -= 1
+            reasons.append("⚠️ 추세+패턴 충돌 + 보완 조건 미충족 → 감점")
 
         # === 저항/지지 근접 추격 진입 금지 규칙 ===
     # BUY: 저항 3pip 이내면 금지. 돌파(확정) 없고 10pip 이내도 금지
@@ -699,19 +600,11 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
         reasons.append("RSI 중립구간 (45~60) → 반등 기대 가점")
 
     if price >= bollinger_upper:
-            if signal == "BUY":
-                signal_score -= 1
-                reasons.append("🔴 상단 밴드 근처의 BUY → 과매수 감점")
-            else:  # SELL
-                signal_score += 0.5
-                reasons.append("🟢 상단 밴드 근처의 SELL → 유리(+0.5)")
-        if price <= boll_low:
-            if signal == "SELL":
-                signal_score -= 1
-                reasons.append("🔴 하단 밴드 근처의 SELL → 반등 리스크 감점")
-    else:  # BUY
-        signal_score += 0.5
-        reasons.append("🟢 하단 밴드 근처의 BUY → 유리(+0.5)")
+        signal_score -= 1
+        reasons.append("🔴 가격이 볼린저밴드 상단 돌파 ➔ 과매수 경계")
+    elif price <= bollinger_lower:
+        signal_score += 1
+        reasons.append("🟢 가격이 볼린저밴드 하단 터치 ➔ 반등 가능성↑")
 
     if pattern in ["LONG_BODY_BULL", "LONG_BODY_BEAR"]:
         signal_score += 2
