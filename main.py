@@ -491,33 +491,34 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     
     # SELL: 과매도 + 지지선 근접 → 동적 감점 (차단 X)
     if signal == "SELL" and 0 <= sup_gap < near_span:
-        # 0~1 (1에 가까울수록 더 가깝다)
         closeness = max(0.0, min(1.0, 1.0 - (sup_gap / near_span)))
-        penalty = 1.0 + 2.0 * closeness        # 기본 1점 + 최대 2점 → 최대 3점 감점
-        if rsi_val <= 20:                      # RSI 극단 보정
+        penalty = 1.0 + 2.0 * closeness
+        if rsi_val <= 20:
             penalty += 1.0
-        if stoch_last < 0.10:                  # StochRSI 극단 보정
+        if stoch_last <= 0.10:
             penalty += 0.5
 
+        # ⬇️ 이 두 줄을 if 안으로 들여쓰기 (closeness와 같은 레벨)
         signal_score -= penalty
         reasons.append(
-            f"⚠️ 지지선 근접 {sup_gap:.{fmt_digits}f} pip (임계 {near_span/pv:.{fmt_digits}f} pip) + 과매도 보정 → {penalty:.1f}점 감점"
+            f"⚠️ 지지선 근접 {sup_gap/pv:.{fmt_digits}f} pip "
+            f"(임계 {near_span/pv:.{fmt_digits}f} pip) + 과매도 보정 → {penalty:.1f}점 감점"
         )
 
     # BUY: 과매수 + 저항선 근접 → 동적 감점 (차단 X)
     if signal == "BUY" and 0 <= res_gap < near_span:
         closeness = max(0.0, min(1.0, 1.0 - (res_gap / near_span)))
         penalty = 1.0 + 2.0 * closeness
-        if rsi_val >= 80:                      # RSI 극단 보정
+        if rsi_val >= 80:
             penalty += 1.0
-        if stoch_last > 0.90:                  # StochRSI 극단 보정
+        if stoch_last >= 0.90:
             penalty += 0.5
 
-    signal_score -= penalty
-    reasons.append(
-        f"⚠️ 저항선 근접 {res_gap:.{fmt_digits}f} pip (임계 {near_span/pv:.{fmt_digits}f} pip) + 과매수 보정 → {penalty:.1f}점 감점"
-    )
-        
+        signal_score -= penalty
+        reasons.append(
+            f"⚠️ 저항선 근접 {res_gap/pv:.{fmt_digits}f} pip "
+            f"(임계 {near_span/pv:.{fmt_digits}f} pip) + 과매수 보정 → {penalty:.1f}점 감점"
+        )
     conflict_flag = conflict_check(rsi, pattern, trend, signal)
 
     # 보완 조건 정의: 극단적 RSI + Stoch RSI or MACD 반전 조짐
