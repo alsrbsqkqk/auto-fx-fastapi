@@ -469,24 +469,54 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     # 값 꺼내기 (Series/숫자 모두 안전)
     rsi_val = float(rsi.iloc[-1]) if hasattr(rsi, "iloc") else float(rsi)
     atr_val = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr)
+    try:
+        stoch_last = float(stoch_rsi.iloc[-1]) if hasattr(stoch_rsi, "iloc") else float(stoch_rsi)
+    except Exception:
+        stoch_last = 0.5  # 예비값 (중립)
+    
 
-    # 0.3×ATR: 가격 단위(피프 아님)
-    near_span = 0.3 * atr_val
+   
+    base = 0.7 * atr_val if math.isfinite(atr_val) else 0.0
+    near_span = max(base, 8 * pv)
     fmt_digits = 3 if pair.endswith("JPY") else 5
+
+    try:
+        stoch_last = float(stoch_rsi.iloc[-1]) if hasattr(stoch_rsi, "iloc") else float(stoch_rsi)
+    except Exception:
+        stoch_last = 0.5  # 예비값: 중립
 
     # 지지/저항까지 '가격' 거리 (양수일 때만 근접으로 본다)
     sup_gap = (price - float(sup_raw)) if math.isfinite(float(sup_raw)) else float("inf")
     res_gap = (float(res_raw) - price) if math.isfinite(float(res_raw)) else float("inf")
     
-    # SELL: 과매도 + 지지선 근접 → 보류/축소
-    if signal == "SELL" and rsi_val <= 12 and 0 <= sup_gap < near_span:
-        signal_score -= 1
-        reasons.append(f"⏸ 과매도 + 지지선 근접({sup_gap:.{fmt_digits}f}) ≤ 0.3×ATR → 보류/축소")
+    # SELL: 과매도 + 지지선 근접 → 동적 감점 (차단 X)
+    if signal == "SELL" and 0 <= sup_gap < near_span:
+        # 0~1 (1에 가까울수록 더 가깝다)
+        closeness = max(0.0, min(1.0, 1.0 - (sup_gap / near_span)))
+        penalty = 1.0 + 2.0 * closeness        # 기본 1점 + 최대 2점 → 최대 3점 감점
+        if rsi_val <= 20:                      # RSI 극단 보정
+            penalty += 1.0
+        if stoch_last < 0.10:                  # StochRSI 극단 보정
+            penalty += 0.5
 
-    # BUY: 과매수 + 저항선 근접 → 보류/축소
-    if signal == "BUY" and rsi_val >= 88 and 0 <= res_gap < near_span:
-        signal_score -= 1
-        reasons.append(f"⏸ 과매수 + 저항선 근접({res_gap:.{fmt_digits}f}) ≤ 0.3×ATR → 보류/축소")
+        signal_score -= penalty
+        reasons.append(
+            f"⚠️ 지지선 근접 {sup_gap:.{fmt_digits}f} pip (임계 {near_span/pv:.{fmt_digits}f} pip) + 과매도 보정 → {penalty:.1f}점 감점"
+        )
+
+    # BUY: 과매수 + 저항선 근접 → 동적 감점 (차단 X)
+    if signal == "BUY" and 0 <= res_gap < near_span:
+        closeness = max(0.0, min(1.0, 1.0 - (res_gap / near_span)))
+        penalty = 1.0 + 2.0 * closeness
+        if rsi_val >= 80:                      # RSI 극단 보정
+            penalty += 1.0
+        if stoch_last > 0.90:                  # StochRSI 극단 보정
+            penalty += 0.5
+
+    signal_score -= penalty
+    reasons.append(
+        f"⚠️ 저항선 근접 {res_gap:.{fmt_digits}f} pip (임계 {near_span/pv:.{fmt_digits}f} pip) + 과매수 보정 → {penalty:.1f}점 감점"
+    )
         
     conflict_flag = conflict_check(rsi, pattern, trend, signal)
 
