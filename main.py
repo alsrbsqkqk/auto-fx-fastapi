@@ -462,6 +462,31 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     if signal == "SELL" and dist_to_sup_pips <= NEAR_PIPS:
         signal_score -= 1
         reasons.append(f"📉 지지까지 {dist_to_sup_pips:.{digits_pip}f} pip → 거리 너무 가까움 → 감점")
+
+    # === ③ 과매도/과매수 + 구조 근접 필터 (ATR 0.3배) ===
+    import math  # 파일 상단에 이미 있으면 중복 import 무시됨
+
+    # 값 꺼내기 (Series/숫자 모두 안전)
+    rsi_val = float(rsi.iloc[-1]) if hasattr(rsi, "iloc") else float(rsi)
+    atr_val = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr)
+
+    # 0.3×ATR: 가격 단위(피프 아님)
+    near_span = 0.3 * atr_val
+    fmt_digits = 3 if pair.endswith("JPY") else 5
+
+    # 지지/저항까지 '가격' 거리 (양수일 때만 근접으로 본다)
+    sup_gap = (price - float(sup_raw)) if math.isfinite(float(sup_raw)) else float("inf")
+    res_gap = (float(res_raw) - price) if math.isfinite(float(res_raw)) else float("inf")
+    
+    # SELL: 과매도 + 지지선 근접 → 보류/축소
+    if signal == "SELL" and rsi_val <= 12 and 0 <= sup_gap < near_span:
+        signal_score -= 1
+        reasons.append(f"⏸ 과매도 + 지지선 근접({sup_gap:.{fmt_digits}f}) ≤ 0.3×ATR → 보류/축소")
+
+    # BUY: 과매수 + 저항선 근접 → 보류/축소
+    if signal == "BUY" and rsi_val >= 88 and 0 <= res_gap < near_span:
+        signal_score -= 1
+        reasons.append(f"⏸ 과매수 + 저항선 근접({res_gap:.{fmt_digits}f}) ≤ 0.3×ATR → 보류/축소")
         
     conflict_flag = conflict_check(rsi, pattern, trend, signal)
 
