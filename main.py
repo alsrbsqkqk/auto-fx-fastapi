@@ -705,7 +705,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
             else:  # SELL
                 signal_score += 0.5
                 reasons.append("🟢 상단 밴드 근처의 SELL → 유리(+0.5)")
-        elif price <= bollinger_lower:
+        if price <= boll_low:
             if signal == "SELL":
                 signal_score -= 1
                 reasons.append("🔴 하단 밴드 근처의 SELL → 반등 리스크 감점")
