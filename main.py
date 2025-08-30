@@ -417,6 +417,11 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     pv = thr["pip_value"]           # pip 크기 (JPY=0.01, 그 외=0.0001)
     NEAR_PIPS = thr["near_pips"]    # 지지/저항 근접 금지 임계(pips)
 
+    # RSI 중립 구간 (45~55) → 추세 애매로 감점
+    if 45 <= rsi <= 55:
+        score -= 2
+        reasons.append("⚠️ RSI 중립 구간 ➔ 추세 애매 → 진입 신호 약화 (감점)")
+    
     signal_score += score + extra_score
     reasons.extend(base_reasons + extra_reasons)
     # ✅ 캔들 패턴과 추세 강한 일치 시 보너스 점수 부여
