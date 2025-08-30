@@ -421,6 +421,11 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
     if 45 <= rsi <= 55:
         score -= 2
         reasons.append("⚠️ RSI 중립 구간 ➔ 추세 애매 → 진입 신호 약화 (감점)")
+
+   
+    if macd < -0.02 and trend != "DOWNTREND":
+        score -= 1.5
+        reasons.append("🔻 MACD 약세 + 추세 모호 → 신호 신뢰도 낮음 (감점 -1.5)")
     
     signal_score += score + extra_score
     reasons.extend(base_reasons + extra_reasons)
