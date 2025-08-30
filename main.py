@@ -404,7 +404,7 @@ def check_recent_opposite_signal(pair, current_signal, within_minutes=30):
 
 
 
-def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, liquidity, pattern, pair, candles, atr, price, bollinger_upper, bollinger_lower, support, resistance, support_distance, resistance_distance, pip_size):
+def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi, trend, prev_trend, signal, liquidity, pattern, pair, candles, atr, price, bollinger_upper, bollinger_lower, support, resistance, support_distance, resistance_distance, pip_size):
     signal_score = 0
     opportunity_score = 0  
     reasons = []
@@ -422,10 +422,79 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, trend, signal, 
         score -= 2
         reasons.append("⚠️ RSI 중립 구간 ➔ 추세 애매 → 진입 신호 약화 (감점)")
 
+    if rsi > 40 and stoch_rsi > 0.4 and macd < macd_signal and trend != "UPTREND":
+        score -= 1.0
+        reasons.append("📉 RSI & Stoch RSI 반등 중이나 MACD 약세 + 추세 불확실 (BUY측 감점 -1.0)")
+    if rsi < 60 and stoch_rsi < 0.6 and macd > macd_signal and trend != "DOWNTREND":
+        score -= 1.0
+        reasons.append("📈 RSI & Stoch RSI 하락 중이나 MACD 강세 + 추세 불확실 (SELL측 감점 -1.0)")
    
     if macd < -0.02 and trend != "DOWNTREND":
         score -= 1.5
         reasons.append("🔻 MACD 약세 + 추세 모호 → 신호 신뢰도 낮음 (감점 -1.5)")
+
+    # RSI + Stoch RSI 과매수 상태에서 SELL 진입 위험
+    if signal == "SELL" and rsi > 70 and stoch_rsi > 0.85:
+        score -= 1.5
+        reasons.append("🔻 RSI + Stoch RSI 과매수 → SELL 진입 위험 (감점 -1.5)")
+
+    # RSI + Stoch RSI 과매도 상태에서 BUY 진입 위험
+    if signal == "BUY" and rsi < 30 and stoch_rsi < 0.15:
+        score -= 1.5
+        reasons.append("🔻 RSI + Stoch RSI 과매도 → BUY 진입 위험 (감점 -1.5)")
+        
+    # ⚠️ RSI + Stoch RSI 과매도 + 패턴 없음 or 애매한 추세 → 바닥 예측 위험
+    if rsi < 30 and stoch_rsi < 0.15 and (pattern is None or trend == "NEUTRAL"):
+        score -= 1.5
+        reasons.append("⚠️ RSI + Stoch RSI 과매도 + 반등 근거 부족 → 진입 위험 (감점 -1.5)")
+
+    if signal == "BUY" and stoch_rsi < 0.15 and prev_stoch_rsi > 0.3 and (macd < 0 or trend != "UPTREND"):
+        score -= 1.5
+        reasons.append("⚠️ Stoch RSI 급락 + MACD/추세 불확실 → 하락 지속 우려 (감점 -1.5)")
+    # 장대 음봉 직후 + 반등 신호 없음 ➝ 위험
+    if signal == "BUY" and candles["close"].iloc[-1] < candles["open"].iloc[-1] and \
+       (candles["open"].iloc[-1] - candles["close"].iloc[-1]) > (candles["high"].iloc[-2] - candles["low"].iloc[-2]) * 0.9 and \
+       pattern is None and trend != "UPTREND":
+        score -= 1.5
+        reasons.append("📉 장대 음봉 직후 + 반등 패턴 없음 + 추세 불확실 ➝ BUY 진입 위험 (감점 -1.5)")
+
+    # 장대 양봉 직후 + 반전 신호 없음 ➝ 위험
+    if signal == "SELL" and candles["close"].iloc[-1] > candles["open"].iloc[-1] and \
+       (candles["close"].iloc[-1] - candles["open"].iloc[-1]) > (candles["high"].iloc[-2] - candles["low"].iloc[-2]) * 0.9 and \
+       pattern is None and trend != "DOWNTREND":
+        score -= 1.5
+        reasons.append("📈 장대 양봉 직후 + 반전 패턴 없음 + 추세 불확실 ➝ SELL 진입 위험 (감점 -1.5)")
+
+    # 🔻 최근 캔들 흐름이 진입 방향과 반대인 경우 경고 감점
+    if signal == "BUY" and trend != "UPTREND":
+        if candles["close"].iloc[-1] < candles["open"].iloc[-1] and candles["close"].iloc[-2] < candles["open"].iloc[-2]:
+            score -= 1.0
+            reasons.append("📉 최근 연속 음봉 + 추세 미약 ➝ BUY 타이밍 부적절 (감점 -1.0)")
+
+    if signal == "SELL" and trend != "DOWNTREND":
+        if candles["close"].iloc[-1] > candles["open"].iloc[-1] and candles["close"].iloc[-2] > candles["open"].iloc[-2]:
+            score -= 1.0
+            reasons.append("📈 최근 연속 양봉 + 추세 미약 ➝ SELL 타이밍 부적절 (감점 -1.0)")
+
+    # 트렌드 전환 직후 경계 구간 감점
+    if trend == "UPTREND" and prev_trend == "DOWNTREND" and signal == "BUY":
+        score -= 1.0
+        reasons.append("⚠️ 하락 추세 직후 상승 반전 → BUY 시그널 신뢰도 낮음 (감점 -1.0)")
+
+    if trend == "DOWNTREND" and prev_trend == "UPTREND" and signal == "SELL":
+        score -= 1.0
+        reasons.append("⚠️ 상승 추세 직후 하락 반전 → SELL 시그널 신뢰도 낮음 (감점 -1.0)")
+
+    # 🔄 추세 전환 직후 진입 위험
+    if signal == "BUY" and trend == "UPTREND" and prev_trend == "DOWNTREND":
+        score -= 1.0
+        reasons.append("🔄 이전 추세가 DOWN → 추세 전환 직후 BUY → 조기 진입 경고 (감점 -1.0)")
+
+    if signal == "SELL" and trend == "DOWNTREND" and prev_trend == "UPTREND":
+        score -= 1.0
+        reasons.append("🔄 이전 추세가 UP → 추세 전환 직후 SELL → 조기 진입 경고 (감점 -1.0)")
+    
+
     
     signal_score += score + extra_score
     reasons.extend(base_reasons + extra_reasons)
@@ -912,6 +981,8 @@ async def webhook(request: Request):
 
     pattern = detect_candle_pattern(candles)
     trend = detect_trend(candles, rsi, boll_mid)
+    prev_trend = detect_trend(candles[:-1], rsi[:-1], boll_mid)
+    prev_stoch_rsi = stoch_rsi[-2]
     liquidity = estimate_liquidity(candles)
     news = fetch_forex_news()
     news_score, news_msg = news_risk_score(pair)
@@ -925,7 +996,9 @@ async def webhook(request: Request):
         macd.iloc[-1],
         macd_signal.iloc[-1],
         stoch_rsi,
+        prev_stoch_rsi,
         trend,
+        prev_trend,
         signal,
         liquidity,
         pattern,
