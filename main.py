@@ -185,9 +185,9 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
 
     return opportunity_score, reasons
     
-def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window=20, min_touch_count=1):
+def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window=20, min_touch_count=2):
     # 자동 window 설정 (타임프레임 기반)
-    window_map = {'M15': 20, 'M30': 10, 'H1': 6, 'H4': 4}
+    window_map = {'M15': 10, 'M30': 6, 'H1': 4, 'H4': 2}
     window = window_map.get(timeframe, window)
     
     if price is None:
