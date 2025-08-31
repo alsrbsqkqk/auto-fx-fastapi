@@ -1663,6 +1663,8 @@ def analyze_with_gpt(payload):
                 "- TP와 SL은 현재가에서 각각 8pip 이상 차이 나야 하고, TP는 SL보다 넓게 잡아.\n"
                 "- TP:SL 비율은 2:1 이상이어야 최소 10pip 이상 이익. 비율은 TP가 20이고 SL이 10이면 BUY일 땐 TP > 진입가, SL < 진입가 / SELL일 땐 반대.\n\n"
                 "(3) 지지선(support), 저항선(resistance)은 최근 1시간봉 기준 마지막 6봉의 고점/저점에서 이미 계산되어 JSON에 포함되어 있어. support와 resistance를 적절히 고려해.\n"
+                f"  • 현재가: {current_price}, 지지선: {support}, 저항선: {resistance}\n"
+                f"  • TP는 저항선 기준 약간 위, SL은 지지선 기준 약간 아래로 제안할 수 있음\n"
                 "- 이 숫자만 참고하고 그 외 고점/저점은 무시해.\n\n"
                 "(4) 추세 판단 시 캔들 패턴뿐 아니라 보조지표(RSI, MACD, Stoch RSI)의 흐름과 방향성도 함께 고려해.\n"
                 "- 특히 각 보조지표의 최근 14봉 추세 데이터는 다음과 같아:\n"
