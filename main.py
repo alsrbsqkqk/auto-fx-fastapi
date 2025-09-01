@@ -988,6 +988,7 @@ async def webhook(request: Request):
     # 📌 현재가 계산
     price = current_price
 
+    support, resistance = None, None
     # ✅ 안전 장치 추가
     try:
         support, resistance = get_enhanced_support_resistance(
