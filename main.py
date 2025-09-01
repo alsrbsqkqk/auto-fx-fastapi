@@ -242,8 +242,8 @@ support_price = max([s for s in support_levels if s < price], default=price - mi
 resistance_price = min([r for r in resistance_levels if r > price], default=price + min_distance)
 
     
-    last_atr = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr)
-    min_distance = max(5 * pip, 0.8 * last_atr)
+last_atr = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr)
+min_distance = max(5 * pip, 0.8 * last_atr)
 
     # Support (현재가 이하 중 가장 가까운 레벨)
     if not support_candidates.empty:
