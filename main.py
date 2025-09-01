@@ -944,7 +944,6 @@ async def webhook(request: Request):
     atr_series = calculate_atr(candles)
 
     # ✅ 현재가와 저항선 거리 계산 (pip 기준 거리 필터 적용을 위함)
-    pip_size = 0.01 if "JPY" in pair else 0.0001
     resistance_distance = abs(resistance - price)
 
     if candles is None or candles.empty:
@@ -991,6 +990,7 @@ async def webhook(request: Request):
     # 🔐 1. 미리 초기화
     support, resistance = None, None
     support_distance = resistance_distance = float("inf")
+    pip_size = 0.01 if "JPY" in pair else 0.0001
 
     try:
         temp_support, temp_resistance = get_enhanced_support_resistance(
@@ -1000,8 +1000,6 @@ async def webhook(request: Request):
         if temp_support is not None and temp_resistance is not None:
             support = temp_support
             resistance = temp_resistance
-            support_distance = abs(price - support)
-            resistance_distance = abs(resistance - price)
         else:
             raise ValueError("Support/Resistance is None")
     except Exception as e:
