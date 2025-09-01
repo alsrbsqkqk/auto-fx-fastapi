@@ -208,42 +208,42 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window
     price_rounded = round(price, round_digits)
 
     # 🔍 스윙 고점/저점 기반 지지선/저항선 추출
-def find_local_extrema(candles, order=3):
-    highs = candles["high"].values
-    lows = candles["low"].values
-    resistance = []
-    support = []
+    def find_local_extrema(candles, order=3):
+        highs = candles["high"].values
+        lows = candles["low"].values
+        resistance = []
+        support = []
 
-    for i in range(order, len(highs) - order):
-        if highs[i] == max(highs[i - order:i + order + 1]):
-            resistance.append(highs[i])
-        if lows[i] == min(lows[i - order:i + order + 1]):
-            support.append(lows[i])
-    return support, resistance
+        for i in range(order, len(highs) - order):
+            if highs[i] == max(highs[i - order:i + order + 1]):
+                resistance.append(highs[i])
+            if lows[i] == min(lows[i - order:i + order + 1]):
+                support.append(lows[i])
+        return support, resistance
 
-# 🎯 가까운 레벨 병합 (군집화)
-def cluster_levels(levels, threshold=0.05):
-    clustered = []
-    for level in sorted(levels):
-        if not clustered or abs(clustered[-1] - level) > threshold:
-            clustered.append(level)
-        else:
-            clustered[-1] = (clustered[-1] + level) / 2
-    return clustered
+    # 🎯 가까운 레벨 병합 (군집화)
+    def cluster_levels(levels, threshold=0.05):
+        clustered = []
+        for level in sorted(levels):
+            if not clustered or abs(clustered[-1] - level) > threshold:
+                clustered.append(level)
+            else:
+                clustered[-1] = (clustered[-1] + level) / 2
+        return clustered
 
-# 📌 스윙 지지/저항 구하기
-support_levels, resistance_levels = find_local_extrema(df)
-support_levels = cluster_levels(support_levels)
-resistance_levels = cluster_levels(resistance_levels)
+        # 📌 스윙 지지/저항 구하기
+    support_levels, resistance_levels = find_local_extrema(df)
+    support_levels = cluster_levels(support_levels)
+    resistance_levels = cluster_levels(resistance_levels)
 
-# 🔽 현재가 아래 지지선 중 가장 가까운 것
-support_price = max([s for s in support_levels if s < price], default=price - min_distance)
-# 🔼 현재가 위 저항선 중 가장 가까운 것
-resistance_price = min([r for r in resistance_levels if r > price], default=price + min_distance)
+    # 🔽 현재가 아래 지지선 중 가장 가까운 것
+    support_price = max([s for s in support_levels if s < price], default=price - min_distance)
+    # 🔼 현재가 위 저항선 중 가장 가까운 것
+    resistance_price = min([r for r in resistance_levels if r > price], default=price + min_distance)
 
     
-last_atr = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr)
-min_distance = max(5 * pip, 0.8 * last_atr)
+    last_atr = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr)
+    min_distance = max(5 * pip, 0.8 * last_atr)
 
 
     return round(support_price, round_digits), round(resistance_price, round_digits)
