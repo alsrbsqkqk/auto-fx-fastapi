@@ -982,7 +982,8 @@ async def webhook(request: Request):
     pattern = detect_candle_pattern(candles)
     trend = detect_trend(candles, rsi, boll_mid)
     prev_trend = detect_trend(candles[:-1], rsi[:-1], boll_mid)
-    prev_stoch_rsi = stoch_rsi[-2]
+    stoch_rsi_clean = stoch_rsi_series.dropna()
+    prev_stoch_rsi = stoch_rsi_clean.iloc[-2] if len(stoch_rsi_clean) >= 2 else 0
     liquidity = estimate_liquidity(candles)
     news = fetch_forex_news()
     news_score, news_msg = news_risk_score(pair)
