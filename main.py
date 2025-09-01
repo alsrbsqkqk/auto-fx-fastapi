@@ -202,19 +202,48 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window
     support_rows = pd.DataFrame(columns=candles.columns)
     resistance_rows = pd.DataFrame(columns=candles.columns)
 
-    # 존 계산 (pip 자리수로 반올림 후 터치 카운트)
-    support_zone = lows.round(round_digits).value_counts().head(10)
-    resistance_zone = highs.round(round_digits).value_counts().head(10)
 
     # 기본값
     price = float(price)
     price_rounded = round(price, round_digits)
 
+    # 🔍 스윙 고점/저점 기반 지지선/저항선 추출
+def find_local_extrema(candles, order=3):
+    highs = candles["high"].values
+    lows = candles["low"].values
+    resistance = []
+    support = []
+
+    for i in range(order, len(highs) - order):
+        if highs[i] == max(highs[i - order:i + order + 1]):
+            resistance.append(highs[i])
+        if lows[i] == min(lows[i - order:i + order + 1]):
+            support.append(lows[i])
+    return support, resistance
+
+# 🎯 가까운 레벨 병합 (군집화)
+def cluster_levels(levels, threshold=0.05):
+    clustered = []
+    for level in sorted(levels):
+        if not clustered or abs(clustered[-1] - level) > threshold:
+            clustered.append(level)
+        else:
+            clustered[-1] = (clustered[-1] + level) / 2
+    return clustered
+
+# 📌 스윙 지지/저항 구하기
+support_levels, resistance_levels = find_local_extrema(df)
+support_levels = cluster_levels(support_levels)
+resistance_levels = cluster_levels(resistance_levels)
+
+# 🔽 현재가 아래 지지선 중 가장 가까운 것
+support_price = max([s for s in support_levels if s < price], default=price - min_distance)
+# 🔼 현재가 위 저항선 중 가장 가까운 것
+resistance_price = min([r for r in resistance_levels if r > price], default=price + min_distance)
+
+    
     last_atr = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr)
     min_distance = max(5 * pip, 0.8 * last_atr)
-
-    support_candidates = support_zone[support_zone >= min_touch_count]
-    resistance_candidates = resistance_zone[resistance_zone >= min_touch_count]
 
     # Support (현재가 이하 중 가장 가까운 레벨)
     if not support_candidates.empty:
