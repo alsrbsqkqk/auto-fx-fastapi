@@ -203,8 +203,8 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window
     resistance_rows = pd.DataFrame(columns=candles.columns)
 
     # 존 계산 (pip 자리수로 반올림 후 터치 카운트)
-    support_zone = lows.round(round_digits).value_counts()
-    resistance_zone = highs.round(round_digits).value_counts()
+    support_zone = lows.round(round_digits).value_counts().head(10)
+    resistance_zone = highs.round(round_digits).value_counts().head(10)
 
     # 기본값
     price = float(price)
@@ -245,21 +245,6 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window
         resistance_price = round(price + min_distance, round_digits)
 
 
-    if price - support_price < min_distance:
-        support_price = price - min_distance
-    if resistance_price - price < min_distance:
-        resistance_price = price + min_distance
-
-    # 방향 역전 방지 (혹시라도)
-    if support_price >= price:
-        support_price = price - min_distance
-    if resistance_price <= price:
-        resistance_price = price + min_distance
-
-    # --- 최종 산티티 클램프: 둘 다 가격과 같은 쪽이거나, 간격이 너무 좁으면 강제 재설정 ---
-    if (support_price >= price) or (resistance_price <= price) or ((resistance_price - support_price) < 2 * min_distance):
-        support_price    = round(price - min_distance, round_digits)
-        resistance_price = round(price + min_distance, round_digits)
     return round(support_price, round_digits), round(resistance_price, round_digits)
 
 
