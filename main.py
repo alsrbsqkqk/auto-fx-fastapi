@@ -988,12 +988,17 @@ async def webhook(request: Request):
     # 📌 현재가 계산
     price = current_price
 
-    # ✅ 여기에 붙여넣기
-    support, resistance = get_enhanced_support_resistance(
-        candles, price=price, atr=atr_series, timeframe="M30", pair=pair
-    )
-    support_distance = abs(price - support)
-    resistance_distance = abs(resistance - price)
+    # ✅ 안전 장치 추가
+    try:
+        support, resistance = get_enhanced_support_resistance(
+            candles, price=price, atr=atr_series, timeframe="M30", pair=pair
+        )
+        support_distance = abs(price - support)
+        resistance_distance = abs(resistance - price)
+    except Exception as e:
+        print(f"[Support/Resistance Error] {e}")
+        support, resistance = None, None
+        support_distance = resistance_distance = float("inf")  # 또는 적절한 fallback
     
     signal_score, reasons = score_signal_with_filters(
         rsi.iloc[-1],
