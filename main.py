@@ -992,22 +992,20 @@ async def webhook(request: Request):
     support, resistance = None, None
     support_distance = resistance_distance = float("inf")
 
-    # 🔍 2. 함수 호출만 try에 넣기
     try:
-        support, resistance = get_enhanced_support_resistance(
+        temp_support, temp_resistance = get_enhanced_support_resistance(
             candles, price=price, atr=atr_series, timeframe="M30", pair=pair
         )
     
-        if support is not None and resistance is not None:
+        if temp_support is not None and temp_resistance is not None:
+            support = temp_support
+            resistance = temp_resistance
             support_distance = abs(price - support)
             resistance_distance = abs(resistance - price)
         else:
             raise ValueError("Support/Resistance is None")
-
     except Exception as e:
         print(f"[Support/Resistance Error] {e}")
-        support, resistance = None, None
-        support_distance = resistance_distance = float("inf")  # fallback
 
     
     signal_score, reasons = score_signal_with_filters(
