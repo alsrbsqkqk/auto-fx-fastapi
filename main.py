@@ -943,7 +943,17 @@ async def webhook(request: Request):
     # ✅ ATR 먼저 계산 (Series)
     atr_series = calculate_atr(candles)
 
+    # ✅ 지지/저항 계산 - timeframe 키 "H1" 로, atr에는 Series 전달
+    support, resistance = get_enhanced_support_resistance(
+        candles, price=current_price, atr=atr_series, timeframe="M30", pair=pair
+    )
+
+    support_resistance = {"support": support, "resistance": resistance}
+    support_distance = abs(price - support)
+    resistance_distance = abs(resistance - price)
+
     # ✅ 현재가와 저항선 거리 계산 (pip 기준 거리 필터 적용을 위함)
+    pip_size = 0.01 if "JPY" in pair else 0.0001
     resistance_distance = abs(resistance - price)
 
     if candles is None or candles.empty:
@@ -986,26 +996,6 @@ async def webhook(request: Request):
     fibo_levels = calculate_fibonacci_levels(candles["high"].max(), candles["low"].min())
     # 📌 현재가 계산
     price = current_price
-
-    # 🔐 1. 미리 초기화
-    support, resistance = None, None
-    support_distance = resistance_distance = float("inf")
-    pip_size = 0.01 if "JPY" in pair else 0.0001
-
-    try:
-        temp_support, temp_resistance = get_enhanced_support_resistance(
-            candles, price=price, atr=atr_series, timeframe="M30", pair=pair
-        )
-    
-        if temp_support is not None and temp_resistance is not None:
-            support = temp_support
-            resistance = temp_resistance
-        else:
-            raise ValueError("Support/Resistance is None")
-    except Exception as e:
-        print(f"[Support/Resistance Error] {e}")
-
-    
     signal_score, reasons = score_signal_with_filters(
         rsi.iloc[-1],
         macd.iloc[-1],
