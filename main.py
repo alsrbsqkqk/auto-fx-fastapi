@@ -231,14 +231,15 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window
                 clustered[-1] = (clustered[-1] + level) / 2
         return clustered
 
-        # 📌 스윙 지지/저항 구하기
+
+    last_atr = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr)
+    min_distance = max(10 * pip, 1.2 * last_atr)
+
+    # 📌 스윙 지지/저항 구하기
     support_levels, resistance_levels = find_local_extrema(df)
     support_levels = cluster_levels(support_levels)
     resistance_levels = cluster_levels(resistance_levels)
-
-    last_atr = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr)
-    min_distance = max(5 * pip, 0.8 * last_atr)
-
+    
     # 🔽 현재가 아래 지지선 중 가장 가까운 것
     support_price = max([s for s in support_levels if s < price], default=price - min_distance)
     # 🔼 현재가 위 저항선 중 가장 가까운 것
