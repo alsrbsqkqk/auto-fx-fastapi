@@ -246,7 +246,7 @@ last_atr = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr)
 min_distance = max(5 * pip, 0.8 * last_atr)
 
 
-    return round(support_price, round_digits), round(resistance_price, round_digits)
+return round(support_price, round_digits), round(resistance_price, round_digits)
 
 
 def additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, trend):
