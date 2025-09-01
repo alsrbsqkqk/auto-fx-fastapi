@@ -222,23 +222,33 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window
         return support, resistance
 
     # 🎯 가까운 레벨 병합 (군집화)
-    def cluster_levels(levels, threshold=0.05):
+    def cluster_levels(levels, *, pip: float, threshold_pips: int = 8):
+        """
+        인접 레벨 병합 (군집화)
+        - threshold_pips: 몇 pip 이내면 같은 레벨로 간주할지 (기본 8pip)
+        - 통화쌍/가격 스케일에 무관하게 동작
+        """
+        if not levels:
+            return []
+
+        threshold = threshold_pips * pip     # <-- 핵심: pip 기반 스케일링
         clustered = []
         for level in sorted(levels):
             if not clustered or abs(clustered[-1] - level) > threshold:
                 clustered.append(level)
             else:
+                # 가까우면 평균으로 병합
                 clustered[-1] = (clustered[-1] + level) / 2
         return clustered
-
+    
 
     last_atr = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr)
     min_distance = max(10 * pip, 1.2 * last_atr)
 
     # 📌 스윙 지지/저항 구하기
     support_levels, resistance_levels = find_local_extrema(df)
-    support_levels = cluster_levels(support_levels)
-    resistance_levels = cluster_levels(resistance_levels)
+    support_levels    = cluster_levels(support_levels,    pip=pip, threshold_pips=8)
+    resistance_levels = cluster_levels(resistance_levels, pip=pip, threshold_pips=8)
     
     # 🔽 현재가 아래 지지선 중 가장 가까운 것
     support_price = max([s for s in support_levels if s < price], default=price - min_distance)
@@ -282,7 +292,16 @@ def additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, tre
 
 # === pip/거리 헬퍼 ===
 def pip_value_for(pair: str) -> float:
-    return 0.01 if pair.endswith("JPY") else 0.0001
+    """
+    통화쌍별 '1 pip'의 가격 크기 반환.
+    - JPY 쿼트: 0.01
+    - 그 외:    0.0001
+    """
+    p = (pair or "").upper().replace("_", "/")
+    # EUR/USD, GBP/USD, ...
+    if p.endswith("/JPY") or p.endswith("JPY"):
+        return 0.01
+    return 0.0001
     
 # ★ 추가: ATR을 pips로 변환
 def atr_in_pips(atr_value: float, pair: str) -> float:
