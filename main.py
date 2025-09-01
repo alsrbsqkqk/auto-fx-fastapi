@@ -1063,12 +1063,12 @@ async def webhook(request: Request):
     gpt_feedback = "GPT 분석 생략: 점수 미달"
     decision, tp, sl = "WAIT", None, None
 
-    if signal_score >= 10:
+    if signal_score >= 9.5:
         gpt_feedback = analyze_with_gpt(payload)
         print("✅ STEP 6: GPT 응답 수신 완료")
         decision, tp, sl = parse_gpt_feedback(gpt_feedback)
     else:
-        print("🚫 GPT 분석 생략: 점수 10점 미만")
+        print("🚫 GPT 분석 생략: 점수 9.5점 미만")
     
     
     print(f"✅ STEP 7: GPT 해석 완료 | decision: {decision}, TP: {tp}, SL: {sl}")
@@ -1150,13 +1150,13 @@ async def webhook(request: Request):
       
     
     should_execute = False
-    # 1️⃣ 기본 진입 조건: GPT가 BUY/SELL 판단 + 점수 10점 이상
-    if decision in ["BUY", "SELL"] and signal_score >= 10:
+    # 1️⃣ 기본 진입 조건: GPT가 BUY/SELL 판단 + 점수 9.5점 이상
+    if decision in ["BUY", "SELL"] and signal_score >= 9.5:
         should_execute = True
 
-    # 2️⃣ 조건부 진입: 최근 2시간 거래 없으면 점수 10점 미만이어도 진입 허용
-    elif allow_conditional_trade and signal_score >= 10 and decision in ["BUY", "SELL"]:
-        gpt_feedback += "\n⚠️ 조건부 진입: 최근 2시간 거래 없음 → 10점 이상 기준 만족하여 진입 허용"
+    # 2️⃣ 조건부 진입: 최근 2시간 거래 없으면 점수 19.5점 미만이어도 진입 허용
+    elif allow_conditional_trade and signal_score >= 9.5 and decision in ["BUY", "SELL"]:
+        gpt_feedback += "\n⚠️ 조건부 진입: 최근 2시간 거래 없음 → 9.5점 이상 기준 만족하여 진입 허용"
         should_execute = True
         
     if should_execute:
