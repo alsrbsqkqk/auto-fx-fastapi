@@ -997,13 +997,17 @@ async def webhook(request: Request):
         support, resistance = get_enhanced_support_resistance(
             candles, price=price, atr=atr_series, timeframe="M30", pair=pair
         )
+    
+        if support is not None and resistance is not None:
+            support_distance = abs(price - support)
+            resistance_distance = abs(resistance - price)
+        else:
+            raise ValueError("Support/Resistance is None")
+
     except Exception as e:
         print(f"[Support/Resistance Error] {e}")
-
-    # ✅ 3. None 여부 체크 후 거리 계산
-    if support is not None and resistance is not None:
-        support_distance = abs(price - support)
-        resistance_distance = abs(resistance - price)
+        support, resistance = None, None
+        support_distance = resistance_distance = float("inf")  # fallback
 
     
     signal_score, reasons = score_signal_with_filters(
