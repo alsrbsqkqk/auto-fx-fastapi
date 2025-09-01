@@ -245,34 +245,6 @@ resistance_price = min([r for r in resistance_levels if r > price], default=pric
 last_atr = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr)
 min_distance = max(5 * pip, 0.8 * last_atr)
 
-    # Support (현재가 이하 중 가장 가까운 레벨)
-    if not support_candidates.empty:
-        near_support = support_candidates[support_candidates.index < price_rounded]
-        if not near_support.empty:
-            support_value = near_support.index.max()      # 현재가 바로 아래
-        else:
-            support_value = support_candidates.index.max() # 후보가 전부 위쪽일 때 대비
-        support_rows = df[df["low"].round(round_digits) == support_value]
-        if not support_rows.empty:
-            support_price = float(support_rows["low"].min())  # 보수적으로 최저가
-    else:
-        support_price = round(price - min_distance, round_digits)
-
-    # Resistance (현재가 이상 중 가장 가까운 레벨)
-    if not resistance_candidates.empty:
-        near_resist = resistance_candidates[resistance_candidates.index > price_rounded]
-        if not near_resist.empty:
-            resistance_value = near_resist.index.min()      # 현재가 바로 위
-        else:
-            resistance_value = resistance_candidates.index.min()
-        resistance_rows = df[df["high"].round(round_digits) == resistance_value]
-        if not resistance_rows.empty:
-            resistance_price = float(resistance_rows["high"].max())  # 보수적으로 최고가
-        else:
-            resistance_price = round(price + min_distance, round_digits)
-    else:
-        resistance_price = round(price + min_distance, round_digits)
-
 
     return round(support_price, round_digits), round(resistance_price, round_digits)
 
