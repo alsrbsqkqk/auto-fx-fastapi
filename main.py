@@ -75,20 +75,20 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
 
     # ✅ 추가 제안 1: 점수 밸런싱 - SELL 조건도 강한 경우엔 +2까지 부여
     if stoch_rsi > 0.95 and rsi < 50 and macd < macd_signal:
-    opportunity_score += 2
-    reasons.append("🔻 Stoch RSI 과매수 + RSI 약세 + MACD 하락 → 강한 SELL 신호")
+        opportunity_score += 2
+        reasons.append("🔻 Stoch RSI 과매수 + RSI 약세 + MACD 하락 → 강한 SELL 신호")
 
 
     # ✅ 추가 제안 2: 다중 강한 매도 조건 조합 강화
     if rsi < 35 and stoch_rsi < 0.2 and trend == "DOWNTREND" and macd < macd_signal:
-    opportunity_score += 1.5
-    reasons.append("🔴 RSI 과매도 + Stoch RSI 극단 + 하락추세 + MACD 약세 → 강한 SELL 기회")
+        opportunity_score += 1.5
+        reasons.append("🔴 RSI 과매도 + Stoch RSI 극단 + 하락추세 + MACD 약세 → 강한 SELL 기회")
 
 
     # ✅ 추가 제안 3: 다중 강한 매수 조건 조합 강화
     if rsi > 55 and stoch_rsi > 0.8 and trend == "UPTREND" and macd > macd_signal:
-    opportunity_score += 1.5
-    reasons.append("🟢 RSI + Stoch + 추세 + MACD 전부 강세 → 강한 BUY 기회")
+        opportunity_score += 1.5
+        reasons.append("🟢 RSI + Stoch + 추세 + MACD 전부 강세 → 강한 BUY 기회")
 
 
     return opportunity_score, reasons
