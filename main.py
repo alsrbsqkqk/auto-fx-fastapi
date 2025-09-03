@@ -72,6 +72,26 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
         else:
             opportunity_score -= 0.5
             reasons.append("❌ RSI 70 이상: 과매수로 진입 위험 높음 → 관망 권장")
+
+    # ✅ 추가 제안 1: 점수 밸런싱 - SELL 조건도 강한 경우엔 +2까지 부여
+    if stoch_rsi > 0.95 and rsi < 50 and macd < macd_signal:
+    opportunity_score += 2
+    reasons.append("🔻 Stoch RSI 과매수 + RSI 약세 + MACD 하락 → 강한 SELL 신호")
+
+
+    # ✅ 추가 제안 2: 다중 강한 매도 조건 조합 강화
+    if rsi < 35 and stoch_rsi < 0.2 and trend == "DOWNTREND" and macd < macd_signal:
+    opportunity_score += 1.5
+    reasons.append("🔴 RSI 과매도 + Stoch RSI 극단 + 하락추세 + MACD 약세 → 강한 SELL 기회")
+
+
+    # ✅ 추가 제안 3: 다중 강한 매수 조건 조합 강화
+    if rsi > 55 and stoch_rsi > 0.8 and trend == "UPTREND" and macd > macd_signal:
+    opportunity_score += 1.5
+    reasons.append("🟢 RSI + Stoch + 추세 + MACD 전부 강세 → 강한 BUY 기회")
+
+
+    return opportunity_score, reasons
     
     # ✅ 2. RSI 과매도 기준 완화 (SELL 조건 - score_signal_with_filters 내부)
     # 기존 없음 → 추가:
@@ -517,9 +537,9 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     now_utc = datetime.utcnow()
     now_atlanta = now_utc - timedelta(hours=4)
     #✅ 전략 시간대: 오전 08~15시 또는 저녁 18~23시
-    if not ((8 <= now_atlanta.hour <= 15) or (18 <= now_atlanta.hour <= 23)):
-        reasons.append("🕒 전략 외 시간대 → 유동성 부족 / 성공률 저하로 관망")
-        return 0, reasons
+    #if not ((8 <= now_atlanta.hour <= 15) or (18 <= now_atlanta.hour <= 23)):
+    #    reasons.append("🕒 전략 외 시간대 → 유동성 부족 / 성공률 저하로 관망")
+    #    return 0, reasons
     # ▼▼▼ 여기에 붙여넣기 ▼▼▼
     digits = int(abs(np.log10(pip_value_for(pair))))   # EURUSD=4, JPY계열=2
     pv = pip_value_for(pair)
@@ -1063,12 +1083,12 @@ async def webhook(request: Request):
     gpt_feedback = "GPT 분석 생략: 점수 미달"
     decision, tp, sl = "WAIT", None, None
 
-    if signal_score >= 7:
+    if signal_score >= 6:
         gpt_feedback = analyze_with_gpt(payload)
         print("✅ STEP 6: GPT 응답 수신 완료")
         decision, tp, sl = parse_gpt_feedback(gpt_feedback)
     else:
-        print("🚫 GPT 분석 생략: 점수 7점 미만")
+        print("🚫 GPT 분석 생략: 점수 6점 미만")
     
     
     print(f"✅ STEP 7: GPT 해석 완료 | decision: {decision}, TP: {tp}, SL: {sl}")
@@ -1151,7 +1171,7 @@ async def webhook(request: Request):
     
     should_execute = False
     # 1️⃣ 기본 진입 조건: GPT가 BUY/SELL 판단 + 점수 7점 이상
-    if decision in ["BUY", "SELL"] and signal_score >= 7:
+    if decision in ["BUY", "SELL"] and signal_score >= 6:
         should_execute = True
 
     # 2️⃣ 조건부 진입: 최근 2시간 거래 없으면 점수 5점 미만이어도 진입 허용
