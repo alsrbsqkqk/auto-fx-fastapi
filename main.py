@@ -1661,7 +1661,7 @@ def adjust_tp_sl_for_structure(pair, entry, tp, sl, support, resistance, atr):
 
     digits = 3 if pair.endswith("JPY") else 5
     return round(tp, digits), round(sl, digits)   
-def analyze_with_gpt(payload):
+def analyze_with_gpt(payload, current_price):
     headers = {
         "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
         "Content-Type": "application/json"
