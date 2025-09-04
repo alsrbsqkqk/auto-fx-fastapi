@@ -444,7 +444,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     # RSI 중립 구간 (45~55) → 추세 애매로 감점
     if 45 <= rsi <= 55:
         score -= 2
-        reasons.append("⚠️ RSI 중립 구간 ➔ 추세 애매 → 진입 신호 약화 (감점)")
+        reasons.append("⚠️ RSI 중립 구간 ➔ 추세 애매 → 진입 신호 약화 (감점-2)")
 
     if rsi > 40 and stoch_rsi > 0.4 and macd < macd_signal and trend != "UPTREND":
         score -= 1.0
@@ -526,12 +526,12 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     if signal == "BUY" and trend == "UPTREND" and pattern in ["BULLISH_ENGULFING", "HAMMER", "PIERCING_LINE"]:
         signal_score += 1
         opportunity_score += 0.5  # ✅ 패턴-추세 일치 시 추가 점수
-        reasons.append("✅ 강한 상승추세 + 매수 캔들 패턴 일치 → 보너스 + 기회 점수 강화")
+        reasons.append("✅ 강한 상승추세 + 매수 캔들 패턴 일치 → 보너스 + 기회 점수 강화 가점 +1.5")
 
     elif signal == "SELL" and trend == "DOWNTREND" and pattern in ["BEARISH_ENGULFING", "SHOOTING_STAR", "DARK_CLOUD_COVER"]:
         signal_score += 1
         opportunity_score += 0.5  # ✅ 패턴-추세 일치 시 추가 점수
-        reasons.append("✅ 강한 하락추세 + 매도 캔들 패턴 일치 → 보너스 + 기회 점수 강화")
+        reasons.append("✅ 강한 하락추세 + 매도 캔들 패턴 일치 → 보너스 + 기회 점수 강화 가점 +1.5")
     
     #✅ 거래 제한 시간 필터 (애틀랜타 기준)
     now_utc = datetime.utcnow()
@@ -560,11 +560,11 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     digits_pip = 1 if pair.endswith("JPY") else 2
     if signal == "BUY" and dist_to_res_pips <= NEAR_PIPS:
         signal_score -= 1
-        reasons.append(f"📉 저항까지 {dist_to_res_pips:.{digits_pip}f} pip → 거리 너무 가까움 → 감점")
+        reasons.append(f"📉 저항까지 {dist_to_res_pips:.{digits_pip}f} pip → 거리 너무 가까움 → 감점 -1")
         
     if signal == "SELL" and dist_to_sup_pips <= NEAR_PIPS:
         signal_score -= 1
-        reasons.append(f"📉 지지까지 {dist_to_sup_pips:.{digits_pip}f} pip → 거리 너무 가까움 → 감점")
+        reasons.append(f"📉 지지까지 {dist_to_sup_pips:.{digits_pip}f} pip → 거리 너무 가까움 → 감점 -1")
         
     conflict_flag = conflict_check(rsi, pattern, trend, signal)
 
@@ -580,7 +580,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
             reasons.append("🔄 추세-패턴 충돌 BUT 강한 역추세 조건 충족 → 진입 허용")
         else:
             signal_score -= 1
-            reasons.append("⚠️ 추세+패턴 충돌 + 보완 조건 미충족 → 감점")
+            reasons.append("⚠️ 추세+패턴 충돌 + 보완 조건 미충족 → 감점-1")
 
         # === 저항/지지 근접 추격 진입 금지 규칙 ===
     # BUY: 저항 3pip 이내면 금지. 돌파(확정) 없고 10pip 이내도 금지
@@ -588,7 +588,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
         dist_to_res_pips = pips_between(price, resistance, pair)
         if dist_to_res_pips < 3:
             signal_score -= 2
-            reasons.append(f"📉 저항선 {dist_to_res_pips:.1f} pip 이내 → 신중 진입 필요 (감점)")
+            reasons.append(f"📉 저항선 {dist_to_res_pips:.1f} pip 이내 → 신중 진입 필요 (감점-2)")
 
         last2 = candles.tail(2)
         over1 = (last2.iloc[-1]['close'] > resistance + 2 * pip_value_for(pair)) if not last2.empty else False
@@ -597,14 +597,14 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
 
         if not confirmed_breakout_up and dist_to_res_pips <= 10:
             signal_score -= 1
-            reasons.append("⛔ 저항선 돌파 미확인 + 10pip 이내 → 감점")
+            reasons.append("⛔ 저항선 돌파 미확인 + 10pip 이내 → 감점-1")
 
     # SELL: 지지 3pip 이내면 금지. 이탈(확정) 없고 10pip 이내도 금지
     if signal == "SELL":
         dist_to_sup_pips = pips_between(price, support, pair)
         if dist_to_sup_pips < 3:
             signal_score -= 2
-            reasons.append(f"📉 지지선 {dist_to_sup_pips:.1f} pip 이내 → 신중 진입 필요 (감점)")
+            reasons.append(f"📉 지지선 {dist_to_sup_pips:.1f} pip 이내 → 신중 진입 필요 (감점-2)")
 
         last2 = candles.tail(2)
         under1 = (last2.iloc[-1]['close'] < support - 2 * pip_value_for(pair)) if not last2.empty else False
@@ -619,7 +619,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     if trend == "NEUTRAL":
         if 45 <= rsi <= 55 and -0.05 < macd < 0.05 and 0.3 < stoch_rsi < 0.7:
             signal_score -= 1
-            reasons.append("⚠️ 트렌드 NEUTRAL + 지표 중립 ➜ 신호 약화 (감점)")
+            reasons.append("⚠️ 트렌드 NEUTRAL + 지표 중립 ➜ 신호 약화 (감점-1)")
   
     # ✅ BUY 과열 진입 방어 (SELL의 대칭 조건)
     if signal == "BUY" and rsi > 80 and stoch_rsi > 0.85:
@@ -636,32 +636,32 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
             reasons.append("✅ 과매도 SELL이지만 MACD/스토캐스틱 반등 ➜ 진입 여지 있음 (+1)")
         elif stoch_rsi > 0.3:
             signal_score -= 2.5
-            reasons.append("⚠️ 과매도 SELL ➜ 반등 가능성 있음 (경고 감점)")
+            reasons.append("⚠️ 과매도 SELL ➜ 반등 가능성 있음 (경고 감점-2.5)")
         else:
             signal_score -= 2.5
-            reasons.append("❌ 과매도 SELL + 반등 신호 없음 ➜ 진입 위험 (감점)")
+            reasons.append("❌ 과매도 SELL + 반등 신호 없음 ➜ 진입 위험 (감점-2.5)")
 
     if stoch_rsi < 0.1 and pattern is None:
         score -= 1
-        reasons.append("🔴 Stoch RSI 과매도 + 반등 패턴 없음 → 바닥 반등 기대 낮음 (감점)")
+        reasons.append("🔴 Stoch RSI 과매도 + 반등 패턴 없음 → 바닥 반등 기대 낮음 (감점-1)")
     if rsi < 30:
         if pattern in ["HAMMER", "BULLISH_ENGULFING"]:
             score += 2
-            reasons.append("🟢 RSI < 30 + 반등 캔들 패턴 → 진입 강화")
+            reasons.append("🟢 RSI < 30 + 반등 캔들 패턴 → 진입 강화 가점+2")
         elif macd < macd_signal and trend == "DOWNTREND":
             score -= 1.5
-            reasons.append("🔴 RSI < 30 but MACD & Trend 약세 지속 → 반등 기대 낮음 → 감점")
+            reasons.append("🔴 RSI < 30 but MACD & Trend 약세 지속 → 반등 기대 낮음 → 감점 -1.5")
         else:
             score -= 2
-            reasons.append("❌ RSI < 30 but 반등 조건 없음 → 진입 위험 → 감점")
+            reasons.append("❌ RSI < 30 but 반등 조건 없음 → 진입 위험 → 감점-2")
 
     if rsi > 70 and pattern not in ["SHOOTING_STAR", "BEARISH_ENGULFING"]:
         if macd > macd_signal and macd > 0 and trend == "UPTREND":
-            reasons.append("📈 RSI > 70 but MACD 상승 + UPTREND → 진입 허용")
+            reasons.append("📈 RSI > 70 but MACD 상승 + UPTREND → 진입 허용 가점+1")
             signal_score += 1  # 보정 점수
         else:
             signal_score -= 2  # 감점 처리
-            reasons.append("⚠️ RSI > 70 + 약한 패턴 → 진입 위험 → 감점")
+            reasons.append("⚠️ RSI > 70 + 약한 패턴 → 진입 위험 → 감점 -2")
         
     # === 눌림목 BUY 강화: 3종 페어 공통 (EURUSD / GBPUSD / USDJPY) ===
     BOOST_BUY_PAIRS = {"EUR_USD", "GBP_USD", "USD_JPY"}  # 필요 시 여기에 추가/삭제
@@ -669,49 +669,49 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     if pair in BOOST_BUY_PAIRS and signal == "BUY":
         if trend == "UPTREND":
             signal_score += 1
-            reasons.append(f"{pair} 강화: UPTREND 유지 → 매수 기대")
+            reasons.append(f"{pair} 강화: UPTREND 유지 → 매수 기대 가점+1")
 
         if 40 <= rsi <= 50:
             signal_score += 1
-            reasons.append(f"{pair} 강화: RSI 40~50 눌림목 영역")
+            reasons.append(f"{pair} 강화: RSI 40~50 눌림목 영역 가점+1")
 
         if 0.1 <= stoch_rsi <= 0.3:
             signal_score += 1
-            reasons.append(f"{pair} 강화: Stoch RSI 바닥 반등 초기")
+            reasons.append(f"{pair} 강화: Stoch RSI 바닥 반등 초기 가점+1")
 
         if pattern in ["HAMMER", "LONG_BODY_BULL"]:
             signal_score += 1
-            reasons.append(f"{pair} 강화: 매수 캔들 패턴 확인")
+            reasons.append(f"{pair} 강화: 매수 캔들 패턴 확인 가점+1")
 
         if macd > 0:
             signal_score += 1
-            reasons.append(f"{pair} 강화: MACD 양수 유지 (상승 흐름 유지)")
+            reasons.append(f"{pair} 강화: MACD 양수 유지 (상승 흐름 유지) 가점+1")
 
     # === 눌림목 BUY 조건 점수 가산 (모든 페어 공통) ===
     if signal == "BUY" and trend == "UPTREND":
         if 45 <= rsi <= 55 and 0.0 <= stoch_rsi <= 0.3 and macd > 0:
             signal_score += 1.5
-            reasons.append("📈 눌림목 조건 감지: RSI 중립 / Stoch 바닥 반등 / MACD 양수 → 반등 기대")
+            reasons.append("📈 눌림목 조건 감지: RSI 중립 / Stoch 바닥 반등 / MACD 양수 → 반등 기대 가점+1.5")
             
     if signal == "SELL" and trend == "DOWNTREND":
         if 45 <= rsi <= 55 and 0.7 <= stoch_rsi <= 1.0 and macd < 0:
             signal_score += 1.5
-            reasons.append("📉 눌림목 SELL 조건 감지: RSI 중립 / Stoch 과매수 반락 / MACD 음수 유지")
+            reasons.append("📉 눌림목 SELL 조건 감지: RSI 중립 / Stoch 과매수 반락 / MACD 음수 유지 가점 +1.5")
     
     if 45 <= rsi <= 60 and signal == "BUY":
         signal_score += 1
-        reasons.append("RSI 중립구간 (45~60) → 반등 기대 가점")
+        reasons.append("RSI 중립구간 (45~60) → 반등 기대 가점+1")
 
     if price >= bollinger_upper:
         signal_score -= 1
-        reasons.append("🔴 가격이 볼린저밴드 상단 돌파 ➔ 과매수 경계")
+        reasons.append("🔴 가격이 볼린저밴드 상단 돌파 ➔ 과매수 경계 감점 -1")
     elif price <= bollinger_lower:
         signal_score += 1
-        reasons.append("🟢 가격이 볼린저밴드 하단 터치 ➔ 반등 가능성↑")
+        reasons.append("🟢 가격이 볼린저밴드 하단 터치 ➔ 반등 가능성↑ 가점+1")
 
     if pattern in ["LONG_BODY_BULL", "LONG_BODY_BEAR"]:
         signal_score += 2
-        reasons.append(f"장대바디 캔들 추가 가점: {pattern}")
+        reasons.append(f"장대바디 캔들 추가 가점 +2: {pattern}")
 
     box_info = detect_box_breakout(candles, pair)
     
@@ -737,10 +737,10 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     
     if box_info["in_box"] and box_info["breakout"] == "UP" and signal == "BUY":
         signal_score += 3
-        reasons.append("📦 박스권 상단 돌파 + 매수 신호 일치 (breakout 가점 강화)")
+        reasons.append("📦 박스권 상단 돌파 + 매수 신호 일치 (breakout 가점 강화 +3)")
     elif box_info["in_box"] and box_info["breakout"] == "DOWN" and signal == "SELL":
         signal_score += 3
-        reasons.append("📦 박스권 하단 돌파 + 매도 신호 일치")
+        reasons.append("📦 박스권 하단 돌파 + 매도 신호 일치 가점+3")
     elif box_info["in_box"] and box_info["breakout"] is None:
         reasons.append("📦 박스권 유지 중 → 관망 경계")
     
@@ -753,13 +753,13 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
 
     if (macd_diff > strong) and trend == "UPTREND":
         signal_score += 3
-        reasons.append("MACD 골든크로스(강) + 상승추세 일치")
+        reasons.append("MACD 골든크로스(강) + 상승추세 일치 가점+3")
     elif (macd_diff < -strong) and trend == "DOWNTREND":
         signal_score += 3
-        reasons.append("MACD 데드크로스(강) + 하락추세 일치")
+        reasons.append("MACD 데드크로스(강) + 하락추세 일치 가점+3")
     elif abs(macd_diff) >= weak:
         signal_score += 1
-        reasons.append("MACD 교차(약) → 초입 가점")
+        reasons.append("MACD 교차(약) → 초입 가점 +1")
     else:
         reasons.append("MACD 미세변동 → 가점 보류")
 
@@ -767,50 +767,50 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     macd_hist = macd_diff
     if macd_hist > 0 and abs(macd_diff) >= micro:
         signal_score += 1
-        reasons.append("MACD 히스토그램 증가 → 상승 초기 흐름")
+        reasons.append("MACD 히스토그램 증가 → 상승 초기 흐름 가점 +1")
 
 
     if stoch_rsi == 0.0:
         signal_score += 2
-        reasons.append("🟢 Stoch RSI 0.0 → 극단적 과매도 → 반등 기대")
+        reasons.append("🟢 Stoch RSI 0.0 → 극단적 과매도 → 반등 기대 가점+2")
    
     if stoch_rsi == 1.0:
         if trend == "UPTREND" and macd > 0:
             reasons.append("🔄 Stoch RSI 과열이지만 상승추세 + MACD 양수 → 감점 생략")
         else:
             signal_score -= 1
-            reasons.append("🔴 Stoch RSI 1.0 → 극단적 과매수 → 피로감 주의")
+            reasons.append("🔴 Stoch RSI 1.0 → 극단적 과매수 → 피로감 주의 감점 -1")
     
     if stoch_rsi > 0.8:
         if trend == "UPTREND" and rsi < 70:
             if pair == "USD_JPY":
                 signal_score += 3  # USDJPY만 강화
-                reasons.append("USDJPY 강화: Stoch RSI 과열 + 상승추세 일치")
+                reasons.append("USDJPY 강화: Stoch RSI 과열 + 상승추세 일치 가점+3")
             else:
                 signal_score += 2
-                reasons.append("Stoch RSI 과열 + 상승추세 일치")
+                reasons.append("Stoch RSI 과열 + 상승추세 일치 가점+2")
         elif trend == "NEUTRAL" and signal == "SELL" and rsi > 60:
             signal_score += 1
-            reasons.append("Stoch RSI 과열 + neutral 매도 조건 → 피로 누적 매도 가능성")
+            reasons.append("Stoch RSI 과열 + neutral 매도 조건 → 피로 누적 매도 가능성 가점+1")
         else:
             reasons.append("Stoch RSI 과열 → 고점 피로, 관망")
     elif stoch_rsi < 0.2:
         if trend == "DOWNTREND" and rsi > 30:
             signal_score += 2
-            reasons.append("Stoch RSI 과매도 + 하락추세 일치")
+            reasons.append("Stoch RSI 과매도 + 하락추세 일치 가점+2")
         elif trend == "NEUTRAL" and signal == "SELL" and rsi > 50:
             signal_score += 1
-            reasons.append("Stoch RSI 과매도 + neutral 매도 전환 조건")
+            reasons.append("Stoch RSI 과매도 + neutral 매도 전환 조건 가점+1")
         elif trend == "DOWNTREND":
             signal_score += 2
-            reasons.append("Stoch RSI 과매도 + 하락추세 일치 (보완조건 포함)")
+            reasons.append("Stoch RSI 과매도 + 하락추세 일치 가점+2 (보완조건 포함)")
         elif trend == "NEUTRAL" and rsi < 50:
             signal_score += 1
-            reasons.append("Stoch RSI 과매도 + RSI 50 이하 → 약세 유지 SELL 가능")
+            reasons.append("Stoch RSI 과매도 + RSI 50 이하 → 약세 유지 SELL 가능 가점+1")
         
         if stoch_rsi < 0.1:
             signal_score += 1
-            reasons.append("Stoch RSI 0.1 이하 → 극단적 과매도 가점")
+            reasons.append("Stoch RSI 0.1 이하 → 극단적 과매도 가점 +1")
         
         else:
             reasons.append("Stoch RSI 과매도 → 저점 피로, 관망")
@@ -819,15 +819,15 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
 
     if trend == "UPTREND" and signal == "BUY":
         signal_score += 1
-        reasons.append("추세 상승 + 매수 일치")
+        reasons.append("추세 상승 + 매수 일치 가점+1")
 
     if trend == "DOWNTREND" and signal == "SELL":
         signal_score += 1
-        reasons.append("추세 하락 + 매도 일치")
+        reasons.append("추세 하락 + 매도 일치 가점+1")
 
     if liquidity == "좋음":
         signal_score += 1
-        reasons.append("유동성 좋음")
+        reasons.append("유동성 좋음 가점+1")
     last_3 = candles.tail(3)
     if (
         all(last_3["close"] < last_3["open"]) 
@@ -835,7 +835,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
         and pattern in ["NEUTRAL", "SHOOTING_STAR", "LONG_BODY_BEAR"]
     ):
         signal_score += 1
-        reasons.append("🔻최근 3봉 연속 음봉 + 하락추세 + 약세형 패턴 포함 → SELL 강화")
+        reasons.append("🔻최근 3봉 연속 음봉 + 하락추세 + 약세형 패턴 포함 → SELL 강화 가점+1")
 
         # === 박스권 상단/하단 근접 진입 제한 ===
     recent = candles.tail(10)
@@ -873,16 +873,16 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
         and pattern in ["NEUTRAL", "LONG_BODY_BULL", "INVERTED_HAMMER"]
     ):
         signal_score += 1
-        reasons.append("🟢 최근 3봉 연속 양봉 + 상승추세 + 약세 미발견 → BUY 강화")
+        reasons.append("🟢 최근 3봉 연속 양봉 + 상승추세 + 약세 미발견 → BUY 강화 가점+1")
     if pattern in ["BULLISH_ENGULFING", "HAMMER", "MORNING_STAR"]:
         signal_score += 2
-        reasons.append(f"🟢 강한 매수형 패턴 ({pattern}) → 진입 근거 강화")
+        reasons.append(f"🟢 강한 매수형 패턴 ({pattern}) → 진입 근거 강화 가점+2")
     elif pattern in ["LONG_BODY_BULL"]:
         signal_score += 1
         reasons.append(f"🟢 양봉 확장 캔들 ({pattern}) → 상승 흐름 가정")
-    elif pattern in ["SHOOTING_STAR", "BEARISH_ENGULFING", "HANGING_MAN", "EVENING_STAR"]:
+    elif pattern in ["SHOOTING_STAR", "BEARISH_ENGULFING", "HANGING_MAN", "EVENING_STAR 가점+1"]:
         signal_score -= 2
-        reasons.append(f"🔴 반전형 패턴 ({pattern}) → 매도 고려 필요")
+        reasons.append(f"🔴 반전형 패턴 ({pattern}) → 매도 고려 필요 감점-2")
     # 교과서적 기회 포착 보조 점수
     op_score, op_reasons = must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles, trend, atr, price, bollinger_upper, bollinger_lower, support, resistance, support_distance, resistance_distance, pip_size)
     if op_score > 0:
@@ -1424,18 +1424,18 @@ def calculate_candle_psychology_score(candles, signal):
     if body_ratio >= 0.7:
         if last['close'] > last['open'] and signal == "BUY":
             score += 1
-            reasons.append("✅ 강한 장대양봉 → 매수 심리 강화")
+            reasons.append("✅ 강한 장대양봉 → 매수 심리 강화 가점 +1")
         elif last['close'] < last['open'] and signal == "SELL":
             score += 1
-            reasons.append("✅ 강한 장대음봉 → 매도 심리 강화")
+            reasons.append("✅ 강한 장대음봉 → 매도 심리 강화 가점 +1")
 
     # ② 꼬리 비율 심리
     if lower_wick > 2 * body and signal == "BUY":
         score += 1
-        reasons.append("✅ 아래꼬리 길다 → 매수 지지 심리 강화")
+        reasons.append("✅ 아래꼬리 길다 → 매수 지지 심리 강화 가점+1")
     if upper_wick > 2 * body and signal == "SELL":
         score += 1
-        reasons.append("✅ 위꼬리 길다 → 매도 압력 심리 강화")
+        reasons.append("✅ 위꼬리 길다 → 매도 압력 심리 강화 가점+1")
 
     return score, reasons
 
