@@ -1083,12 +1083,12 @@ async def webhook(request: Request):
     gpt_feedback = "GPT 분석 생략: 점수 미달"
     decision, tp, sl = "WAIT", None, None
 
-    if signal_score >= 4.5:
+    if signal_score >= 4.0:
         gpt_feedback = analyze_with_gpt(payload, price)
         print("✅ STEP 6: GPT 응답 수신 완료")
         decision, tp, sl = parse_gpt_feedback(gpt_feedback)
     else:
-        print("🚫 GPT 분석 생략: 점수 4.5점 미만")
+        print("🚫 GPT 분석 생략: 점수 4.0점 미만")
     
     
     print(f"✅ STEP 7: GPT 해석 완료 | decision: {decision}, TP: {tp}, SL: {sl}")
@@ -1169,8 +1169,8 @@ async def webhook(request: Request):
     pnl = None
     should_execute = False
     
-    # 1️⃣ 기본 진입 조건: GPT가 BUY/SELL 판단 + 점수 4.5점 이상
-    if decision in ["BUY", "SELL"] and signal_score >= 4.5:
+    # 1️⃣ 기본 진입 조건: GPT가 BUY/SELL 판단 + 점수 4.0점 이상
+    if decision in ["BUY", "SELL"] and signal_score >= 4.0:
         # ✅ RSI 극단값 필터: BUY가 과매수 / SELL이 과매도이면 진입 차단
         if (decision == "BUY" and rsi.iloc[-1] > 80) or (decision == "SELL" and rsi.iloc[-1] < 25):
             reasons.append(f"❌ RSI 극단값으로 진입 차단: {decision} @ RSI {rsi.iloc[-1]:.2f}")
