@@ -944,6 +944,22 @@ async def webhook(request: Request):
 
     if check_recent_opposite_signal(pair, signal):    
         print("🚫 양방향 충돌 감지 → 관망")      
+           # ✅ 스프레드시트에도 남기기
+        try:
+            log_trade_result(
+                pair=pair, signal=signal, decision="WAIT", score=0,
+                notes="양방향 충돌 필터로 관망", result={},
+                rsi=None, macd=None, stoch_rsi=None,
+                pattern=None, trend=None, fibo={}, gpt_decision="WAIT",
+                news="", gpt_feedback="auto-filter: conflict",
+                alert_name=data.get("alert_name"), tp=None, sl=None,
+                price=price if 'price' in locals() else None, pnl=None,
+                outcome_analysis="WAIT: conflict filter", adjustment_suggestion="",
+                price_movements=[], atr=None
+            )
+        except Exception as e:
+            print("⚠️ 충돌 필터 기록 실패:", e)
+
         return JSONResponse(content={"status": "WAIT", "reason": "conflict_with_recent_opposite_signal"})
         
     price_raw = data.get("price")
@@ -1108,6 +1124,11 @@ async def webhook(request: Request):
         gpt_feedback = analyze_with_gpt(payload, price)
         print("✅ STEP 6: GPT 응답 수신 완료")
         decision, tp, sl = parse_gpt_feedback(gpt_feedback)
+        # ✅ 추가: 파싱 결과 강제 정규화 (대/소문자/공백/이상값 방지)
+        decision = (decision or "WAIT").strip().upper()
+        if decision not in ("BUY", "SELL", "WAIT"):
+            print("[WARN] decision 파싱 실패 → WAIT 강제")
+            decision = "WAIT"
     else:
         print("🚫 GPT 분석 생략: 점수 4.0점 미만")
     
