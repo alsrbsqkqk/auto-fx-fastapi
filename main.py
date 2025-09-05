@@ -1214,7 +1214,7 @@ async def webhook(request: Request):
     # 1️⃣ 기본 진입 조건: GPT가 BUY/SELL 판단 + 점수 4.0점 이상
     if decision in ["BUY", "SELL"] and signal_score >= 4.0:
         # ✅ RSI 극단값 필터: BUY가 과매수 / SELL이 과매도이면 진입 차단
-        if (decision == "BUY" and rsi.iloc[-1] > 80) or (decision == "SELL" and rsi.iloc[-1] < 25):
+        if (decision == "BUY" and rsi.iloc[-1] > 85) or (decision == "SELL" and rsi.iloc[-1] < 20):
             reasons.append(f"❌ RSI 극단값으로 진입 차단: {decision} @ RSI {rsi.iloc[-1]:.2f}")
             should_execute = False
         else:
