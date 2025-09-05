@@ -942,25 +942,7 @@ async def webhook(request: Request):
     signal = data.get("signal")
     print(f"✅ STEP 2: 데이터 수신 완료 | pair: {pair}")
 
-    if check_recent_opposite_signal(pair, signal):    
-        print("🚫 양방향 충돌 감지 → 관망")      
-           # ✅ 스프레드시트에도 남기기
-        try:
-            log_trade_result(
-                pair=pair, signal=signal, decision="WAIT", score=0,
-                notes="양방향 충돌 필터로 관망", result={},
-                rsi=None, macd=None, stoch_rsi=None,
-                pattern=None, trend=None, fibo={}, gpt_decision="WAIT",
-                news="", gpt_feedback="auto-filter: conflict",
-                alert_name=data.get("alert_name"), tp=None, sl=None,
-                price=price if 'price' in locals() else None, pnl=None,
-                outcome_analysis="WAIT: conflict filter", adjustment_suggestion="",
-                price_movements=[], atr=None
-            )
-        except Exception as e:
-            print("⚠️ 충돌 필터 기록 실패:", e)
-
-        return JSONResponse(content={"status": "WAIT", "reason": "conflict_with_recent_opposite_signal"})
+    _ = check_recent_opposite_signal(pair, signal)  # 소프트 OFF: 기록만, 차단 안 함
         
     price_raw = data.get("price")
     try:
@@ -1214,7 +1196,7 @@ async def webhook(request: Request):
     # 1️⃣ 기본 진입 조건: GPT가 BUY/SELL 판단 + 점수 4.0점 이상
     if decision in ["BUY", "SELL"] and signal_score >= 4.0:
         # ✅ RSI 극단값 필터: BUY가 과매수 / SELL이 과매도이면 진입 차단
-        if (decision == "BUY" and rsi.iloc[-1] > 85) or (decision == "SELL" and rsi.iloc[-1] < 20):
+        if False and ((decision == "BUY" and rsi.iloc[-1] > 85) or (decision == "SELL" and rsi.iloc[-1] < 20)):
             reasons.append(f"❌ RSI 극단값으로 진입 차단: {decision} @ RSI {rsi.iloc[-1]:.2f}")
             should_execute = False
         else:
