@@ -22,73 +22,73 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
         
     if stoch_rsi < 0.05 and rsi > 50 and macd > macd_signal:
         opportunity_score += 2
-        reasons.append("💡 Stoch RSI 극단 과매도 + RSI 50 상단 돌파 + MACD 상승 → 강력한 BUY 기회")
+        reasons.append("💡 Stoch RSI 극단 과매도 + RSI 50 상단 돌파 + MACD 상승 → 강력한 BUY 기회 가점+2")
     if stoch_rsi < 0.1 and rsi < 40 and macd < 0:
         opportunity_score += 1
-        reasons.append("⚠️ macd_signal 없어도 조건 일부 충족 → 약한 SELL 진입 허용")  
+        reasons.append("⚠️ macd_signal 없어도 조건 일부 충족 → 약한 SELL 진입 허용 가점+1")  
 
     if stoch_rsi > 0.95 and rsi < 50 and macd < macd_signal and abs(macd - macd_signal) < 0.0001:
-        opportunity_score += 2
-        reasons.append("📉 MACD 매우 약함 → 신뢰도 낮음")
+        opportunity_score += 1
+        reasons.append("📉 MACD 매우 약함 → 신뢰도 낮음 가점+1")
 
     if rsi < 40 and macd > macd_signal:
         opportunity_score -= 1
-        reasons.append("⚠️ RSI 약세 + MACD 강세 → 방향 충돌 → 관망 권장")
+        reasons.append("⚠️ RSI 약세 + MACD 강세 → 방향 충돌 → 관망 권장 감점+1")
 
     if 48 < rsi < 52:
         opportunity_score += 0.5
-        reasons.append("💡 RSI 50 근접 – 심리 경계선 전환 주시")
+        reasons.append("💡 RSI 50 근접 – 심리 경계선 전환 주시 가점+0.5")
     if 60 < rsi < 65:
         opportunity_score += 0.5
-        reasons.append("🔴 RSI 60~65: 과매수 초기 피로감 (SELL 경계)")
+        reasons.append("🔴 RSI 60~65: 과매수 초기 피로감 (SELL 경계) 가점+0.5")
     # 📌 약한 과매도: 하락 추세 + stoch_rsi < 0.4 + RSI < 40
     if stoch_rsi < 0.4 and rsi < 40 and trend == "DOWNTREND":
         opportunity_score += 0.5
-        reasons.append("🟡 Stoch RSI < 0.4 + RSI < 40 + 하락 추세 → 제한적 매수 조건")
+        reasons.append("🟡 Stoch RSI < 0.4 + RSI < 40 + 하락 추세 → 제한적 매수 조건 가점+0.5")
 
     # 📌 약한 과매수: 상승 추세 + stoch_rsi > 0.6 + RSI > 60
     if stoch_rsi > 0.6 and rsi > 60 and trend == "UPTREND":
         opportunity_score -= 0.5
-        reasons.append("🟡 Stoch RSI > 0.6 + RSI > 60 + 상승 추세 → 피로감 주의")
+        reasons.append("🟡 Stoch RSI > 0.6 + RSI > 60 + 상승 추세 → 피로감 주의 감점-0.5")
     # ✅ NEUTRAL 추세이지만 RSI + MACD가 강한 경우 강제 진입 기회 부여
     if trend == "NEUTRAL" and rsi > 65 and macd > 0.1:
-        opportunity_score += 0.75
-        reasons.append("📌 추세 중립이나 RSI > 65 & MACD 강세 → 관망보다 진입 우위 가능성 높음")
+        opportunity_score += 1.0
+        reasons.append("📌 추세 중립이나 RSI > 65 & MACD 강세 → 관망보다 진입 우위 가능성 높음 가점+1")
 
     # 💡 강세 반전 패턴 + 과매도
     if pattern in ["HAMMER", "BULLISH_ENGULFING"] and stoch_rsi < 0.2:
         opportunity_score += 1
-        reasons.append("🟢 강세 패턴 + Stoch RSI 과매도 → 매수 신호 강화")
+        reasons.append("🟢 강세 패턴 + Stoch RSI 과매도 → 매수 신호 강화 가점+1")
 
     # 💡 약세 반전 패턴 + 과매수
     if pattern in ["SHOOTING_STAR", "BEARISH_ENGULFING"] and stoch_rsi > 0.8:
         opportunity_score += 1
-        reasons.append("🔴 약세 패턴 + Stoch RSI 과매수 → 매도 신호 강화")
+        reasons.append("🔴 약세 패턴 + Stoch RSI 과매수 → 매도 신호 강화 가점+1")
     
     if rsi >= 70:
         if trend == "UPTREND" and macd > macd_signal:
             opportunity_score += 0.5
-            reasons.append("🔄 RSI 70 이상이지만 상승추세 + MACD 상승 → 조건부 진입 허용")
+            reasons.append("🔄 RSI 70 이상이지만 상승추세 + MACD 상승 → 조건부 진입 허용 가점+0.5")
         else:
             opportunity_score -= 0.5
-            reasons.append("❌ RSI 70 이상: 과매수로 진입 위험 높음 → 관망 권장")
+            reasons.append("❌ RSI 70 이상: 과매수로 진입 위험 높음 → 관망 권장 감점 -0.5")
 
     # ✅ 추가 제안 1: 점수 밸런싱 - SELL 조건도 강한 경우엔 +2까지 부여
     if stoch_rsi > 0.95 and rsi < 50 and macd < macd_signal:
         opportunity_score += 2
-        reasons.append("🔻 Stoch RSI 과매수 + RSI 약세 + MACD 하락 → 강한 SELL 신호")
+        reasons.append("🔻 Stoch RSI 과매수 + RSI 약세 + MACD 하락 → 강한 SELL 신호 가점+2")
 
 
     # ✅ 추가 제안 2: 다중 강한 매도 조건 조합 강화
     if rsi < 35 and stoch_rsi < 0.2 and trend == "DOWNTREND" and macd < macd_signal:
         opportunity_score += 1.5
-        reasons.append("🔴 RSI 과매도 + Stoch RSI 극단 + 하락추세 + MACD 약세 → 강한 SELL 기회")
+        reasons.append("🔴 RSI 과매도 + Stoch RSI 극단 + 하락추세 + MACD 약세 → 강한 SELL 기회 가점+1.5")
 
 
     # ✅ 추가 제안 3: 다중 강한 매수 조건 조합 강화
     if rsi > 55 and stoch_rsi > 0.8 and trend == "UPTREND" and macd > macd_signal:
         opportunity_score += 1.5
-        reasons.append("🟢 RSI + Stoch + 추세 + MACD 전부 강세 → 강한 BUY 기회")
+        reasons.append("🟢 RSI + Stoch + 추세 + MACD 전부 강세 → 강한 BUY 기회 가점+1.5")
 
 
     return opportunity_score, reasons
@@ -97,37 +97,37 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     # 기존 없음 → 추가:
     if rsi < 30 and trend == "DOWNTREND" and macd < macd_signal:
         opportunity_score += 0.5
-        reasons.append("🔄 RSI 30 이하지만 하락추세 + MACD 약세 → 추가 진입 조건 만족")
+        reasons.append("🔄 RSI 30 이하지만 하락추세 + MACD 약세 → 추가 진입 조건 만족 가점+0.5")
     
     if 40 < rsi < 60 and stoch_rsi > 0.8:
         opportunity_score += 0.5
-        reasons.append("⚙ RSI 중립 + Stoch 과열 → 가중 진입 조건")
+        reasons.append("⚙ RSI 중립 + Stoch 과열 → 가중 진입 조건 가점+0.5")
     if stoch_rsi > 0.8 and rsi > 60:
         opportunity_score -= 1
-        reasons.append("⚠️ Stoch RSI 과열 + RSI 상승 피로 → 진입 주의 필요")
+        reasons.append("⚠️ Stoch RSI 과열 + RSI 상승 피로 → 진입 주의 필요 감점-1")
         
     if 35 < rsi < 40:
         opportunity_score += 0.5
-        reasons.append("🟢 RSI 35~40: 중립 돌파 초기 시도 (기대 영역)")
+        reasons.append("🟢 RSI 35~40: 중립 돌파 초기 시도 (기대 영역)가점+0.5")
     if trend == "UPTREND":
         opportunity_score += 0.5
-        reasons.append("🟢 상승추세 지속: 매수 기대감 강화")
+        reasons.append("🟢 상승추세 지속: 매수 기대감 강화 가점+0.5")
     elif trend == "DOWNTREND":
         opportunity_score += 0.5
-        reasons.append("🔴 하락추세 지속: 매도 기대감 강화")
+        reasons.append("🔴 하락추세 지속: 매도 기대감 강화 가점+0.5")
     # ✅ 중립 추세일 때 추가 조건
     elif trend == "NEUTRAL":
         if (45 < rsi < 60) and (macd > macd_signal) and (0.2 < stoch_rsi < 0.8):
             opportunity_score += 0.25
-            reasons.append("🟡 중립 추세 + 조건 충족 → 약한 기대감")
+            reasons.append("🟡 중립 추세 + 조건 충족 → 약한 기대감 가점+0.25")
         else:
             opportunity_score -= 0.25
-            reasons.append("⚠️ 중립 추세 + 신호 불충분 → 신뢰도 낮음 (감점)")
+            reasons.append("⚠️ 중립 추세 + 신호 불충분 → 신뢰도 낮음 (감점-0.25)")
 
     
     if pattern in ["HAMMER", "SHOOTING_STAR"]:
-        opportunity_score += 0.5
-        reasons.append(f"🕯 {pattern} 캔들: 심리 반전 가능성")
+        opportunity_score += 1.0
+        reasons.append(f"🕯 {pattern} 캔들: 심리 반전 가능성 가점+1")
     else:
         reasons.append("⚪ 주요 캔들 패턴 없음 → 중립 처리 (감점 없음)")
     
@@ -136,22 +136,22 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
 
     if sr_range < 0.1:
         opportunity_score -= 0.25
-        reasons.append("⚠️ 지지선-저항선 간격 좁음 → 신뢰도 낮음 (감점)")
+        reasons.append("⚠️ 지지선-저항선 간격 좁음 → 신뢰도 낮음 (감점-0.25)")
     elif sr_range > atr:
         opportunity_score += 0.25
-        reasons.append("🟢 지지선-저항선 간격 넓음 → 뚜렷한 기술적 영역 (가점)")
+        reasons.append("🟢 지지선-저항선 간격 넓음 → 뚜렷한 기술적 영역 (가점+0.25)")
     else:
         reasons.append("⚪ 지지선-저항선 평균 거리 → 중립 처리")
     
         # 1. RSI와 추세가 충돌
     if trend == "DOWNTREND" and rsi > 50:
         opportunity_score -= 0.5
-        reasons.append("⚠️ 하락 추세 중 RSI 매수 신호 → 조건 충돌 감점")
+        reasons.append("⚠️ 하락 추세 중 RSI 매수 신호 → 조건 충돌 감점 -0.5")
 
     # 2. MACD 약세인데 RSI/Stoch RSI가 강세면 경고
     if macd < macd_signal and (rsi > 50 or stoch_rsi > 0.6):
         opportunity_score -= 0.25
-        reasons.append("⚠️ MACD 하락 중 RSI or Stoch RSI 매수 신호 → 조건 불일치 감점")
+        reasons.append("⚠️ MACD 하락 중 RSI or Stoch RSI 매수 신호 → 조건 불일치 감점 -0.25")
 
 
     if macd > macd_signal:
@@ -163,20 +163,20 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     # 3. 추세 중립 + MACD 약세 = 확신 부족
     if trend == "NEUTRAL" and rsi > 45 and stoch_rsi < 0.2 and macd > 0:
         opportunity_score += 1.0
-        reasons.append("중립 추세 + RSI/스토캐스틱 반등 + MACD 양수 → 진입 기대")
+        reasons.append("중립 추세 + RSI/스토캐스틱 반등 + MACD 양수 → 진입 기대 가점+1")
 
     # 4. ATR 극저 (강한 무변동장)
     if atr < 0.001:
         opportunity_score -= 0.5
-        reasons.append("⚠️ ATR 매우 낮음 → 변동성 매우 부족한 장세")
+        reasons.append("⚠️ ATR 매우 낮음 → 변동성 매우 부족한 장세 감점 -0.5")
     if abs(macd - macd_signal) < 0.0002:
         opportunity_score -= 0.2
-        reasons.append("⚠️ MACD 신호 미약 → 방향성 부정확으로 감점")
+        reasons.append("⚠️ MACD 신호 미약 → 방향성 부정확으로 감점 -0.2")
     if 40 < rsi < 50:
         opportunity_score -= 0.2
-        reasons.append("⚠️ RSI 중립구간 (40~50) → 방향성 모호, 진입 보류")
+        reasons.append("⚠️ RSI 중립구간 (40~50) → 방향성 모호, 진입 보류 감점 -0.2")
         opportunity_score -= 0.5
-        reasons.append("⚠️ ATR 낮음 → 진입 후 변동 부족, 리스크 대비 비효율")
+        reasons.append("⚠️ ATR 낮음 → 진입 후 변동 부족, 리스크 대비 비효율 감점 -0.5")
     
 
 
@@ -196,10 +196,10 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
 
     if pattern in strong_reversal_patterns:
         opportunity_score += 1
-        reasons.append(f"🟢 강력한 반전 캔들 패턴: {pattern}")
+        reasons.append(f"🟢 강력한 반전 캔들 패턴 가점 +1: {pattern}")
     elif pattern in supportive_patterns:
         opportunity_score += 0.5
-        reasons.append(f"🟢 보조 캔들 패턴: {pattern}")
+        reasons.append(f"🟢 보조 캔들 패턴 가점+0.5: {pattern}")
     else:
         reasons.append("⚪ 주요 캔들 패턴 없음")
 
@@ -286,22 +286,22 @@ def additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, tre
     # RSI 30 이하
     if rsi < 30:
         score += 2.5
-        reasons.append("🔴 RSI 30 이하 (추가 기회 요인)")
+        reasons.append("🔴 RSI 30 이하 (추가 기회 요인 가점+2.5)")
 
     # Stoch RSI 극단
     if stoch_rsi < 0.05:
         score += 1.5
-        reasons.append("🟢 Stoch RSI 0.05 이하 (반등 기대)")
+        reasons.append("🟢 Stoch RSI 0.05 이하 (반등 기대 가점+1.5)")
 
     # MACD 상승 전환
     if macd > 0 and macd > macd_signal:
         score += 1
-        reasons.append("🟢 MACD 상승 전환 (추가 확인 요인)")
+        reasons.append("🟢 MACD 상승 전환 (추가 확인 요인 가점+1)")
 
     # 캔들 패턴
     if pattern in ["BULLISH_ENGULFING", "BEARISH_ENGULFING"]:
         score += 1
-        reasons.append(f"📊 {pattern} 발생 (심리 반전)")
+        reasons.append(f"📊 {pattern} 발생 (심리 반전 가점+1)")
         
     if pattern in ["DOJI", "MORNING_STAR", "EVENING_STAR"]:
         score += 0.4
