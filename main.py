@@ -1675,6 +1675,10 @@ def analyze_with_gpt(payload, current_price):
     rsi_trend = payload.get("rsi_trend", [])
     macd_trend = payload.get("macd_trend", [])
     stoch_rsi_trend = payload.get("stoch_rsi_trend", [])
+    support     = payload.get("support", current_price)
+    resistance  = payload.get("resistance", current_price)
+    boll_up     = payload.get("bollinger_upper", current_price)
+    boll_low    = payload.get("bollinger_lower", current_price)
 
     messages = [
         {
