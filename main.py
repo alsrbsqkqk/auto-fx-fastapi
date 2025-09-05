@@ -397,34 +397,55 @@ def conflict_check(rsi, pattern, trend, signal):
 
     return False
     
-def check_recent_opposite_signal(pair, current_signal, within_minutes=30):
+def check_recent_opposite_signal(pair, current_signal, within_minutes=30, *,
+                                 strategy=None, timeframe=None, score=None):
     """
-    최근 동일 페어에서 반대 시그널이 있으면 True 반환
+    최근 within_minutes 안에 같은 pair(+옵션: strategy/timeframe)에서
+    '반대 방향' 신호가 있었으면 True(관망), 아니면 False.
+    항상 '현재 신호'를 기록하고 종료한다. (연속 관망 방지)
     """
-    log_path = f"/tmp/{pair}_last_signal.txt"
+    os.makedirs("/tmp", exist_ok=True)
+    # 키를 넓히려면 전략/타프 포함
+    key = f"{pair}:{strategy or 'ANY'}:{timeframe or 'ANY'}".replace(":", "_")
+    log_path = f"/tmp/{key}_last_signal.json"
     now = datetime.utcnow()
 
-    # 기존 기록 읽기
+    last_signal = None
+    last_time = None
+
+    # 1) 읽기
     if os.path.exists(log_path):
         try:
             with open(log_path, "r") as f:
-                last_record = f.read().strip().split(",")
-                last_time = datetime.fromisoformat(last_record[0])
-                last_signal = last_record[1]
-            if (now - last_time).total_seconds() < within_minutes * 60:
-                if last_signal != current_signal:
-                    return True
+                rec = json.load(f)
+                last_signal = rec.get("signal")
+                ts = rec.get("ts")
+                if ts:
+                    last_time = datetime.fromisoformat(ts)
         except Exception as e:
-            print("❗ 최근 시그널 기록 불러오기 실패:", e)
+            print("[oppo-filter] read fail:", e)
 
-    # 현재 시그널 기록 갱신
+    # 2) 충돌 판정
+    conflict = False
+    if last_time and (now - last_time) < timedelta(minutes=within_minutes):
+        if last_signal and last_signal != current_signal:
+            conflict = True
+
+    # 3) 항상 현재 신호 기록 (연속 관망 방지의 핵심)
     try:
         with open(log_path, "w") as f:
-            f.write(f"{now.isoformat()},{current_signal}")
+            json.dump({
+                "ts": now.isoformat(),
+                "pair": pair,
+                "signal": current_signal,
+                "strategy": strategy,
+                "timeframe": timeframe,
+                "score": score
+            }, f)
     except Exception as e:
-        print("❗ 시그널 기록 저장 실패:", e)
+        print("[oppo-filter] write fail:", e)
 
-    return False
+    return conflict
 
 
 
