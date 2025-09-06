@@ -1640,8 +1640,9 @@ def parse_gpt_feedback(text):
             decision = "SELL"
 
     # ✅ TP/SL 추출 (가장 마지막 숫자 사용)
-    tp_line = next((line for line in text.splitlines() if "TP:" in line.upper() or "TP 제안 값" in line or "목표" in line), "")
-    sl_line = next((line for line in text.splitlines() if "SL:" in line.upper() and re.search(r"\d+\.\d+", line)), "")
+    lines = text.splitlines()
+    tp_line = next((ln for ln in reversed(lines) if re.search(r'(?i)\bTP\b|TP 제안 값|목표', ln)), "")
+    sl_line = next((ln for ln in reversed(lines) if re.search(r'(?i)\bSL\b', ln) and re.search(r'\d+\.\d+', ln)), "")
     if not sl_line:
         sl = None  # 결정은 유지
     # 아래처럼 결정 추출을 더 확실하게:
@@ -1653,15 +1654,12 @@ def parse_gpt_feedback(text):
         return float(nums[-1]) if nums else None
 
 
-    def extract_avg_price(line):
-        # 가격 후보 전부 뽑고, 그중 '가장 큰 값'을 선택 (ATR 등 소수 작은 값 제거 효과)
-        matches = re.findall(r"\b\d{1,5}\.\d{1,5}\b", line)
-        if not matches:
-            return None
-        return max(float(m) for m in matches)
+    def extract_last_price(line):
+        nums = re.findall(r"\b\d{1,5}\.\d{1,5}\b", line)
+        return float(nums[-1]) if nums else None
 
-    tp = extract_avg_price(tp_line)
-    sl = extract_avg_price(sl_line)
+    tp = extract_last_price(tp_line)
+    sl = extract_last_price(sl_line)
 
     return decision, tp, sl
     
