@@ -206,9 +206,9 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     return opportunity_score, reasons
     
 def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window=20, min_touch_count=2):
-    # 자동 window 설정 (타임프레임 기반)
-    window_map = {'M15': 10, 'M30': 6, 'H1': 4, 'H4': 2}
-    window = window_map.get(timeframe, window)
+    # 단타(3h/10pip) 최적화된 창 길이
+    window_map = {'M5': 72, 'M15': 32, 'M30': 48, 'H1': 48, 'H4': 60}
+    window = max(window_map.get(timeframe, window), 32)  # 최소 32봉 보장
     
     if price is None:
         raise ValueError("get_enhanced_support_resistance: price 인자가 None입니다. current_price가 제대로 전달되지 않았습니다.")
@@ -218,6 +218,12 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window
 
     pip = pip_value_for(pair)
     round_digits = int(abs(np.log10(pip)))
+    
+    # --- 동적 order: 창의 1/10 수준, 2~3로 클램프(반응성 확보) ---
+    order = max(2, min(3, window // 10))
+    if window < (2 * order + 1):  # 이론적 안전 장치
+        order = max(2, (window - 1) // 2)
+    
     # 초기화 (UnboundLocalError 방지)
     support_rows = pd.DataFrame(columns=candles.columns)
     resistance_rows = pd.DataFrame(columns=candles.columns)
@@ -242,33 +248,52 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window
         return support, resistance
 
     # 🎯 가까운 레벨 병합 (군집화)
-    def cluster_levels(levels, *, pip: float, threshold_pips: int = 8):
+    def cluster_levels(levels, *, pip: float, threshold_pips: int = 6, min_touch_count: int = 2):
         """
-        인접 레벨 병합 (군집화)
-        - threshold_pips: 몇 pip 이내면 같은 레벨로 간주할지 (기본 8pip)
+        인접 레벨 병합(클러스터) + 최소 터치 수 필터
+        - threshold_pips: 단타는 6~8pip 권장(기본 6)
         - 통화쌍/가격 스케일에 무관하게 동작
         """
         if not levels:
             return []
 
-        threshold = threshold_pips * pip     # <-- 핵심: pip 기반 스케일링
-        clustered = []
-        for level in sorted(levels):
-            if not clustered or abs(clustered[-1] - level) > threshold:
-                clustered.append(level)
-            else:
-                # 가까우면 평균으로 병합
-                clustered[-1] = (clustered[-1] + level) / 2
-        return clustered
-    
+        threshold = threshold_pips * pip
+        buckets = []  # [{ "val": float, "cnt": int }]
 
-    last_atr = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr)
-    min_distance = max(10 * pip, 1.2 * last_atr)
+        for lv in sorted(levels):
+            if not buckets or abs(buckets[-1]["val"] - lv) > threshold:
+                # 새 클러스터 시작
+                buckets.append({"val": lv, "cnt": 1})
+            else:
+                # 가까우면 평균으로 병합 + 터치 수 증가
+                buckets[-1]["val"] = (buckets[-1]["val"] + lv) / 2.0
+                buckets[-1]["cnt"] += 1
+
+        # 최소 터치 수 필터 적용
+        return [b["val"] for b in buckets if b["cnt"] >= min_touch_count]
+   
 
     # 📌 스윙 지지/저항 구하기
-    support_levels, resistance_levels = find_local_extrema(df)
-    support_levels    = cluster_levels(support_levels,    pip=pip, threshold_pips=8)
-    resistance_levels = cluster_levels(resistance_levels, pip=pip, threshold_pips=8)
+    support_levels, resistance_levels = find_local_extrema(df, order=order)
+    support_levels    = cluster_levels(support_levels,    pip=pip, threshold_pips=6, min_touch_count=min_touch_count)
+    resistance_levels = cluster_levels(resistance_levels, pip=pip, threshold_pips=6, min_touch_count=min_touch_count)
+    
+    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+    # [A] 후보 부족 시 창을 2배로 확장해 1회 재시도 (단타용)
+    if (not support_levels) or (not resistance_levels):
+        df2 = candles.tail(window * 2).copy()
+        order2 = max(2, min(3, (window * 2) // 10))
+        if (window * 2) >= (2 * order2 + 1):
+            s2, r2 = find_local_extrema(df2, order=order2)
+            s2 = cluster_levels(s2, pip=pip, threshold_pips=6, min_touch_count=min_touch_count)
+            r2 = cluster_levels(r2, pip=pip, threshold_pips=6, min_touch_count=min_touch_count)
+            if s2: support_levels = s2
+            if r2: resistance_levels = r2
+    # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+    last_atr = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr)
+    min_distance = max(6 * pip, 0.8 * last_atr)  # 기존 10*pip, 1.2*ATR → 6*pip, 0.8*ATR
+
+
     
     # 🔽 현재가 아래 지지선 중 가장 가까운 것
     support_price = max([s for s in support_levels if s < price], default=price - min_distance)
