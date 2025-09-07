@@ -1157,7 +1157,9 @@ async def webhook(request: Request):
             pattern, trend, fibo_levels, decision, news, gpt_feedback,
             alert_name, tp, sl, price, None,
             outcome_analysis, adjustment_suggestion, [],
-            atr
+            atr,
+            support=payload.get("support"),     # ▼ 추가
+            resistance=payload.get("resistance")
         )
         
         return JSONResponse(content={"status": "WAIT", "message": "GPT가 WAIT 판단"})
@@ -1312,7 +1314,9 @@ async def webhook(request: Request):
         pattern, trend, fibo_levels, decision, news, gpt_feedback,
         alert_name, tp, sl, price, pnl, None,
         outcome_analysis, adjustment_suggestion, price_movements,
-        atr
+        atr,
+        support=payload.get("support"),    # ▼ 추가
+        resistance=payload.get("resistance")
          )
     return JSONResponse(content={"status": "completed", "decision": decision})
 
@@ -1793,7 +1797,7 @@ def safe_float(val):
         return ""
 
 
-def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None, macd=None, stoch_rsi=None, pattern=None, trend=None, fibo=None, gpt_decision=None, news=None, gpt_feedback=None, alert_name=None, tp=None, sl=None, entry=None, price=None, pnl=None, outcome_analysis=None, adjustment_suggestion=None, price_movements=None, atr=None):
+def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None, macd=None, stoch_rsi=None, pattern=None, trend=None, fibo=None, gpt_decision=None, news=None, gpt_feedback=None, alert_name=None, tp=None, sl=None, entry=None, price=None, pnl=None, outcome_analysis=None, adjustment_suggestion=None, price_movements=None, atr=None, support=None, resistance=None):
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
     client = gspread.authorize(creds)
