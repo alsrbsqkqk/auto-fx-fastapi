@@ -1863,8 +1863,8 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
     
         if not filtered_movement_str:
             filtered_movement_str = "no_data"
-    support_out = payload.get("support")
-    resist_out  = payload.get("resistance")
+    support_out = support
+    resist_out  = resistance
     row = [
       
         str(now_atlanta),                 # timestamp
