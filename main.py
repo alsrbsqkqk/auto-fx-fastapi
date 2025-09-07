@@ -1859,26 +1859,51 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
     
         if not filtered_movement_str:
             filtered_movement_str = "no_data"
-
+    support_out = payload.get("support")
+    resist_out  = payload.get("resistance")
     row = [
       
-        str(now_atlanta), pair, alert_name or "", signal, decision, score,
-        safe_float(rsi), safe_float(macd), safe_float(stoch_rsi),
-        pattern or "", trend or "", fibo.get("0.382", ""), fibo.get("0.618", ""),
-        gpt_decision or "", news or "", notes,
-        json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else (result or "미정"),
-        gpt_feedback or "",        
-        safe_float(price), safe_float(tp), safe_float(sl), safe_float(pnl),
-        is_new_high,
-        is_new_low,
-        safe_float(atr),
-        news,
-        outcome_analysis or "",
-        adjustment_suggestion or "",
-        gpt_feedback or "",
-        filtered_movement_str
-    ]
+        str(now_atlanta),                 # timestamp
+        pair,                             # symbol
+        alert_name or "",                 # strategy
+        signal,                           # signal_type
+        decision,                         # decision
+        score,                            # score
+        safe_float(rsi),                  # rsi
+        safe_float(macd),                 # macd
+        safe_float(stoch_rsi),            # stoch_rsi
 
+        trend or "",                      # trend
+        pattern or "",                    # candle_trend (☜ 기존엔 pattern이 trend 앞/뒤 섞였음)
+
+        support_out,                      # ✅ support (진짜 S/R)
+        resist_out,                       # ✅ resistance
+
+        gpt_decision or "",               # final_decision
+        news or "",                       # news_summary
+        notes,                            # reason
+        json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else (result or "미정"),  # summary
+        gpt_feedback or "",               # order_json
+        "",                               # gpt_feedback (필요 없으면 빈칸 유지)
+
+        safe_float(price),                # price
+        safe_float(tp),                   # tp
+        safe_float(sl),                   # sl
+        safe_float(pnl),                  # pnl
+
+        is_new_high,                      # is_new_high
+        is_new_low,                       # is_new_low
+        safe_float(atr),                  # atr
+
+        # ↓ 아래 필드들이 시트 헤더에 실제로 있다면 그대로 유지,
+        #   없다면 이 아래 줄들만 지워도 무방 (헤더와 컬럼 수는 항상 동일해야 함)
+        news,                             # (선택) news 원문
+        outcome_analysis or "",           # (선택)
+        adjustment_suggestion or "",      # (선택)
+        gpt_feedback or "",               # (선택) gpt_feedback_dup
+        filtered_movement_str or ""       # (선택)
+        ]
+    
     clean_row = []
     for v in row:
         if isinstance(v, (dict, list)):
