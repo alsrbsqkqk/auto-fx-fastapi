@@ -1126,11 +1126,10 @@ async def webhook(request: Request):
 
     gpt_feedback = "GPT 분석 생략: 점수 미달"
     decision, tp, sl = "WAIT", None, None
-
+    gpt_raw = None
     if signal_score >= 4.0:
         gpt_raw = analyze_with_gpt(payload, price)
         print("✅ STEP 6: GPT 응답 수신 완료")
-        gpt_raw = None
         # ✅ 추가: 파싱 결과 강제 정규화 (대/소문자/공백/이상값 방지)
         raw_text = (
             gpt_raw if isinstance(gpt_raw, str)
@@ -1144,7 +1143,7 @@ async def webhook(request: Request):
         print("🚫 GPT 분석 생략: 점수 4.0점 미만")
 
 
-    result = gpt_raw
+    result = gpt_raw or ""
 
     # GPT 텍스트 추출(반환 키 다양성 대비)
     gpt_feedback = (
