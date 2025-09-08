@@ -25,7 +25,11 @@ _openai_sess = requests.Session()  # keep-alive로 커넥션 재사용 (429 억�
 # === 간단 디버그 (알림 한 건 추적용) ===
 import uuid, time as _t
 def dbg(tag, **k):
-    print(f"[DBG] {tag} " + " ".join(f"{a}={b}" for a,b in k.it
+    try:
+        pairs = " ".join(f"{a}={b}" for a, b in k.items())
+    except Exception:
+        pairs = str(k)
+    print(f"[DBG] {tag} {pairs}")
 
 
 
