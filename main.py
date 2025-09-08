@@ -9,7 +9,9 @@ from datetime import datetime, timedelta
 import openai
 import numpy as np
 import gspread
-
+import threading
+_gpt_lock = threading.Lock()
+_gpt_last_ts = 0.0
 from oauth2client.service_account import ServiceAccountCredentials
 
 
@@ -1796,10 +1798,14 @@ def analyze_with_gpt(payload, current_price):
     import time
     try:
         # --- 최소 스로틀: 같은 프로세스에서 1.2초 간격 보장 ---
-        last = getattr(analyze_with_gpt, "_last_call_ts", 0.0)
-        gap = time.time() - last
-        if gap < 2.5:
-            time.sleep(2.5 - gap)
+        with _gpt_lock:
+            global _gpt_last_ts
+            now = time.time()
+            gap = now - _gpt_last_ts
+            if gap < 2.5:
+                time.sleep(2.5 - gap)
+            # 요청 보내기 직전에 갱신 (레이스 차단 핵심)
+            _gpt_last_ts = time.time()
 
         # --- 최대 1회 재시도(429 전용) ---
         for attempt in range(2):
@@ -1818,6 +1824,8 @@ def analyze_with_gpt(payload, current_price):
                 except Exception:
                     wait_s = 3.0
                 time.sleep(max(2.5, wait_s))
+                # 재시도 전에도 타임스탬프 갱신
+                _gpt_last_ts = time.time()
                 continue
 
             # 그 외 상태코드 에러 처리
@@ -1830,11 +1838,11 @@ def analyze_with_gpt(payload, current_price):
                     .get("content", "")
             )
 
-            analyze_with_gpt._last_call_ts = time.time()
+            _gpt_last_ts = time.time()
             return text.strip() if str(text).strip() else "GPT 응답 없음"
 
         # 여기까지 왔으면 429 재시도도 실패
-        analyze_with_gpt._last_call_ts = time.time()
+        _gpt_last_ts = time.time()
         return "GPT 응답 없음"
 
     except Exception as e:
