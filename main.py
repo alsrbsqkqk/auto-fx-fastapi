@@ -1109,11 +1109,11 @@ async def webhook(request: Request):
         "new_low": bool(high_low_analysis["new_low"]),
         "atr": atr,
         "signal_score": signal_score,
-        "score_components": reasons,
-        "rsi_trend": rsi_trend,
-        "macd_trend": macd_trend,
-        "macd_signal_trend": macd_signal_trend,
-        "stoch_rsi_trend": stoch_rsi_trend
+        "score_components": [str(s)[:150] for s in reasons[-16:]],  # 최근 16개, 각 150자 이내
+        "rsi_trend": [round(float(x), 2) for x in list(rsi_trend)[-14:]],  # 최근 14개, 소수점 2자리
+        "macd_trend": [round(float(x), 4) for x in list(macd_trend)[-14:]],  # 최근 14개, 소수점 4자리
+        "macd_signal_trend": [round(float(x), 4) for x in list(macd_signal_trend)[-14:]],  # 최근 14개
+        "stoch_rsi_trend": [round(float(x), 3) for x in list(stoch_rsi_trend)[-14:]],  # 최근 14개
     }
 
 
@@ -1802,8 +1802,8 @@ def analyze_with_gpt(payload, current_price):
             global _gpt_last_ts
             now = time.time()
             gap = now - _gpt_last_ts
-            if gap < 2.5:
-                time.sleep(2.5 - gap)
+            if gap < 6.0:
+                time.sleep(6.0 - gap)
             # 요청 보내기 직전에 갱신 (레이스 차단 핵심)
             _gpt_last_ts = time.time()
 
@@ -1818,12 +1818,17 @@ def analyze_with_gpt(payload, current_price):
 
             # 429면 Retry-After를 우선 존중하고 한 번만 재시도
             if r.status_code == 429 and attempt == 0:
-                wait = r.headers.get("retry-after") or r.headers.get("Retry-After")
+                wait = (
+                    r.headers.get("retry-after") or r.headers.get("Retry-After")
+                    or r.headers.get("x-ratelimit-reset-requests")
+                    or r.headers.get("x-ratelimit-reset-tokens")
+                )
                 try:
                     wait_s = float(wait)
                 except Exception:
-                    wait_s = 3.0
-                time.sleep(max(2.5, wait_s))
+                    wait_s = 8.0  # 기본을 8초로 상향
+                time.sleep(max(6.0, wait_s))  # 최소 6초
+                
                 # 재시도 전에도 타임스탬프 갱신
                 _gpt_last_ts = time.time()
                 continue
