@@ -1150,8 +1150,8 @@ async def webhook(request: Request):
          or result.get("summary")
          or result.get("reason")
          or result.get("message"))
-        if isinstance(result, dict) else ""
-    )
+    ) if isinstance(result, dict) else str(result or gpt_feedback)
+    
 
     if not gpt_feedback or not str(gpt_feedback).strip():
         gpt_feedback = "GPT 응답 없음"
