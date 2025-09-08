@@ -658,8 +658,8 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
         confirmed_breakdown = under1 or (under1 and under2)
 
         if not confirmed_breakdown and dist_to_sup_pips <= 5:
-            reasons.append("⛔ 지지선 이탈 미확인 + 5pip 이내 → 추격 매도 금지")
-            return 0, reasons
+            signal_score -= 2
+            reasons.append("⛔ 지지선 이탈 미확인 + 5pip 이내 → 추격 매도 위험 (감점-2)")
 
     # ✅ RSI, MACD, Stoch RSI 모두 중립 + Trend도 NEUTRAL → 횡보장 진입 방어
     if trend == "NEUTRAL":
@@ -901,16 +901,16 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
             confirmed_top_break = recent.iloc[-1]['close'] > (box_high + buf_price)
             retest_support = (recent.iloc[-1]['low'] > box_high - buf_price) and (near_top_pips <= NEAR_PIPS)
             if near_top_pips <= NEAR_PIPS and not (confirmed_top_break or retest_support):
-                reasons.append("⛔ 박스 상단 근접 매수 금지(돌파확정/리테스트만)")
-                return 0, reasons
+                signal_score -= 1.5
+                reasons.append("⚠️ 박스 상단 근접 매수 위험 (감점-1.5)")
 
         # 하단 근접 매도 금지 (확정 이탈 or 리테스트만 허용)
         if signal == "SELL" and box_info.get("in_box") and box_info.get("breakout") is None:
             confirmed_bottom_break = recent.iloc[-1]['close'] < (box_low - buf_price)
             retest_resist = (recent.iloc[-1]['high'] < box_low + buf_price) and (near_low_pips <= NEAR_PIPS)
             if near_low_pips <= NEAR_PIPS and not (confirmed_bottom_break or retest_resist):
-                reasons.append("⛔ 박스 하단 근접 매도 금지(이탈확정/리테스트만)")
-                return 0, reasons
+                signal_score -= 1.5
+                reasons.append("⚠️ 박스 하단 근접 매도 위험 (감점-1.5)")
                 
     # 상승 연속 양봉 패턴 보정 BUY
     if (
