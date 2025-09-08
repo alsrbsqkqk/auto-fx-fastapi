@@ -9,6 +9,9 @@ from datetime import datetime, timedelta
 import openai
 import numpy as np
 import gspread
+import threading
+_gpt_lock = threading.Lock()
+_gpt_last_ts = 0.0
 from oauth2client.service_account import ServiceAccountCredentials
 
 
@@ -206,9 +209,9 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     return opportunity_score, reasons
     
 def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window=20, min_touch_count=2):
-    # 자동 window 설정 (타임프레임 기반)
-    window_map = {'M15': 10, 'M30': 6, 'H1': 4, 'H4': 2}
-    window = window_map.get(timeframe, window)
+    # 단타(3h/10pip) 최적화된 창 길이
+    window_map = {'M5': 72, 'M15': 32, 'M30': 48, 'H1': 48, 'H4': 60}
+    window = max(window_map.get(timeframe, window), 32)  # 최소 32봉 보장
     
     if price is None:
         raise ValueError("get_enhanced_support_resistance: price 인자가 None입니다. current_price가 제대로 전달되지 않았습니다.")
@@ -218,6 +221,12 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window
 
     pip = pip_value_for(pair)
     round_digits = int(abs(np.log10(pip)))
+    
+    # --- 동적 order: 창의 1/10 수준, 2~3로 클램프(반응성 확보) ---
+    order = max(2, min(3, window // 10))
+    if window < (2 * order + 1):  # 이론적 안전 장치
+        order = max(2, (window - 1) // 2)
+    
     # 초기화 (UnboundLocalError 방지)
     support_rows = pd.DataFrame(columns=candles.columns)
     resistance_rows = pd.DataFrame(columns=candles.columns)
@@ -242,33 +251,52 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window
         return support, resistance
 
     # 🎯 가까운 레벨 병합 (군집화)
-    def cluster_levels(levels, *, pip: float, threshold_pips: int = 8):
+    def cluster_levels(levels, *, pip: float, threshold_pips: int = 6, min_touch_count: int = 2):
         """
-        인접 레벨 병합 (군집화)
-        - threshold_pips: 몇 pip 이내면 같은 레벨로 간주할지 (기본 8pip)
+        인접 레벨 병합(클러스터) + 최소 터치 수 필터
+        - threshold_pips: 단타는 6~8pip 권장(기본 6)
         - 통화쌍/가격 스케일에 무관하게 동작
         """
         if not levels:
             return []
 
-        threshold = threshold_pips * pip     # <-- 핵심: pip 기반 스케일링
-        clustered = []
-        for level in sorted(levels):
-            if not clustered or abs(clustered[-1] - level) > threshold:
-                clustered.append(level)
-            else:
-                # 가까우면 평균으로 병합
-                clustered[-1] = (clustered[-1] + level) / 2
-        return clustered
-    
+        threshold = threshold_pips * pip
+        buckets = []  # [{ "val": float, "cnt": int }]
 
-    last_atr = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr)
-    min_distance = max(10 * pip, 1.2 * last_atr)
+        for lv in sorted(levels):
+            if not buckets or abs(buckets[-1]["val"] - lv) > threshold:
+                # 새 클러스터 시작
+                buckets.append({"val": lv, "cnt": 1})
+            else:
+                # 가까우면 평균으로 병합 + 터치 수 증가
+                buckets[-1]["val"] = (buckets[-1]["val"] + lv) / 2.0
+                buckets[-1]["cnt"] += 1
+
+        # 최소 터치 수 필터 적용
+        return [b["val"] for b in buckets if b["cnt"] >= min_touch_count]
+   
 
     # 📌 스윙 지지/저항 구하기
-    support_levels, resistance_levels = find_local_extrema(df)
-    support_levels    = cluster_levels(support_levels,    pip=pip, threshold_pips=8)
-    resistance_levels = cluster_levels(resistance_levels, pip=pip, threshold_pips=8)
+    support_levels, resistance_levels = find_local_extrema(df, order=order)
+    support_levels    = cluster_levels(support_levels,    pip=pip, threshold_pips=6, min_touch_count=min_touch_count)
+    resistance_levels = cluster_levels(resistance_levels, pip=pip, threshold_pips=6, min_touch_count=min_touch_count)
+    
+    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+    # [A] 후보 부족 시 창을 2배로 확장해 1회 재시도 (단타용)
+    if (not support_levels) or (not resistance_levels):
+        df2 = candles.tail(window * 2).copy()
+        order2 = max(2, min(3, (window * 2) // 10))
+        if (window * 2) >= (2 * order2 + 1):
+            s2, r2 = find_local_extrema(df2, order=order2)
+            s2 = cluster_levels(s2, pip=pip, threshold_pips=6, min_touch_count=min_touch_count)
+            r2 = cluster_levels(r2, pip=pip, threshold_pips=6, min_touch_count=min_touch_count)
+            if s2: support_levels = s2
+            if r2: resistance_levels = r2
+    # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+    last_atr = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr)
+    min_distance = max(6 * pip, 0.8 * last_atr)  # 기존 10*pip, 1.2*ATR → 6*pip, 0.8*ATR
+
+
     
     # 🔽 현재가 아래 지지선 중 가장 가까운 것
     support_price = max([s for s in support_levels if s < price], default=price - min_distance)
@@ -633,8 +661,8 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
         confirmed_breakdown = under1 or (under1 and under2)
 
         if not confirmed_breakdown and dist_to_sup_pips <= 5:
-            reasons.append("⛔ 지지선 이탈 미확인 + 5pip 이내 → 추격 매도 금지")
-            return 0, reasons
+            signal_score -= 2
+            reasons.append("⛔ 지지선 이탈 미확인 + 5pip 이내 → 추격 매도 위험 (감점-2)")
 
     # ✅ RSI, MACD, Stoch RSI 모두 중립 + Trend도 NEUTRAL → 횡보장 진입 방어
     if trend == "NEUTRAL":
@@ -876,16 +904,16 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
             confirmed_top_break = recent.iloc[-1]['close'] > (box_high + buf_price)
             retest_support = (recent.iloc[-1]['low'] > box_high - buf_price) and (near_top_pips <= NEAR_PIPS)
             if near_top_pips <= NEAR_PIPS and not (confirmed_top_break or retest_support):
-                reasons.append("⛔ 박스 상단 근접 매수 금지(돌파확정/리테스트만)")
-                return 0, reasons
+                signal_score -= 1.5
+                reasons.append("⚠️ 박스 상단 근접 매수 위험 (감점-1.5)")
 
         # 하단 근접 매도 금지 (확정 이탈 or 리테스트만 허용)
         if signal == "SELL" and box_info.get("in_box") and box_info.get("breakout") is None:
             confirmed_bottom_break = recent.iloc[-1]['close'] < (box_low - buf_price)
             retest_resist = (recent.iloc[-1]['high'] < box_low + buf_price) and (near_low_pips <= NEAR_PIPS)
             if near_low_pips <= NEAR_PIPS and not (confirmed_bottom_break or retest_resist):
-                reasons.append("⛔ 박스 하단 근접 매도 금지(이탈확정/리테스트만)")
-                return 0, reasons
+                signal_score -= 1.5
+                reasons.append("⚠️ 박스 하단 근접 매도 위험 (감점-1.5)")
                 
     # 상승 연속 양봉 패턴 보정 BUY
     if (
@@ -937,14 +965,12 @@ def analyze_highs_lows(candles, window=20):
 async def webhook(request: Request):
     print("[DEBUG] Webhook received at server")
     print("✅ STEP 1: 웹훅 진입")
-    data = json.loads(await request.body())
+    data = json.loads((await request.body()) or b"{}")  # 빈 바디면 {}로 대체
     pair = data.get("pair")
     signal = data.get("signal")
     print(f"✅ STEP 2: 데이터 수신 완료 | pair: {pair}")
 
-    if check_recent_opposite_signal(pair, signal):    
-        print("🚫 양방향 충돌 감지 → 관망")      
-        return JSONResponse(content={"status": "WAIT", "reason": "conflict_with_recent_opposite_signal"})
+    _ = check_recent_opposite_signal(pair, signal)  # 소프트 OFF: 기록만, 차단 안 함
         
     price_raw = data.get("price")
     try:
@@ -1103,14 +1129,39 @@ async def webhook(request: Request):
 
     gpt_feedback = "GPT 분석 생략: 점수 미달"
     decision, tp, sl = "WAIT", None, None
-
+    gpt_raw = None
     if signal_score >= 4.0:
-        gpt_feedback = analyze_with_gpt(payload, price)
+        gpt_raw = analyze_with_gpt(payload, price)
         print("✅ STEP 6: GPT 응답 수신 완료")
-        decision, tp, sl = parse_gpt_feedback(gpt_feedback)
+        # ✅ 추가: 파싱 결과 강제 정규화 (대/소문자/공백/이상값 방지)
+        raw_text = (
+            gpt_raw if isinstance(gpt_raw, str)
+            else (json.dumps(gpt_raw, ensure_ascii=False) if isinstance(gpt_raw, dict) else "")
+        )
+        decision, tp, sl = parse_gpt_feedback(raw_text) if raw_text else ("WAIT", None, None)
+        if decision not in ("BUY", "SELL", "WAIT"):
+            print("[WARN] decision 파싱 실패 → WAIT 강제")
+            decision = "WAIT"
     else:
         print("🚫 GPT 분석 생략: 점수 4.0점 미만")
+
+
+    result = gpt_raw or ""
+
+    # GPT 텍스트 추출(반환 키 다양성 대비)
+    gpt_feedback = (
+        gpt_raw.get("analysis_text")
+        or gpt_raw.get("analysis")
+        or gpt_raw.get("explanation")
+        or gpt_raw.get("summary")
+        or gpt_raw.get("reason")
+        or gpt_raw.get("message")
+        or json.dumps(gpt_raw, ensure_ascii=False)    # dict인데 위 키가 없으면 JSON 문자열로 기록
+    ) if isinstance(gpt_raw, dict) else str(gpt_raw or "")
     
+
+    if not gpt_feedback or not str(gpt_feedback).strip():
+        gpt_feedback = "GPT 응답 없음"
     
     print(f"✅ STEP 7: GPT 해석 완료 | decision: {decision}, TP: {tp}, SL: {sl}")
    
@@ -1129,7 +1180,9 @@ async def webhook(request: Request):
             pattern, trend, fibo_levels, decision, news, gpt_feedback,
             alert_name, tp, sl, price, None,
             outcome_analysis, adjustment_suggestion, [],
-            atr
+            atr,
+            support=payload.get("support"),     # ▼ 추가
+            resistance=payload.get("resistance")
         )
         
         return JSONResponse(content={"status": "WAIT", "message": "GPT가 WAIT 판단"})
@@ -1193,7 +1246,7 @@ async def webhook(request: Request):
     # 1️⃣ 기본 진입 조건: GPT가 BUY/SELL 판단 + 점수 4.0점 이상
     if decision in ["BUY", "SELL"] and signal_score >= 4.0:
         # ✅ RSI 극단값 필터: BUY가 과매수 / SELL이 과매도이면 진입 차단
-        if (decision == "BUY" and rsi.iloc[-1] > 80) or (decision == "SELL" and rsi.iloc[-1] < 25):
+        if False and ((decision == "BUY" and rsi.iloc[-1] > 85) or (decision == "SELL" and rsi.iloc[-1] < 20)):
             reasons.append(f"❌ RSI 극단값으로 진입 차단: {decision} @ RSI {rsi.iloc[-1]:.2f}")
             should_execute = False
         else:
@@ -1284,7 +1337,9 @@ async def webhook(request: Request):
         pattern, trend, fibo_levels, decision, news, gpt_feedback,
         alert_name, tp, sl, price, pnl, None,
         outcome_analysis, adjustment_suggestion, price_movements,
-        atr
+        atr,
+        support=payload.get("support"),    # ▼ 추가
+        resistance=payload.get("resistance")
          )
     return JSONResponse(content={"status": "completed", "decision": decision})
 
@@ -1612,8 +1667,9 @@ def parse_gpt_feedback(text):
             decision = "SELL"
 
     # ✅ TP/SL 추출 (가장 마지막 숫자 사용)
-    tp_line = next((line for line in text.splitlines() if "TP:" in line.upper() or "TP 제안 값" in line or "목표" in line), "")
-    sl_line = next((line for line in text.splitlines() if "SL:" in line.upper() and re.search(r"\d+\.\d+", line)), "")
+    lines = text.splitlines()
+    tp_line = next((ln for ln in reversed(lines) if re.search(r'(?i)\bTP\b|TP 제안 값|목표', ln)), "")
+    sl_line = next((ln for ln in reversed(lines) if re.search(r'(?i)\bSL\b', ln) and re.search(r'\d+\.\d+', ln)), "")
     if not sl_line:
         sl = None  # 결정은 유지
     # 아래처럼 결정 추출을 더 확실하게:
@@ -1625,15 +1681,12 @@ def parse_gpt_feedback(text):
         return float(nums[-1]) if nums else None
 
 
-    def extract_avg_price(line):
-        # 가격 후보 전부 뽑고, 그중 '가장 큰 값'을 선택 (ATR 등 소수 작은 값 제거 효과)
-        matches = re.findall(r"\b\d{1,5}\.\d{1,5}\b", line)
-        if not matches:
-            return None
-        return max(float(m) for m in matches)
+    def extract_last_price(line):
+        nums = re.findall(r"\b\d{1,5}\.\d{1,5}\b", line)
+        return float(nums[-1]) if nums else None
 
-    tp = extract_avg_price(tp_line)
-    sl = extract_avg_price(sl_line)
+    tp = extract_last_price(tp_line)
+    sl = extract_last_price(sl_line)
 
     return decision, tp, sl
     
@@ -1715,10 +1768,10 @@ def analyze_with_gpt(payload, current_price):
                 "(2) 거래는 기본적으로 1~2시간 내 청산을 목표로 하고, SL과 TP는 ATR의 최소 50% 이상 거리를 설정해.\n"
                 "- 최근 5개 캔들의 고점/저점을 참고해서 너가 설정한 TP/SL이 REASONABLE한지 꼭 검토해.\n"
                 "- TP와 SL은 현재가에서 각각 8pip 이상 차이 나야 하고, TP는 SL보다 넓게 잡아.\n"
-                "- TP:SL 비율은 2:1 이상이어야 최소 10pip 이상 이익. 비율은 TP가 20이고 SL이 10이면 BUY일 땐 TP > 진입가, SL < 진입가 / SELL일 땐 반대.\n\n"
+                "- TP:SL 비율은 2:1 이상이어야 10pip정도 이익. TP와 SL 비율은 2:1로 설정하고, BUY일 땐 TP > 진입가, SL < 진입가 / SELL일 땐 반대.\n\n"
                 "(3) 지지선(support), 저항선(resistance)은 최근 1시간봉 기준 마지막 6봉의 고점/저점에서 이미 계산되어 JSON에 포함되어 있어. support와 resistance를 적절히 고려해.\n"
                 f"  • 현재가: {current_price}, 지지선: {support}, 저항선: {resistance}\n"
-                f"  • TP는 저항선 기준 약간 위, SL은 지지선 기준 약간 아래로 제안할 수 있음\n"
+                f"  • 롱일때 TP는 저항선 기준 약간 위, SL은 지지선 기준 약간 아래로 제안할 수 있음. 숏일때는 그 반대\n"
                 "- 이 숫자만 참고하고 그 외 고점/저점은 무시해.\n\n"
                 "(4) 추세 판단 시 캔들 패턴뿐 아니라 보조지표(RSI, MACD, Stoch RSI)의 흐름과 방향성도 함께 고려해.\n"
                 "- 특히 각 보조지표의 최근 14봉 추세 데이터는 다음과 같아:\n"
@@ -1732,7 +1785,7 @@ def analyze_with_gpt(payload, current_price):
                 "(7) 현재가가 저항선에 가까우면 TP는 줄게, 지지선에서 멀다면 SL은 조금 여유롭게 허용해. 하지만 너무 과도하게 넓지 않게 조정해.\n"
                 "(8) 피보나치 수렴 또는 환경 여부도 참고하고, 돌파 가능성이 높다면 TP를 약간 확장해도 돼.\n"
                 "- 이동평균선, 시그널선의 정렬, 격 여부, 볼린저 밴드, ATR, 볼륨지표 등도 종합해서 TP/SL 변동폭을 보수적으로 또는 공격적으로 조정해.\n\n"
-                "- 너의 최종 목표는 거래당 약 $150 수익을 내는 것이고, 손실은 거래당 $100을 넘지 않도록 설정하는 것이다."
+                "- 너의 최종 목표는 거래당 약 10pip 언저리의 수익을 내는 것이고, 손실은 거래당 8pip을 넘지 않도록 설정하는 것이다."
             )
         },
         {
@@ -1742,14 +1795,56 @@ def analyze_with_gpt(payload, current_price):
     ]
 
     body = {"model": "gpt-4", "messages": messages, "temperature": 0.3}
-
+    import time
     try:
-        r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body)
-        result = r.json()
-        if "choices" in result:
-            return result["choices"][0]["message"]["content"]
-        else:
-            return "GPT 응답 없음"
+        # --- 최소 스로틀: 같은 프로세스에서 1.2초 간격 보장 ---
+        with _gpt_lock:
+            global _gpt_last_ts
+            now = time.time()
+            gap = now - _gpt_last_ts
+            if gap < 2.5:
+                time.sleep(2.5 - gap)
+            # 요청 보내기 직전에 갱신 (레이스 차단 핵심)
+            _gpt_last_ts = time.time()
+
+        # --- 최대 1회 재시도(429 전용) ---
+        for attempt in range(2):
+            r = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers=headers,
+                json=body,
+                timeout=25,
+            )
+
+            # 429면 Retry-After를 우선 존중하고 한 번만 재시도
+            if r.status_code == 429 and attempt == 0:
+                wait = r.headers.get("retry-after") or r.headers.get("Retry-After")
+                try:
+                    wait_s = float(wait)
+                except Exception:
+                    wait_s = 3.0
+                time.sleep(max(2.5, wait_s))
+                # 재시도 전에도 타임스탬프 갱신
+                _gpt_last_ts = time.time()
+                continue
+
+            # 그 외 상태코드 에러 처리
+            r.raise_for_status()
+
+            data = r.json()
+            text = (
+                data.get("choices", [{}])[0]
+                    .get("message", {})
+                    .get("content", "")
+            )
+
+            _gpt_last_ts = time.time()
+            return text.strip() if str(text).strip() else "GPT 응답 없음"
+
+        # 여기까지 왔으면 429 재시도도 실패
+        _gpt_last_ts = time.time()
+        return "GPT 응답 없음"
+
     except Exception as e:
         return f"에러 발생: {e}"
         
@@ -1767,7 +1862,7 @@ def safe_float(val):
         return ""
 
 
-def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None, macd=None, stoch_rsi=None, pattern=None, trend=None, fibo=None, gpt_decision=None, news=None, gpt_feedback=None, alert_name=None, tp=None, sl=None, entry=None, price=None, pnl=None, outcome_analysis=None, adjustment_suggestion=None, price_movements=None, atr=None):
+def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None, macd=None, stoch_rsi=None, pattern=None, trend=None, fibo=None, gpt_decision=None, news=None, gpt_feedback=None, alert_name=None, tp=None, sl=None, entry=None, price=None, pnl=None, outcome_analysis=None, adjustment_suggestion=None, price_movements=None, atr=None, support=None, resistance=None):
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
     client = gspread.authorize(creds)
@@ -1833,26 +1928,51 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
     
         if not filtered_movement_str:
             filtered_movement_str = "no_data"
-
+    support_out = support
+    resist_out  = resistance
     row = [
       
-        str(now_atlanta), pair, alert_name or "", signal, decision, score,
-        safe_float(rsi), safe_float(macd), safe_float(stoch_rsi),
-        pattern or "", trend or "", fibo.get("0.382", ""), fibo.get("0.618", ""),
-        gpt_decision or "", news or "", notes,
-        json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else (result or "미정"),
-        gpt_feedback or "",        
-        safe_float(price), safe_float(tp), safe_float(sl), safe_float(pnl),
-        is_new_high,
-        is_new_low,
-        safe_float(atr),
-        news,
-        outcome_analysis or "",
-        adjustment_suggestion or "",
-        gpt_feedback or "",
-        filtered_movement_str
-    ]
+        str(now_atlanta),                 # timestamp
+        pair,                             # symbol
+        alert_name or "",                 # strategy
+        signal,                           # signal_type
+        decision,                         # decision
+        score,                            # score
+        safe_float(rsi),                  # rsi
+        safe_float(macd),                 # macd
+        safe_float(stoch_rsi),            # stoch_rsi
 
+        trend or "",                      # trend
+        pattern or "",                    # candle_trend (☜ 기존엔 pattern이 trend 앞/뒤 섞였음)
+
+        support_out,                      # ✅ support (진짜 S/R)
+        resist_out,                       # ✅ resistance
+
+        gpt_decision or "",               # final_decision
+        news or "",                       # news_summary
+        notes,                            # reason
+        json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else (result or "미정"),
+        gpt_feedback or "",               # order_json
+        gpt_feedback or "GPT 응답 없음",   # gpt_feedback (필요 없으면 빈칸 유지)
+
+        safe_float(price),                # price
+        safe_float(tp),                   # tp
+        safe_float(sl),                   # sl
+        safe_float(pnl),                  # pnl
+
+        is_new_high,                      # is_new_high
+        is_new_low,                       # is_new_low
+        safe_float(atr),                  # atr
+
+        # ↓ 아래 필드들이 시트 헤더에 실제로 있다면 그대로 유지,
+        #   없다면 이 아래 줄들만 지워도 무방 (헤더와 컬럼 수는 항상 동일해야 함)
+        news,                             # (선택) news 원문
+        outcome_analysis or "",           # (선택)
+        adjustment_suggestion or "",      # (선택)
+        gpt_feedback or "",               # (선택) gpt_feedback_dup
+        filtered_movement_str or ""       # (선택)
+        ]
+    
     clean_row = []
     for v in row:
         if isinstance(v, (dict, list)):
