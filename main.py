@@ -1818,67 +1818,70 @@ def analyze_with_gpt(payload, current_price):
     dbg("gpt.body", bytes=_bytes, max_tokens=body.get("max_tokens"))
     
         # --- 최소 스로틀: 같은 프로세스에서 1.2초 간격 보장 ---
-        with _gpt_lock:
-        global _gpt_last_ts
-            now = time.time()
-             gap = now - _gpt_last_ts
-             if gap < 6.0:
-                _t.sleep(6.0 - gap)
-                # 요청 보내기 직전에 갱신 (레이스 차단 핵심)
-            _gpt_last_ts = time.time()
+    with _gpt_lock:
+    global _gpt_last_ts
+        now = time.time()
+        gap = now - _gpt_last_ts
+        if gap < 6.0:
+        _t.sleep(6.0 - gap)
+         # 요청 보내기 직전에 갱신 (레이스 차단 핵심)
+        _gpt_last_ts = time.time()
 
-        # --- 최대 1회 재시도(429 전용) ---
-        for attempt in range(2):
-            try:
-                dbg("gpt.call", attempt=attempt)
-                r = _openai_sess.post(          # ✅ 세션 재사용
-                    OPENAI_URL,
-                    headers=OPENAI_HEADERS,      # ✅ 공통 헤더 사용
-                    json=body,
-                    timeout=25,
+    # --- 최대 1회 재시도(429 전용) ---
+    for attempt in range(2):
+        try:
+            dbg("gpt.call", attempt=attempt)
+            r = _openai_sess.post(
+                OPENAI_URL,
+                headers=headers,
+                json=body,
+                timeout=25,
+            )
+            dbg("gpt.resp", status=r.status_code, length=len(r.text))
+
+            # 429면 헤더 기반 대기 후 1회만 재시도
+            if r.status_code == 429 and attempt == 0:
+                h = r.headers
+                wait = (
+                    h.get("retry-after") or h.get("Retry-After")
+                    or h.get("x-ratelimit-reset-requests")
+                    or h.get("x-ratelimit-reset-tokens")
                 )
-                dbg("gpt.resp", status=r.status_code, length=len(r.text))
+                try:
+                    wait_s = float(wait)
+                except Exception:
+                    wait_s = 12.0
+                import random
+                _t.sleep(max(8.0, wait_s) + random.uniform(0.0, 0.8))
+                dbg(
+                    "gpt.retry",
+                    wait=wait,
+                    wait_s=wait_s,
+                    remain_req=h.get("x-ratelimit-remaining-requests"),
+                    remain_tok=h.get("x-ratelimit-remaining-tokens"),
+                )
+                # 재시도 전에도 타임스탬프 갱신(충돌 완화)
+                with _gpt_lock:
+                    _gpt_last_ts = _t.time()
+                continue
 
-                # 429면 헤더 기반 대기 후 1회만 재시도
-                if r.status_code == 429 and attempt == 0:
-                    h = r.headers
-                    wait = (
-                        h.get("retry-after") or h.get("Retry-After")
-                        or h.get("x-ratelimit-reset-requests")
-                        or h.get("x-ratelimit-reset-tokens")
-                    )
-                    try:
-                        wait_s = float(wait)
-                    except Exception:
-                        wait_s = 12.0
+            # 429가 아니면 정상/에러 처리
+            r.raise_for_status()
+            data = r.json()
+            text = (
+                data.get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+            ) or ""
+            dbg("gpt.ok", text_len=len(text))
+            return text.strip() if text.strip() else "GPT 응답 없음"
 
-                    import random, time as _t
-                    _t.sleep(max(8.0, wait_s) + random.uniform(0.0, 0.8))
-                    dbg("gpt.retry", wait=wait, wait_s=wait_s,
-                        remain_req=h.get("x-ratelimit-remaining-requests"),
-                        remain_tok=h.get("x-ratelimit-remaining-tokens"))
+        except Exception as e:
+            dbg("gpt.error", msg=str(e))
+            break
 
-                    # 재시도 전에도 타임스탬프 갱신(동시충돌 완화)
-                    with _gpt_lock:
-                        _gpt_last_ts = _t.time()
-                    continue
-
-                # 429가 아니면 정상/에러 처리
-                r.raise_for_status()
-                data = r.json()
-                text = (data.get("choices", [{}])[0]
-                            .get("message", {})
-                            .get("content", "")) or ""
-                dbg("gpt.ok", text_len=len(text))
-                return text.strip() if text.strip() else "GPT 응답 없음"
-
-            except Exception as e:
-                dbg("gpt.error", msg=str(e))
-                break
-
-        # 여기 오면 재시도도 실패
-        dbg("gpt.fail", reason="no_response_after_retry")
-        return "GPT 응답 없음"
+    dbg("gpt.fail", reason="no_response_after_retry")
+    return "GPT 응답 없음"
 def safe_float(val):
     try:
         if val is None:
