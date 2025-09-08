@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 import openai
 import numpy as np
 import gspread
+
 from oauth2client.service_account import ServiceAccountCredentials
 
 
@@ -1797,8 +1798,8 @@ def analyze_with_gpt(payload, current_price):
         # --- 최소 스로틀: 같은 프로세스에서 1.2초 간격 보장 ---
         last = getattr(analyze_with_gpt, "_last_call_ts", 0.0)
         gap = time.time() - last
-        if gap < 1.2:
-            time.sleep(1.2 - gap)
+        if gap < 2.5:
+            time.sleep(2.5 - gap)
 
         # --- 최대 1회 재시도(429 전용) ---
         for attempt in range(2):
@@ -1815,8 +1816,8 @@ def analyze_with_gpt(payload, current_price):
                 try:
                     wait_s = float(wait)
                 except Exception:
-                    wait_s = 2.0
-                time.sleep(max(1.5, wait_s))
+                    wait_s = 3.0
+                time.sleep(max(2.5, wait_s))
                 continue
 
             # 그 외 상태코드 에러 처리
