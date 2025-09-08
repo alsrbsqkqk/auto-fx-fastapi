@@ -1794,7 +1794,7 @@ def analyze_with_gpt(payload, current_price):
         }
     ]
 
-    body = {"model": "gpt-4", "messages": messages, "temperature": 0.3}
+    body = {"model": "gpt-4", "messages": messages, "temperature": 0.2, "max_tokens":350}
     import time
     try:
         # --- 최소 스로틀: 같은 프로세스에서 1.2초 간격 보장 ---
@@ -1808,7 +1808,7 @@ def analyze_with_gpt(payload, current_price):
             _gpt_last_ts = time.time()
 
         # --- 최대 1회 재시도(429 전용) ---
-        for attempt in range(2):
+        for attempt in range(3):
             r = requests.post(
                 "https://api.openai.com/v1/chat/completions",
                 headers=headers,
@@ -1818,19 +1818,29 @@ def analyze_with_gpt(payload, current_price):
 
             # 429면 Retry-After를 우선 존중하고 한 번만 재시도
             if r.status_code == 429 and attempt == 0:
+                h = r.headers
                 wait = (
-                    r.headers.get("retry-after") or r.headers.get("Retry-After")
-                    or r.headers.get("x-ratelimit-reset-requests")
-                    or r.headers.get("x-ratelimit-reset-tokens")
+                    h.get("retry-after") or h.get("Retry-After")
+                    or h.get("x-ratelimit-reset-requests")
+                    or h.get("x-ratelimit-reset-tokens")
                 )
                 try:
                     wait_s = float(wait)
                 except Exception:
-                    wait_s = 8.0  # 기본을 8초로 상향
-                time.sleep(max(6.0, wait_s))  # 최소 6초
+                    wait_s = 12.0  # 기본 대기 ↑
+                import random, time
+                time.sleep(max(8.0, wait_s) + random.uniform(0.0, 0.8))
+                _gpt_last_ts = time.time()  # 재시도 직전 타임스탬프 갱신
+                print({
+                    "retry_after": r.headers.get("retry-after") or r.headers.get("Retry-After"),
+                    "remain_req": r.headers.get("x-ratelimit-remaining-requests"),
+                    "reset_req": r.headers.get("x-ratelimit-reset-requests"),
+                    "remain_tok": r.headers.get("x-ratelimit-remaining-tokens"),
+                    "reset_tok": r.headers.get("x-ratelimit-reset-tokens"),
+                })
+
+
                 
-                # 재시도 전에도 타임스탬프 갱신
-                _gpt_last_ts = time.time()
                 continue
 
             # 그 외 상태코드 에러 처리
