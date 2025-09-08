@@ -1794,10 +1794,12 @@ def analyze_with_gpt(payload, current_price):
     body = {"model": "gpt-4", "messages": messages, "temperature": 0.3}
 
     try:
-        r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body)
+        r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body, timeout=25)
+        r.raise_for_status()
         result = r.json()
-        if "choices" in result:
-            return result["choices"][0]["message"]["content"]
+        if "choices" in result and len(result["choices"]) > 0:
+            text = result["choices"][0].get("message", {}).get("content", "")
+            return text if text and str(text).strip() else "GPT 응답 없음"
         else:
             return "GPT 응답 없음"
     except Exception as e:
