@@ -1792,16 +1792,50 @@ def analyze_with_gpt(payload, current_price):
     ]
 
     body = {"model": "gpt-4", "messages": messages, "temperature": 0.3}
-
+    import time
     try:
-        r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body, timeout=25)
-        r.raise_for_status()
-        result = r.json()
-        if "choices" in result and len(result["choices"]) > 0:
-            text = result["choices"][0].get("message", {}).get("content", "")
-            return text if text and str(text).strip() else "GPT 응답 없음"
-        else:
-            return "GPT 응답 없음"
+        # --- 최소 스로틀: 같은 프로세스에서 1.2초 간격 보장 ---
+        last = getattr(analyze_with_gpt, "_last_call_ts", 0.0)
+        gap = time.time() - last
+        if gap < 1.2:
+            time.sleep(1.2 - gap)
+
+        # --- 최대 1회 재시도(429 전용) ---
+        for attempt in range(2):
+            r = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers=headers,
+                json=body,
+                timeout=25,
+            )
+
+            # 429면 Retry-After를 우선 존중하고 한 번만 재시도
+            if r.status_code == 429 and attempt == 0:
+                wait = r.headers.get("retry-after") or r.headers.get("Retry-After")
+                try:
+                    wait_s = float(wait)
+                except Exception:
+                    wait_s = 2.0
+                time.sleep(max(1.5, wait_s))
+                continue
+
+            # 그 외 상태코드 에러 처리
+            r.raise_for_status()
+
+            data = r.json()
+            text = (
+                data.get("choices", [{}])[0]
+                    .get("message", {})
+                    .get("content", "")
+            )
+
+            analyze_with_gpt._last_call_ts = time.time()
+            return text.strip() if str(text).strip() else "GPT 응답 없음"
+
+        # 여기까지 왔으면 429 재시도도 실패
+        analyze_with_gpt._last_call_ts = time.time()
+        return "GPT 응답 없음"
+
     except Exception as e:
         return f"에러 발생: {e}"
         
