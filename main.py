@@ -1138,7 +1138,23 @@ async def webhook(request: Request):
             decision = "WAIT"
     else:
         print("🚫 GPT 분석 생략: 점수 4.0점 미만")
-    
+
+
+    result = analyze_with_gpt(payload, price)
+
+    # GPT 텍스트 추출(반환 키 다양성 대비)
+    gpt_feedback = (
+        (result.get("analysis_text")
+         or result.get("analysis")
+         or result.get("explanation")
+         or result.get("summary")
+         or result.get("reason")
+         or result.get("message"))
+        if isinstance(result, dict) else ""
+    )
+
+    if not gpt_feedback or not str(gpt_feedback).strip():
+        gpt_feedback = "GPT 응답 없음"
     
     print(f"✅ STEP 7: GPT 해석 완료 | decision: {decision}, TP: {tp}, SL: {sl}")
    
@@ -1886,7 +1902,7 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
         gpt_decision or "",               # final_decision
         news or "",                       # news_summary
         notes,                            # reason
-        json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else (result or "미정"),  # summary
+        json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else (result or "미정"),
         gpt_feedback or "",               # order_json
         gpt_feedback or "GPT 응답 없음",   # gpt_feedback (필요 없으면 빈칸 유지)
 
