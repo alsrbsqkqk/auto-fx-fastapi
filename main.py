@@ -1888,7 +1888,7 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
         notes,                            # reason
         json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else (result or "미정"),  # summary
         gpt_feedback or "",               # order_json
-        "",                               # gpt_feedback (필요 없으면 빈칸 유지)
+        gpt_feedback or "GPT 응답 없음",   # gpt_feedback (필요 없으면 빈칸 유지)
 
         safe_float(price),                # price
         safe_float(tp),                   # tp
