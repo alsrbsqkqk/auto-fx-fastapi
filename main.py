@@ -1819,12 +1819,12 @@ def analyze_with_gpt(payload, current_price):
     
         # --- 최소 스로틀: 같은 프로세스에서 1.2초 간격 보장 ---
         with _gpt_lock:
-            global _gpt_last_ts
+        global _gpt_last_ts
             now = time.time()
-            gap = now - _gpt_last_ts
-            if gap < 6.0:
-                time.sleep(6.0 - gap)
-            # 요청 보내기 직전에 갱신 (레이스 차단 핵심)
+             gap = now - _gpt_last_ts
+             if gap < 6.0:
+                _t.sleep(6.0 - gap)
+                # 요청 보내기 직전에 갱신 (레이스 차단 핵심)
             _gpt_last_ts = time.time()
 
         # --- 최대 1회 재시도(429 전용) ---
