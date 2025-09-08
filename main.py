@@ -10,6 +10,7 @@ import openai
 import numpy as np
 import gspread
 import threading
+import math
 _gpt_lock = threading.Lock()
 _gpt_last_ts = 0.0
 from oauth2client.service_account import ServiceAccountCredentials
