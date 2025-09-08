@@ -962,7 +962,7 @@ def analyze_highs_lows(candles, window=20):
 async def webhook(request: Request):
     print("[DEBUG] Webhook received at server")
     print("✅ STEP 1: 웹훅 진입")
-    data = json.loads(await request.body())
+    data = json.loads((await request.body()) or b"{}")  # 빈 바디면 {}로 대체
     pair = data.get("pair")
     signal = data.get("signal")
     print(f"✅ STEP 2: 데이터 수신 완료 | pair: {pair}")
