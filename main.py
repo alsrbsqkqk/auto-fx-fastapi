@@ -1128,11 +1128,15 @@ async def webhook(request: Request):
     decision, tp, sl = "WAIT", None, None
 
     if signal_score >= 4.0:
-        gpt_feedback = analyze_with_gpt(payload, price)
+        gpt_raw = analyze_with_gpt(payload, price)
         print("✅ STEP 6: GPT 응답 수신 완료")
         decision, tp, sl = parse_gpt_feedback(gpt_feedback)
         # ✅ 추가: 파싱 결과 강제 정규화 (대/소문자/공백/이상값 방지)
-        decision = (decision or "WAIT").strip().upper()
+        raw_text = (
+            gpt_raw if isinstance(gpt_raw, str)
+            else (json.dumps(gpt_raw, ensure_ascii=False) if isinstance(gpt_raw, dict) else "")
+        )
+        decision, tp, sl = parse_gpt_feedback(raw_text) if raw_text else ("WAIT", None, None)
         if decision not in ("BUY", "SELL", "WAIT"):
             print("[WARN] decision 파싱 실패 → WAIT 강제")
             decision = "WAIT"
@@ -1140,17 +1144,18 @@ async def webhook(request: Request):
         print("🚫 GPT 분석 생략: 점수 4.0점 미만")
 
 
-    result = analyze_with_gpt(payload, price)
+    result = gpt_raw
 
     # GPT 텍스트 추출(반환 키 다양성 대비)
     gpt_feedback = (
-        (result.get("analysis_text")
-         or result.get("analysis")
-         or result.get("explanation")
-         or result.get("summary")
-         or result.get("reason")
-         or result.get("message"))
-    ) if isinstance(result, dict) else str(result or gpt_feedback)
+        gpt_raw.get("analysis_text")
+        or gpt_raw.get("analysis")
+        or gpt_raw.get("explanation")
+        or gpt_raw.get("summary")
+        or gpt_raw.get("reason")
+        or gpt_raw.get("message")
+        or json.dumps(gpt_raw, ensure_ascii=False)    # dict인데 위 키가 없으면 JSON 문자열로 기록
+    ) if isinstance(gpt_raw, dict) else str(gpt_raw or "")
     
 
     if not gpt_feedback or not str(gpt_feedback).strip():
