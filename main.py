@@ -1760,6 +1760,13 @@ def adjust_tp_sl_for_structure(pair, entry, tp, sl, support, resistance, atr):
     return round(tp, digits), round(sl, digits)   
 def analyze_with_gpt(payload, current_price):
     dbg("gpt.enter", t=int(_t.time()*1000))
+
+    # ── 전역 쿨다운: 429 맞은 뒤 일정 시간은 호출 자체 스킵 ──
+    global _gpt_cooldown_until
+    now = _t.time()
+    if now < _gpt_cooldown_until:
+        dbg("gpt.skip.cooldown", wait=round(_gpt_cooldown_until - now, 2))
+        return "GPT 응답 없음(쿨다운)"
     headers = OPENAI_HEADERS
     
     macd_signal = payload.get("macd_signal", None)
@@ -1824,8 +1831,9 @@ def analyze_with_gpt(payload, current_price):
         global _gpt_last_ts
         now = _t.time()
         gap = now - _gpt_last_ts
-        if gap < 6.0:              # 네가 쓰던 값 유지(2.5/6.0 등)
-            _t.sleep(6.0 - gap)
+        min_gap = 20.0  # ← 여기 값을 20.0으로 (이후 상황 보고 12~15로 낮출 수 있음)
+        if gap < min_gap:
+            _t.sleep(min_gap - gap)
         _gpt_last_ts = _t.time()
 
     # 2-e) 최대 1회 재시도(429 전용) + 세션/공통 헤더 사용
@@ -1856,6 +1864,13 @@ def analyze_with_gpt(payload, current_price):
                 with _gpt_lock:             # 재시도 직전에 타임스탬프 갱신(레이스 방지)
                     _gpt_last_ts = _t.time()
                 continue
+                # 두 번째도 429면 전역 쿨다운 설정 후 중단
+            if r.status_code == 429 and attempt == 1:
+                global _gpt_cooldown_until
+                _gpt_cooldown_until = _t.time() + 30.0  # 30초 쿨다운
+                dbg("gpt.cooldown.set", seconds=30.0)
+                break
+            
 
             # 정상 상태 코드 처리
             r.raise_for_status()
