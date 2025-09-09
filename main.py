@@ -20,6 +20,71 @@ GPT_RPM = 2
 _SLOT = 60.0 / GPT_RPM
 from oauth2client.service_account import ServiceAccountCredentials
 
+# ===== (NEW) 글로벌 레이트/토큰 상태 =====
+_tpm_remaining = 1e9
+_tpm_reset_ts  = 0.0
+_rpm_remaining = 1e9
+_rpm_reset_ts  = 0.0
+
+def _approx_tokens(msgs: list[dict]) -> int:
+    """메시지 리스트의 대략적 토큰 수 추정(문자수/4)"""
+    import json
+    s = json.dumps(msgs, ensure_ascii=False)
+    return max(1, int(len(s) / 4))
+
+def _preflight_gate(need_tokens: int):
+    """요청 보내기 직전에 남은 토큰/RPM으로 선대기"""
+    import time as _t, random
+    global _tpm_remaining, _tpm_reset_ts, _rpm_remaining, _rpm_reset_ts
+    now = _t.time()
+    wait_until = now
+    # TPM 부족 시 토큰 리셋까지 대기
+    if (_tpm_remaining - need_tokens) < 0 and now < _tpm_reset_ts:
+        wait_until = max(wait_until, _tpm_reset_ts)
+    # RPM 0이면 요청 리셋까지 대기
+    if (_rpm_remaining - 1) < 0 and now < _rpm_reset_ts:
+        wait_until = max(wait_until, _rpm_reset_ts)
+    if wait_until > now:
+        _t.sleep((wait_until - now) + random.uniform(0.05, 0.2))
+def _save_rate_headers(h: dict) -> None:
+    """
+    OpenAI 응답 헤더에서 남은 요청/토큰과 리셋까지 남은 초를 읽어
+    전역 상태(_rpm_remaining/_tpm_remaining/_rpm_reset_ts/_tpm_reset_ts)에 반영
+    """
+    import time as _t
+
+    global _tpm_remaining, _tpm_reset_ts, _rpm_remaining, _rpm_reset_ts
+
+    def _get(h, *keys):
+        for k in keys:
+            v = h.get(k)
+            if v is not None:
+                return v
+        return None
+
+    now = _t.time()
+
+    # 남은 개수
+    rem_req = _get(h, "x-ratelimit-remaining-requests", "X-RateLimit-Remaining-Requests")
+    rem_tok = _get(h, "x-ratelimit-remaining-tokens",   "X-RateLimit-Remaining-Tokens")
+
+    # 리셋까지 남은 초
+    rst_req = _get(h, "x-ratelimit-reset-requests", "X-RateLimit-Reset-Requests")
+    rst_tok = _get(h, "x-ratelimit-reset-tokens",   "X-RateLimit-Reset-Tokens")
+
+    try:
+        if rem_req is not None:
+            _rpm_remaining = float(rem_req)
+        if rem_tok is not None:
+            _tpm_remaining = float(rem_tok)
+        if rst_req is not None:
+            _rpm_reset_ts = now + float(rst_req)
+        if rst_tok is not None:
+            _tpm_reset_ts = now + float(rst_tok)
+    except Exception:
+        # 형식이 이상해도 전체 흐름 막지 않기
+        pass
+        
 # === OpenAI 공통 설정 & 세션 ===
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 OPENAI_HEADERS = {
@@ -1838,12 +1903,43 @@ def analyze_with_gpt(payload, current_price):
 
     # 2-c) 요청 바이트 수 로깅 (선택)
     body = {"model": "gpt-4", "messages": messages, "temperature": 0.3, "max_tokens": 220}
+    need_tokens = _approx_tokens(messages)
+    _preflight_gate(need_tokens)   # 요청 직전 선대기
     try:
         _bytes = len(json.dumps(payload, ensure_ascii=False))
     except Exception:
         _bytes = -1
     dbg("gpt.body", bytes=_bytes, max_tokens=body.get("max_tokens"))
 
+# === (NEW) 토큰 사전 게이트 ===
+# 전역으로 둡니다(파일 상단의 _gpt_*들과 같은 위치)
+# _tpm_remaining/_tpm_reset_ts 는 마지막 응답 헤더로 갱신
+_tpm_remaining = 1e9
+_tpm_reset_ts  = 0.0
+_rpm_remaining = 1e9
+_rpm_reset_ts  = 0.0
+
+def _approx_tokens(msgs: list[dict]) -> int:
+    # 대략적으로 문자수/4 로 토큰 추정 (빠르고 충분히 보수적)
+    import json
+    s = json.dumps(msgs, ensure_ascii=False)
+    return max(1, int(len(s) / 4))
+
+def _preflight_gate(need_tokens: int):
+    import time as _t, random
+    global _tpm_remaining, _tpm_reset_ts, _rpm_remaining, _rpm_reset_ts
+    now = _t.time()
+    wait_until = now
+
+    # 남은 토큰이 부족하면 tokens reset 까지 대기
+    if (_tpm_remaining - need_tokens) < 0 and now < _tpm_reset_ts:
+        wait_until = max(wait_until, _tpm_reset_ts)
+    # 남은 요청이 0이면 requests reset 까지 대기
+    if (_rpm_remaining - 1) < 0 and now < _rpm_reset_ts:
+        wait_until = max(wait_until, _rpm_reset_ts)
+
+    if wait_until > now:
+        _t.sleep((wait_until - now) + random.uniform(0.05, 0.2))
     # 2-d) 최소 스로틀: 같은 프로세스에서 1.2초(또는 네가 정한 값) 간격 보장
     with _gpt_lock:
         global _gpt_last_ts
@@ -1865,9 +1961,11 @@ def analyze_with_gpt(payload, current_price):
                 timeout=25,
             )
             dbg("gpt.resp", status=r.status_code, length=len(r.text))
+            _save_rate_headers(r.headers)   # ← 추가 (응답 헤더를 전역 상태에 반영)
 
             # 429면 헤더 기반 대기 후 한 번만 재시도
             if r.status_code == 429 and attempt == 0:
+            _save_rate_headers(r.headers)   # ← 429일 때도 즉시 헤더 상태 반영
                 h = r.headers
                 wait = (
                     h.get("retry-after") or h.get("Retry-After")
