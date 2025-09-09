@@ -1965,29 +1965,29 @@ def _preflight_gate(need_tokens: int):
 
             # 429면 헤더 기반 대기 후 한 번만 재시도
             if r.status_code == 429 and attempt == 0:
-            _save_rate_headers(r.headers)   # ← 429일 때도 즉시 헤더 상태 반영
-                h = r.headers
-                wait = (
-                    h.get("retry-after") or h.get("Retry-After")
-                    or h.get("x-ratelimit-reset-requests") or h.get("x-ratelimit-reset-tokens")
-                )
-                try:
-                    wait_s = float(wait)
-                except Exception:
-                    wait_s = 12.0           # 헤더가 없을 때 기본 대기
-                import random  # ← 추가
-                _t.sleep(max(8.0, wait_s) + random.uniform(0.0, 0.8))
-                with _gpt_lock:             # 재시도 직전에 타임스탬프 갱신(레이스 방지)
-                    _gpt_last_ts = _t.time()
-                continue
-                dbg("gpt.rate",
-                    limit_req=h.get("x-ratelimit-limit-requests"),
-                    remain_req=h.get("x-ratelimit-remaining-requests"),
-                    reset_req=h.get("x-ratelimit-reset-requests"),
-                    limit_tok=h.get("x-ratelimit-limit-tokens"),
-                    remain_tok=h.get("x-ratelimit-remaining-tokens"),
-                    reset_tok=h.get("x-ratelimit-reset-tokens"))
-                # 두 번째도 429면 전역 쿨다운 설정 후 중단
+                _save_rate_headers(r.headers)   # ← 429일 때도 즉시 헤더 상태 반영
+                    h = r.headers
+                    wait = (
+                        h.get("retry-after") or h.get("Retry-After")
+                        or h.get("x-ratelimit-reset-requests") or h.get("x-ratelimit-reset-tokens")
+                    )
+                    try:
+                        wait_s = float(wait)
+                    except Exception:
+                        wait_s = 12.0           # 헤더가 없을 때 기본 대기
+                    import random  # ← 추가
+                    _t.sleep(max(8.0, wait_s) + random.uniform(0.0, 0.8))
+                    with _gpt_lock:             # 재시도 직전에 타임스탬프 갱신(레이스 방지)
+                        _gpt_last_ts = _t.time()
+                    continue
+                    dbg("gpt.rate",
+                        limit_req=h.get("x-ratelimit-limit-requests"),
+                        remain_req=h.get("x-ratelimit-remaining-requests"),
+                        reset_req=h.get("x-ratelimit-reset-requests"),
+                        limit_tok=h.get("x-ratelimit-limit-tokens"),
+                        remain_tok=h.get("x-ratelimit-remaining-tokens"),
+                        reset_tok=h.get("x-ratelimit-reset-tokens"))
+                    # 두 번째도 429면 전역 쿨다운 설정 후 중단
             if r.status_code == 429 and attempt == 1:
                 _gpt_cooldown_until = _t.time() + 60.0  # 30초 쿨다운
                 dbg("gpt.cooldown.set", seconds=60.0)
