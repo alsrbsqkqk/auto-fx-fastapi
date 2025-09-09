@@ -1974,7 +1974,6 @@ def analyze_with_gpt(payload, current_price):
     
             # 두 번째도 429면 쿨다운 후 중단
             if r.status_code == 429 and attempt == 1:
-                import time as _t
                 _gpt_cooldown_until = _t.time() + 60.0
                 dbg("gpt.cooldown.set", seconds=60.0)
                 break  # ← if 블록과 같은 깊이
