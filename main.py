@@ -1165,7 +1165,7 @@ async def webhook(request: Request):
     gpt_feedback = "GPT 분석 생략: 점수 미달"
     decision, tp, sl = "WAIT", None, None
     gpt_raw = None
-    if signal_score >= 6.0:
+    if signal_score >= 4.0:
         gpt_raw = analyze_with_gpt(payload, price)
         print("✅ STEP 6: GPT 응답 수신 완료")
         # ✅ 추가: 파싱 결과 강제 정규화 (대/소문자/공백/이상값 방지)
@@ -1178,7 +1178,7 @@ async def webhook(request: Request):
             print("[WARN] decision 파싱 실패 → WAIT 강제")
             decision = "WAIT"
     else:
-        print("🚫 GPT 분석 생략: 점수 6.0점 미만")
+        print("🚫 GPT 분석 생략: 점수 4.0점 미만")
 
 
     result = gpt_raw or ""
@@ -1278,8 +1278,8 @@ async def webhook(request: Request):
     pnl = None
     should_execute = False
     
-    # 1️⃣ 기본 진입 조건: GPT가 BUY/SELL 판단 + 점수 6.0점 이상
-    if decision in ["BUY", "SELL"] and signal_score >= 6.0:
+    # 1️⃣ 기본 진입 조건: GPT가 BUY/SELL 판단 + 점수 4.0점 이상
+    if decision in ["BUY", "SELL"] and signal_score >= 4.0:
         # ✅ RSI 극단값 필터: BUY가 과매수 / SELL이 과매도이면 진입 차단
         if False and ((decision == "BUY" and rsi.iloc[-1] > 85) or (decision == "SELL" and rsi.iloc[-1] < 20)):
             reasons.append(f"❌ RSI 극단값으로 진입 차단: {decision} @ RSI {rsi.iloc[-1]:.2f}")
@@ -1288,7 +1288,7 @@ async def webhook(request: Request):
             should_execute = True
 
     # 2️⃣ 조건부 진입: 최근 2시간 거래 없으면 점수 4점 미만이어도 진입 허용
-    elif allow_conditional_trade and signal_score >= 6 and decision in ["BUY", "SELL"]:
+    elif allow_conditional_trade and signal_score >= 4 and decision in ["BUY", "SELL"]:
         gpt_feedback += "\n⚠️ 조건부 진입: 최근 2시간 거래 없음 → 4점 이상 기준 만족하여 진입 허용"
         should_execute = True
         
