@@ -48,41 +48,49 @@ def _preflight_gate(need_tokens: int):
         _t.sleep((wait_until - now) + random.uniform(0.05, 0.2))
 def _save_rate_headers(h: dict) -> None:
     """
-    OpenAI 응답 헤더에서 남은 요청/토큰과 리셋까지 남은 초를 읽어
-    전역 상태(_rpm_remaining/_tpm_remaining/_rpm_reset_ts/_tpm_reset_ts)에 반영
+    OpenAI 응답 헤더에서 남은 요청/토큰 수와 리셋까지 남은 초를 읽어
+    전역 상태(_rpm_remaining/_tpm_remaining/_rpm_reset_ts/_tpm_reset_ts)에 반영한다.
+    키 대소문자/변형에 관대하게 처리.
     """
     import time as _t
-
     global _tpm_remaining, _tpm_reset_ts, _rpm_remaining, _rpm_reset_ts
 
-    def _get(h, *keys):
+    if not h:
+        return
+
+    # 헤더 키를 관대하게 조회 (소문자/TitleCase 모두 허용)
+    def _hget(*keys):
         for k in keys:
             v = h.get(k)
+            if v is None:  # requests가 소문자로 줄 수도 있음
+                v = h.get(k.lower())
+            if v is None:  # 일부 프록시는 TitleCase로 줄 수도 있음
+                v = h.get(k.title())
             if v is not None:
                 return v
         return None
 
     now = _t.time()
 
-    # 남은 개수
-    rem_req = _get(h, "x-ratelimit-remaining-requests", "X-RateLimit-Remaining-Requests")
-    rem_tok = _get(h, "x-ratelimit-remaining-tokens",   "X-RateLimit-Remaining-Tokens")
-
-    # 리셋까지 남은 초
-    rst_req = _get(h, "x-ratelimit-reset-requests", "X-RateLimit-Reset-Requests")
-    rst_tok = _get(h, "x-ratelimit-reset-tokens",   "X-RateLimit-Reset-Tokens")
-
     try:
+        # 남은 개수(요청/토큰)
+        rem_req = _hget("x-ratelimit-remaining-requests", "X-RateLimit-Remaining-Requests")
+        rem_tok = _hget("x-ratelimit-remaining-tokens",   "X-RateLimit-Remaining-Tokens")
         if rem_req is not None:
             _rpm_remaining = float(rem_req)
         if rem_tok is not None:
             _tpm_remaining = float(rem_tok)
+
+        # 리셋까지 남은 초(요청/토큰)
+        rst_req = _hget("x-ratelimit-reset-requests", "X-RateLimit-Reset-Requests")
+        rst_tok = _hget("x-ratelimit-reset-tokens",   "X-RateLimit-Reset-Tokens")
         if rst_req is not None:
             _rpm_reset_ts = now + float(rst_req)
         if rst_tok is not None:
             _tpm_reset_ts = now + float(rst_tok)
+
     except Exception:
-        # 형식이 이상해도 전체 흐름 막지 않기
+        # 형식이 이상해도 전체 흐름 멈추지 않음
         pass
         
 # === OpenAI 공통 설정 & 세션 ===
@@ -1911,35 +1919,7 @@ def analyze_with_gpt(payload, current_price):
         _bytes = -1
     dbg("gpt.body", bytes=_bytes, max_tokens=body.get("max_tokens"))
 
-# === (NEW) 토큰 사전 게이트 ===
-# 전역으로 둡니다(파일 상단의 _gpt_*들과 같은 위치)
-# _tpm_remaining/_tpm_reset_ts 는 마지막 응답 헤더로 갱신
-_tpm_remaining = 1e9
-_tpm_reset_ts  = 0.0
-_rpm_remaining = 1e9
-_rpm_reset_ts  = 0.0
 
-def _approx_tokens(msgs: list[dict]) -> int:
-    # 대략적으로 문자수/4 로 토큰 추정 (빠르고 충분히 보수적)
-    import json
-    s = json.dumps(msgs, ensure_ascii=False)
-    return max(1, int(len(s) / 4))
-
-def _preflight_gate(need_tokens: int):
-    import time as _t, random
-    global _tpm_remaining, _tpm_reset_ts, _rpm_remaining, _rpm_reset_ts
-    now = _t.time()
-    wait_until = now
-
-    # 남은 토큰이 부족하면 tokens reset 까지 대기
-    if (_tpm_remaining - need_tokens) < 0 and now < _tpm_reset_ts:
-        wait_until = max(wait_until, _tpm_reset_ts)
-    # 남은 요청이 0이면 requests reset 까지 대기
-    if (_rpm_remaining - 1) < 0 and now < _rpm_reset_ts:
-        wait_until = max(wait_until, _rpm_reset_ts)
-
-    if wait_until > now:
-        _t.sleep((wait_until - now) + random.uniform(0.05, 0.2))
     # 2-d) 최소 스로틀: 같은 프로세스에서 1.2초(또는 네가 정한 값) 간격 보장
     with _gpt_lock:
         global _gpt_last_ts
@@ -1966,20 +1946,20 @@ def _preflight_gate(need_tokens: int):
             # 429면 헤더 기반 대기 후 한 번만 재시도
             if r.status_code == 429 and attempt == 0:
                 _save_rate_headers(r.headers)   # ← 429일 때도 즉시 헤더 상태 반영
-                    h = r.headers
-                    wait = (
-                        h.get("retry-after") or h.get("Retry-After")
-                        or h.get("x-ratelimit-reset-requests") or h.get("x-ratelimit-reset-tokens")
-                    )
-                    try:
-                        wait_s = float(wait)
-                    except Exception:
-                        wait_s = 12.0           # 헤더가 없을 때 기본 대기
-                    import random  # ← 추가
-                    _t.sleep(max(8.0, wait_s) + random.uniform(0.0, 0.8))
-                    with _gpt_lock:             # 재시도 직전에 타임스탬프 갱신(레이스 방지)
-                        _gpt_last_ts = _t.time()
-                    continue
+                h = r.headers
+                wait = (
+                    h.get("retry-after") or h.get("Retry-After")
+                    or h.get("x-ratelimit-reset-requests") or h.get("x-ratelimit-reset-tokens")
+                )
+                try:
+                    wait_s = float(wait)
+                except Exception:
+                    wait_s = 12.0           # 헤더가 없을 때 기본 대기
+                import random  # ← 추가
+                t.sleep(max(8.0, wait_s) + random.uniform(0.0, 0.8))
+                with _gpt_lock:             # 재시도 직전에 타임스탬프 갱신(레이스 방지)
+                    _gpt_last_ts = _t.time()
+                continue
                     dbg("gpt.rate",
                         limit_req=h.get("x-ratelimit-limit-requests"),
                         remain_req=h.get("x-ratelimit-remaining-requests"),
@@ -1989,22 +1969,28 @@ def _preflight_gate(need_tokens: int):
                         reset_tok=h.get("x-ratelimit-reset-tokens"))
                     # 두 번째도 429면 전역 쿨다운 설정 후 중단
             if r.status_code == 429 and attempt == 1:
-                _gpt_cooldown_until = _t.time() + 60.0  # 30초 쿨다운
+                import time as _t
+                _gpt_cooldown_until = _t.time() + 60.0  # 60초 쿨다운(필요시 30초로 조절)
                 dbg("gpt.cooldown.set", seconds=60.0)
                 break
-            
 
-            # 정상 상태 코드 처리
+            # 정상 상태 처리
             r.raise_for_status()
             data = r.json()
-            text = (data.get("choices", [{}])[0].get("message", {}).get("content", "")) or ""
+            text = (
+                data.get("choices", [{}])[0]
+                    .get("message", {})
+                    .get("content", "")
+            ) or ""
+
             return text.strip() if text.strip() else "GPT 응답 없음"
 
         except Exception as e:
+            # 네트워크/타임아웃/파싱 오류 등 → 로그만 남기고 루프 계속(2차 시도)
             dbg("gpt.error", msg=str(e))
-            break
+            # pass
 
-    # 여기 오면 재시도도 실패
+    # 여기까지 오면 2회 시도에도 실패
     dbg("gpt.fail", reason="no_response_after_retry")
     return "GPT 응답 없음"
 def safe_float(val):
