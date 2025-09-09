@@ -13,6 +13,7 @@ import threading
 import math
 _gpt_lock = threading.Lock()
 _gpt_last_ts = 0.0
+_gpt_cooldown_until = 0.0
 from oauth2client.service_account import ServiceAccountCredentials
 
 # === OpenAI 공통 설정 & 세션 ===
@@ -1759,6 +1760,7 @@ def adjust_tp_sl_for_structure(pair, entry, tp, sl, support, resistance, atr):
     digits = 3 if pair.endswith("JPY") else 5
     return round(tp, digits), round(sl, digits)   
 def analyze_with_gpt(payload, current_price):
+    global _gpt_cooldown_until, _gpt_last_ts
     dbg("gpt.enter", t=int(_t.time()*1000))
 
     # ── 전역 쿨다운: 429 맞은 뒤 일정 시간은 호출 자체 스킵 ──
@@ -1866,7 +1868,6 @@ def analyze_with_gpt(payload, current_price):
                 continue
                 # 두 번째도 429면 전역 쿨다운 설정 후 중단
             if r.status_code == 429 and attempt == 1:
-                global _gpt_cooldown_until
                 _gpt_cooldown_until = _t.time() + 30.0  # 30초 쿨다운
                 dbg("gpt.cooldown.set", seconds=30.0)
                 break
