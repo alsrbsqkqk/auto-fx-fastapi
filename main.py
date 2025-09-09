@@ -9,7 +9,8 @@ from datetime import datetime, timedelta
 import openai
 import numpy as np
 import gspread
-import threading, time
+import threading
+import time as _t
 import math
 _gpt_lock = threading.Lock()
 _gpt_last_ts = 0.0
