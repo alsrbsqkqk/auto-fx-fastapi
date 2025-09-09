@@ -1934,65 +1934,59 @@ def analyze_with_gpt(payload, current_price):
     for attempt in range(2):
         try:
             dbg("gpt.call", attempt=attempt)
-            r = _openai_sess.post(          # ← requests.post 가 아니라 세션 사용
+            r = _openai_sess.post(
                 OPENAI_URL,
-                headers=OPENAI_HEADERS,     # ← 함수 안에서 새 headers 만들지 말고 공통 사용
+                headers=OPENAI_HEADERS,
                 json=body,
                 timeout=25,
             )
             dbg("gpt.resp", status=r.status_code, length=len(r.text))
-            _save_rate_headers(r.headers)   # ← 추가 (응답 헤더를 전역 상태에 반영)
-
-            # 429면 헤더 기반 대기 후 한 번만 재시도
+            _save_rate_headers(r.headers)  # 응답 헤더 파싱은 여기(try 내부, 429 체크 전에)
+    
+            # ---- 429: 한 번만 재시도 ----
             if r.status_code == 429 and attempt == 0:
-                _save_rate_headers(r.headers)   # ← 429일 때도 즉시 헤더 상태 반영
                 h = r.headers
                 wait = (
                     h.get("retry-after") or h.get("Retry-After")
-                    or h.get("x-ratelimit-reset-requests") or h.get("x-ratelimit-reset-tokens")
+                    or h.get("x-ratelimit-reset-requests") or h.get("X-RateLimit-Reset-Requests")
+                    or h.get("x-ratelimit-reset-tokens")   or h.get("X-RateLimit-Reset-Tokens")
                 )
                 try:
                     wait_s = float(wait)
                 except Exception:
-                    wait_s = 12.0           # 헤더가 없을 때 기본 대기
-                import random  # ← 추가
-                t.sleep(max(8.0, wait_s) + random.uniform(0.0, 0.8))
-                with _gpt_lock:             # 재시도 직전에 타임스탬프 갱신(레이스 방지)
+                    wait_s = 12.0
+    
+                import random, time as _t
+                _t.sleep(max(8.0, wait_s) + random.uniform(0.0, 0.8))
+                with _gpt_lock:
                     _gpt_last_ts = _t.time()
-                continue
-                    dbg("gpt.rate",
-                        limit_req=h.get("x-ratelimit-limit-requests"),
-                        remain_req=h.get("x-ratelimit-remaining-requests"),
-                        reset_req=h.get("x-ratelimit-reset-requests"),
-                        limit_tok=h.get("x-ratelimit-limit-tokens"),
-                        remain_tok=h.get("x-ratelimit-remaining-tokens"),
-                        reset_tok=h.get("x-ratelimit-reset-tokens"))
-                    # 두 번째도 429면 전역 쿨다운 설정 후 중단
+    
+                dbg("gpt.rate",
+                    limit_req=h.get("x-ratelimit-limit-requests"),
+                    remain_req=h.get("x-ratelimit-remaining-requests"),
+                    reset_req=h.get("x-ratelimit-reset-requests"),
+                    limit_tok=h.get("x-ratelimit-limit-tokens"),
+                    remain_tok=h.get("x-ratelimit-remaining-tokens"),
+                    reset_tok=h.get("x-ratelimit-reset-tokens"),
+                )
+                continue  # ← if 블록과 같은 깊이
+    
+            # 두 번째도 429면 쿨다운 후 중단
             if r.status_code == 429 and attempt == 1:
                 import time as _t
-                _gpt_cooldown_until = _t.time() + 60.0  # 60초 쿨다운(필요시 30초로 조절)
+                _gpt_cooldown_until = _t.time() + 60.0
                 dbg("gpt.cooldown.set", seconds=60.0)
-                break
-
-            # 정상 상태 처리
+                break  # ← if 블록과 같은 깊이
+    
+            # ---- 정상 처리 ----
             r.raise_for_status()
             data = r.json()
-            text = (
-                data.get("choices", [{}])[0]
-                    .get("message", {})
-                    .get("content", "")
-            ) or ""
-
-            return text.strip() if text.strip() else "GPT 응답 없음"
-
-        except Exception as e:
-            # 네트워크/타임아웃/파싱 오류 등 → 로그만 남기고 루프 계속(2차 시도)
+            text = (data.get("choices", [{}])[0].get("message", {}).get("content", "") or "")
+            return text.strip() if str(text).strip() else "GPT 응답 없음"
+    
+        except Exception as e:   # ← try와 같은 깊이
             dbg("gpt.error", msg=str(e))
-            # pass
-
-    # 여기까지 오면 2회 시도에도 실패
-    dbg("gpt.fail", reason="no_response_after_retry")
-    return "GPT 응답 없음"
+            break               # ← except 블록 안
 def safe_float(val):
     try:
         if val is None:
