@@ -1946,6 +1946,7 @@ def analyze_with_gpt(payload, current_price):
     
             # ---- 429: 한 번만 재시도 ----
             if r.status_code == 429 and attempt == 0:
+                _save_rate_headers(r.headers)
                 h = r.headers
                 wait = (
                     h.get("retry-after") or h.get("Retry-After")
@@ -1957,7 +1958,7 @@ def analyze_with_gpt(payload, current_price):
                 except Exception:
                     wait_s = 12.0
     
-                import random, time as _t
+                import random  # ← 이건 그대로 OK (random은 지역으로 써도 무방)
                 _t.sleep(max(8.0, wait_s) + random.uniform(0.0, 0.8))
                 with _gpt_lock:
                     _gpt_last_ts = _t.time()
