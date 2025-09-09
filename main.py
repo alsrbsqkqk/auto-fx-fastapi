@@ -9,11 +9,15 @@ from datetime import datetime, timedelta
 import openai
 import numpy as np
 import gspread
-import threading
+import threading, time
 import math
 _gpt_lock = threading.Lock()
 _gpt_last_ts = 0.0
 _gpt_cooldown_until = 0.0
+_gpt_rate_lock = threading.Lock()
+_gpt_next_slot = 0.0
+GPT_RPM = 6                      # 계정 한도에 맞춰 조정(예: 6RPM이면 10초 간격)
+_SLOT = 60.0 / GPT_RPM
 from oauth2client.service_account import ServiceAccountCredentials
 
 # === OpenAI 공통 설정 & 세션 ===
@@ -32,7 +36,18 @@ def dbg(tag, **k):
     except Exception:
         pairs = str(k)
     print(f"[DBG] {tag} {pairs}")
-
+    
+def gpt_rate_gate():
+    global _gpt_next_slot
+    with _gpt_rate_lock:
+        now = time.time()
+        if _gpt_next_slot < now:
+            _gpt_next_slot = now
+        slot = _gpt_next_slot
+        _gpt_next_slot += _SLOT
+    wait = slot - now
+    if wait > 0:
+        time.sleep(wait)
 
 
 # score_signal_with_filters 위쪽에 추가
@@ -1150,7 +1165,7 @@ async def webhook(request: Request):
     gpt_feedback = "GPT 분석 생략: 점수 미달"
     decision, tp, sl = "WAIT", None, None
     gpt_raw = None
-    if signal_score >= 4.0:
+    if signal_score >= 6.0:
         gpt_raw = analyze_with_gpt(payload, price)
         print("✅ STEP 6: GPT 응답 수신 완료")
         # ✅ 추가: 파싱 결과 강제 정규화 (대/소문자/공백/이상값 방지)
@@ -1163,7 +1178,7 @@ async def webhook(request: Request):
             print("[WARN] decision 파싱 실패 → WAIT 강제")
             decision = "WAIT"
     else:
-        print("🚫 GPT 분석 생략: 점수 4.0점 미만")
+        print("🚫 GPT 분석 생략: 점수 6.0점 미만")
 
 
     result = gpt_raw or ""
@@ -1263,8 +1278,8 @@ async def webhook(request: Request):
     pnl = None
     should_execute = False
     
-    # 1️⃣ 기본 진입 조건: GPT가 BUY/SELL 판단 + 점수 4.0점 이상
-    if decision in ["BUY", "SELL"] and signal_score >= 4.0:
+    # 1️⃣ 기본 진입 조건: GPT가 BUY/SELL 판단 + 점수 6.0점 이상
+    if decision in ["BUY", "SELL"] and signal_score >= 6.0:
         # ✅ RSI 극단값 필터: BUY가 과매수 / SELL이 과매도이면 진입 차단
         if False and ((decision == "BUY" and rsi.iloc[-1] > 85) or (decision == "SELL" and rsi.iloc[-1] < 20)):
             reasons.append(f"❌ RSI 극단값으로 진입 차단: {decision} @ RSI {rsi.iloc[-1]:.2f}")
@@ -1273,7 +1288,7 @@ async def webhook(request: Request):
             should_execute = True
 
     # 2️⃣ 조건부 진입: 최근 2시간 거래 없으면 점수 4점 미만이어도 진입 허용
-    elif allow_conditional_trade and signal_score >= 4 and decision in ["BUY", "SELL"]:
+    elif allow_conditional_trade and signal_score >= 6 and decision in ["BUY", "SELL"]:
         gpt_feedback += "\n⚠️ 조건부 진입: 최근 2시간 거래 없음 → 4점 이상 기준 만족하여 진입 허용"
         should_execute = True
         
@@ -1769,6 +1784,7 @@ def analyze_with_gpt(payload, current_price):
     if now < _gpt_cooldown_until:
         dbg("gpt.skip.cooldown", wait=round(_gpt_cooldown_until - now, 2))
         return "GPT 응답 없음(쿨다운)"
+    gpt_rate_gate()  # 3-b: 계정 단위 슬롯 대기
     headers = OPENAI_HEADERS
     
     macd_signal = payload.get("macd_signal", None)
