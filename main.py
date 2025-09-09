@@ -16,7 +16,7 @@ _gpt_last_ts = 0.0
 _gpt_cooldown_until = 0.0
 _gpt_rate_lock = threading.Lock()
 _gpt_next_slot = 0.0
-GPT_RPM = 6                      # 계정 한도에 맞춰 조정(예: 6RPM이면 10초 간격)
+GPT_RPM = 2                     
 _SLOT = 60.0 / GPT_RPM
 from oauth2client.service_account import ServiceAccountCredentials
 
@@ -1849,7 +1849,7 @@ def analyze_with_gpt(payload, current_price):
         global _gpt_last_ts
         now = _t.time()
         gap = now - _gpt_last_ts
-        min_gap = 20.0  # ← 여기 값을 20.0으로 (이후 상황 보고 12~15로 낮출 수 있음)
+        min_gap = 12.0  
         if gap < min_gap:
             _t.sleep(min_gap - gap)
         _gpt_last_ts = _t.time()
@@ -1882,10 +1882,17 @@ def analyze_with_gpt(payload, current_price):
                 with _gpt_lock:             # 재시도 직전에 타임스탬프 갱신(레이스 방지)
                     _gpt_last_ts = _t.time()
                 continue
+                dbg("gpt.rate",
+                    limit_req=h.get("x-ratelimit-limit-requests"),
+                    remain_req=h.get("x-ratelimit-remaining-requests"),
+                    reset_req=h.get("x-ratelimit-reset-requests"),
+                    limit_tok=h.get("x-ratelimit-limit-tokens"),
+                    remain_tok=h.get("x-ratelimit-remaining-tokens"),
+                    reset_tok=h.get("x-ratelimit-reset-tokens"))
                 # 두 번째도 429면 전역 쿨다운 설정 후 중단
             if r.status_code == 429 and attempt == 1:
-                _gpt_cooldown_until = _t.time() + 30.0  # 30초 쿨다운
-                dbg("gpt.cooldown.set", seconds=30.0)
+                _gpt_cooldown_until = _t.time() + 60.0  # 30초 쿨다운
+                dbg("gpt.cooldown.set", seconds=60.0)
                 break
             
 
