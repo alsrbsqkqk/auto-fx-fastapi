@@ -24,7 +24,7 @@ OPENAI_HEADERS = {
 _openai_sess = requests.Session()  # keep-alive로 커넥션 재사용 (429 억제에 도움)
 
 # === 간단 디버그 (알림 한 건 추적용) ===
-import uuid, time as _t
+import uuid, time as _t, random
 def dbg(tag, **k):
     try:
         pairs = " ".join(f"{a}={b}" for a, b in k.items())
@@ -1851,6 +1851,7 @@ def analyze_with_gpt(payload, current_price):
                     wait_s = float(wait)
                 except Exception:
                     wait_s = 12.0           # 헤더가 없을 때 기본 대기
+                import random  # ← 추가
                 _t.sleep(max(8.0, wait_s) + random.uniform(0.0, 0.8))
                 with _gpt_lock:             # 재시도 직전에 타임스탬프 갱신(레이스 방지)
                     _gpt_last_ts = _t.time()
