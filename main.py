@@ -121,7 +121,7 @@ def gpt_rate_gate():
         _gpt_next_slot += _SLOT
     wait = slot - now
     if wait > 0:
-        time.sleep(wait)
+        _t.sleep(wait)
 
 
 # score_signal_with_filters 위쪽에 추가
