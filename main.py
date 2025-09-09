@@ -112,16 +112,18 @@ def dbg(tag, **k):
     print(f"[DBG] {tag} {pairs}")
     
 def gpt_rate_gate():
-    global _gpt_next_slot
+    """계정 단위 요청 슬롯(=RPM) 대기"""
+    global _gpt_next_slot, _gpt_rate_lock, _SLOT
     with _gpt_rate_lock:
-        now = time.time()
+        now = _t.time()                 # ← time.time() 말고 _t.time()
         if _gpt_next_slot < now:
             _gpt_next_slot = now
         slot = _gpt_next_slot
-        _gpt_next_slot += _SLOT
+        _gpt_next_slot += _SLOT         # 다음 슬롯 예약
+
     wait = slot - now
     if wait > 0:
-        _t.sleep(wait)
+        _t.sleep(wait) 
 
 
 # score_signal_with_filters 위쪽에 추가
