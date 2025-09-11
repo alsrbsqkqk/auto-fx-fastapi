@@ -588,6 +588,33 @@ def check_recent_opposite_signal(pair, current_signal, within_minutes=30, *,
 
 
 
+def calculate_structured_sl_tp(entry_price, direction, symbol, support, resistance, pip_size):
+    buffer = get_buffer_by_symbol(symbol)
+    
+    if direction == 'BUY':
+        sl = support - buffer
+        tp = entry_price + abs(entry_price - sl) * 1.8
+    else:
+        sl = resistance + buffer
+        tp = entry_price - abs(entry_price - sl) * 1.8
+
+    r_ratio = abs(tp - entry_price) / abs(sl - entry_price)
+    
+    # ✅ 로그 출력
+    print(f"[SL/TP 계산 로그] symbol={symbol}, direction={direction}")
+    print(f" - entry_price: {entry_price}")
+    print(f" - support: {support}, resistance: {resistance}, buffer: {buffer}")
+    print(f" - SL: {sl}, TP: {tp}, 손익비(r_ratio): {r_ratio:.2f}")
+    return sl, tp, r_ratio
+
+def get_buffer_by_symbol(symbol):
+    if symbol in ['EURUSD', 'GBPUSD', 'AUDUSD']:
+        return 10 * 0.0001  # 10 pips
+    elif symbol in ['USDJPY']:
+        return 10 * 0.01
+    else:
+        return 10 * 0.0001
+
 def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi, trend, prev_trend, signal, liquidity, pattern, pair, candles, atr, price, bollinger_upper, bollinger_lower, support, resistance, support_distance, resistance_distance, pip_size):
     signal_score = 0
     opportunity_score = 0  
@@ -612,7 +639,19 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     if rsi < 60 and stoch_rsi < 0.6 and macd > macd_signal and trend != "DOWNTREND":
         score -= 1.0
         reasons.append("📈 RSI & Stoch RSI 하락 중이나 MACD 강세 + 추세 불확실 (SELL측 감점 -1.0)")
-   
+    
+    # === SL/TP 계산 및 손익비 조건 필터 ===
+    entry_price = price
+    direction = signal
+    symbol = pair
+
+    sl, tp, r_ratio = calculate_structured_sl_tp(entry_price, direction, symbol, support, resistance, pv)
+
+    if r_ratio < 1.4:
+        reasons.append("❗손익비 너무 낮음 (%.2f) → 진입 불가" % r_ratio)
+        return 'HOLD', signal_score, reasons, sl, tp
+        
+    # ====================================
     if macd < -0.02 and trend != "DOWNTREND":
         score -= 1.5
         reasons.append("🔻 MACD 약세 + 추세 모호 → 신호 신뢰도 낮음 (감점 -1.5)")
