@@ -665,10 +665,6 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
         score -= 1.5
         reasons.append("🔻 RSI + Stoch RSI 과매수 → SELL 진입 위험 (감점 -1.5)")
 
-    # RSI + Stoch RSI 과매도 상태에서 BUY 진입 위험
-    if signal == "BUY" and rsi < 30 and stoch_rsi < 0.15:
-        score -= 1.5
-        reasons.append("🔻 RSI + Stoch RSI 과매도 → BUY 진입 위험 (감점 -1.5)")
         
     # ⚠️ RSI + Stoch RSI 과매도 + 패턴 없음 or 애매한 추세 → 바닥 예측 위험
     if rsi < 30 and stoch_rsi < 0.15 and (pattern is None or trend == "NEUTRAL"):
@@ -705,12 +701,12 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
 
     # 트렌드 전환 직후 경계 구간 감점
     if trend == "UPTREND" and prev_trend == "DOWNTREND" and signal == "BUY":
-        score -= 1.0
-        reasons.append("⚠️ 하락 추세 직후 상승 반전 → BUY 시그널 신뢰도 낮음 (감점 -1.0)")
+        score -= 0.5
+        reasons.append("⚠️ 하락 추세 직후 상승 반전 → BUY 시그널 신뢰도 낮음 (감점 -0.5)")
 
     if trend == "DOWNTREND" and prev_trend == "UPTREND" and signal == "SELL":
-        score -= 1.0
-        reasons.append("⚠️ 상승 추세 직후 하락 반전 → SELL 시그널 신뢰도 낮음 (감점 -1.0)")
+        score -= 0.5
+        reasons.append("⚠️ 상승 추세 직후 하락 반전 → SELL 시그널 신뢰도 낮음 (감점 -0.5)")
 
     # 🔄 추세 전환 직후 진입 위험
     if signal == "BUY" and trend == "UPTREND" and prev_trend == "DOWNTREND":
@@ -762,12 +758,12 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     # ✅ 점수 감점 방식으로 변경
     digits_pip = 1 if pair.endswith("JPY") else 2
     if signal == "BUY" and dist_to_res_pips <= NEAR_PIPS:
-        signal_score -= 1
-        reasons.append(f"📉 저항까지 {dist_to_res_pips:.{digits_pip}f} pip → 거리 너무 가까움 → 감점 -1")
+        signal_score -= 0.5
+        reasons.append(f"📉 저항까지 {dist_to_res_pips:.{digits_pip}f} pip → 거리 너무 가까움 → 감점 -0.5")
         
     if signal == "SELL" and dist_to_sup_pips <= NEAR_PIPS:
-        signal_score -= 1
-        reasons.append(f"📉 지지까지 {dist_to_sup_pips:.{digits_pip}f} pip → 거리 너무 가까움 → 감점 -1")
+        signal_score -= 0.5
+        reasons.append(f"📉 지지까지 {dist_to_sup_pips:.{digits_pip}f} pip → 거리 너무 가까움 → 감점 -0.5")
         
     conflict_flag = conflict_check(rsi, pattern, trend, signal)
 
@@ -841,8 +837,8 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
             signal_score -= 2.5
             reasons.append("⚠️ 과매도 SELL ➜ 반등 가능성 있음 (경고 감점-2.5)")
         else:
-            signal_score -= 2.5
-            reasons.append("❌ 과매도 SELL + 반등 신호 없음 ➜ 진입 위험 (감점-2.5)")
+            signal_score -= 1.5
+            reasons.append("❌ 과매도 SELL + 반등 신호 없음 ➜ 진입 위험 (감점-1.5)")
 
     if stoch_rsi < 0.1 and pattern is None:
         score -= 1
@@ -1929,7 +1925,7 @@ def analyze_with_gpt(payload, current_price):
                 "(2) 거래는 기본적으로 1~2시간 내 청산을 목표로 하고, SL과 TP는 ATR의 최소 50% 이상 거리를 설정해.\n"
                 "- 최근 5개 캔들의 고점/저점을 참고해서 너가 설정한 TP/SL이 REASONABLE한지 꼭 검토해.\n"
                 "- TP와 SL은 현재가에서 각각 8pip 이상 차이 나야 하고, TP는 SL보다 넓게 잡아.\n"
-                "- TP:SL 비율은 2:1 이상이어야 10pip정도 이익. TP와 SL 비율은 2:1로 설정하고, BUY일 땐 TP > 진입가, SL < 진입가 / SELL일 땐 반대.\n\n"
+                "- "TP:SL 비율은 1.4:1 이상이 이상적이다. 2:1은 권장 비율이지만, 조건이 맞으면 1.4:1 이상에서도 진입 고려 가능."10pip정도 이익., BUY일 땐 TP > 진입가, SL < 진입가 / SELL일 땐 반대.\n\n"
                 "(3) 지지선(support), 저항선(resistance)은 최근 1시간봉 기준 마지막 6봉의 고점/저점에서 이미 계산되어 JSON에 포함되어 있어. support와 resistance를 적절히 고려해.\n"
                 f"  • 현재가: {current_price}, 지지선: {support}, 저항선: {resistance}\n"
                 f"  • 롱일때 TP는 저항선 기준 약간 위, SL은 지지선 기준 약간 아래로 제안할 수 있음. 숏일때는 그 반대\n"
