@@ -1989,8 +1989,16 @@ def analyze_with_gpt(payload, current_price):
                 OPENAI_URL,
                 headers=OPENAI_HEADERS,
                 json=body,
-                timeout=25,
+                timeout=45,
             )
+        except requests.exceptions.Timeout:
+            print("GPT 응답 시간 초과 - fallback 처리됨")
+            return {
+                "gpt_summary": "❌ GPT 응답 실패: 시간 초과",
+                "gpt_reasons": [],
+                "gpt_score": None
+            }
+            
             dbg("gpt.resp", status=r.status_code, length=len(r.text))
             _save_rate_headers(r.headers)  # 응답 헤더 파싱은 여기(try 내부, 429 체크 전에)
     
