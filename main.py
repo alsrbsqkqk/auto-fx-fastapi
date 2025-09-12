@@ -127,7 +127,7 @@ def gpt_rate_gate():
 
 
 # score_signal_with_filters 위쪽에 추가
-def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles, trend, atr, price, bollinger_upper, bollinger_lower, support, resistance, support_distance, resistance_distance, pip_size):
+def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles, trend, atr, price, bollinger_upper, bollinger_lower, support, resistance, support_distance, resistance_distance, pip_size, expected_direction=None):
     opportunity_score = 0
     reasons = []
 
@@ -316,6 +316,16 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
         reasons.append(f"🟢 보조 캔들 패턴 가점+0.5: {pattern}")
     else:
         reasons.append("⚪ 주요 캔들 패턴 없음")
+   
+    # === 기대 방향 필터 적용 ===
+    buy_score = opportunity_score if expected_direction == "BUY" else 0
+    sell_score = opportunity_score if expected_direction == "SELL" else 0
+
+    if expected_direction == "BUY" and sell_score > buy_score:
+        return 0, ["❌ 기대 방향은 BUY인데 SELL 조건이 우세함"]
+    if expected_direction == "SELL" and buy_score > sell_score:
+        return 0, ["❌ 기대 방향은 SELL인데 BUY 조건이 우세함"]
+    
 
     return opportunity_score, reasons
     
@@ -615,12 +625,12 @@ def get_buffer_by_symbol(symbol):
     else:
         return 10 * 0.0001
 
-def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi, trend, prev_trend, signal, liquidity, pattern, pair, candles, atr, price, bollinger_upper, bollinger_lower, support, resistance, support_distance, resistance_distance, pip_size):
+def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi, trend, prev_trend, signal, liquidity, pattern, pair, candles, atr, price, bollinger_upper, bollinger_lower, support, resistance, support_distance, resistance_distance, pip_size, expected_direction=None):
     signal_score = 0
     opportunity_score = 0  
     reasons = []
 
-    score, base_reasons = must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles, trend, atr, price, bollinger_upper, bollinger_lower, support, resistance, support_distance, resistance_distance, pip_size)
+    score, base_reasons = must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles, trend, atr, price, bollinger_upper, bollinger_lower, support, resistance, support_distance, resistance_distance, pip_size, expected_direction=signal)
     extra_score, extra_reasons = additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, trend)
 
     # ★ 통합 임계치 준비 (pip/ATR 기반)
@@ -1083,7 +1093,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
         signal_score -= 2
         reasons.append(f"🔴 반전형 패턴 ({pattern}) → 매도 고려 필요 감점-2")
     # 교과서적 기회 포착 보조 점수
-    op_score, op_reasons = must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles, trend, atr, price, bollinger_upper, bollinger_lower, support, resistance, support_distance, resistance_distance, pip_size)
+    op_score, op_reasons = must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles, trend, atr, price, bollinger_upper, bollinger_lower, support, resistance, support_distance, resistance_distance, pip_size, expected_direction=None)
     if op_score > 0:
         signal_score += op_score
         reasons += op_reasons
@@ -1137,7 +1147,6 @@ async def webhook(request: Request):
             status_code=400
         )
 
-    signal = data.get("signal")
     alert_name = data.get("alert_name", "기본알림")
 
     candles = get_candles(pair, "M30", 200)
