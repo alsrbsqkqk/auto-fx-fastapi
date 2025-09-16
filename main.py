@@ -1524,9 +1524,8 @@ def run_gpt_analysis(data):
     print(f"[GPT-BG] GPT 분석 시작 for {pair} | 신호: {signal}")
 
     try:
-        # 기존 GPT 전략 분석, 조건 필터, 거래 진입 로직 복붙해서 넣기
-        # 예: get_strategy_result(data) 등 포함
-
+        # 기존 GPT 분석 실행 코드
+    except Exception as e:
         print(f"[GPT-BG] 전략 분석 완료")
 
 def calculate_atr(candles, period=14):
