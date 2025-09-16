@@ -10,13 +10,13 @@ import openai
 import numpy as np
 import gspread
 import threading
-import BackgroundTasks
 import time as _t
 import math
-from collections import defaultdict
-_gpt_lock = defaultdict(lambda: threading.Lock())
-_gpt_cooldown_until = defaultdict(lambda: 0.0)
-_gpt_next_slot = defaultdict(lambda: 0.0)
+_gpt_lock = threading.Lock()
+_gpt_last_ts = 0.0
+_gpt_cooldown_until = 0.0
+_gpt_rate_lock = threading.Lock()
+_gpt_next_slot = 0.0
 GPT_RPM = 2                     
 _SLOT = 60.0 / GPT_RPM
 from oauth2client.service_account import ServiceAccountCredentials
@@ -1125,11 +1125,12 @@ def analyze_highs_lows(candles, window=20):
     }
 
 @app.post("/webhook")
-async def webhook(request: Request, background_tasks: BackgroundTasks):
+async def webhook(request: Request):
     print("✅ STEP 1: 웹훅 진입")
-    data = json.loads((await request.body()) or b"{}")
-    background_tasks.add_task(run_gpt_analysis, data)
-    return {"status": "ok", "message": "processing in background"}
+    data = json.loads((await request.body()) or b"{}")  # 빈 바디면 {}로 대체
+    pair = data.get("pair")
+    signal = data.get("signal")
+    print(f"✅ STEP 2: 데이터 수신 완료 | pair: {pair}")
     
     pair = data.get("pair")
     signal = data.get("signal")
