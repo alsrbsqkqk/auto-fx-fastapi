@@ -1524,9 +1524,9 @@ def run_gpt_analysis(data):
     print(f"[GPT-BG] GPT 분석 시작 for {pair} | 신호: {signal}")
 
     try:
-        # 기존 GPT 분석 실행 코드
+        pass  # 추후에 분석 코드 추가 예정
     except Exception as e:
-        print(f"[GPT-BG] 전략 분석 완료")
+        print(f"[GPT-BG] 전략 분석 실패: {e}")
 
 def calculate_atr(candles, period=14):
     high_low = candles['high'] - candles['low']
