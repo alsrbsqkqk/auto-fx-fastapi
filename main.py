@@ -1507,27 +1507,6 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
          )
     return JSONResponse(content={"status": "completed", "decision": decision})
     
-def run_gpt_analysis(data):
-    pair = data.get("pair")
-    signal = data.get("signal")
-    now = datetime.utcnow()
-
-    if _gpt_cooldown_until[pair] > now:
-        print(f"[GPT-BG] {pair} 쿨다운 중. GPT 분석 생략.")
-        return
-
-    if _gpt_lock[pair]:
-        print(f"[GPT-BG] {pair} GPT 락 중. 생략.")
-        return
-
-    _gpt_lock[pair] = True
-    print(f"[GPT-BG] GPT 분석 시작 for {pair} | 신호: {signal}")
-
-    try:
-        pass  # 추후에 분석 코드 추가 예정
-    except Exception as e:
-        print(f"[GPT-BG] 전략 분석 실패: {e}")
-
 def calculate_atr(candles, period=14):
     high_low = candles['high'] - candles['low']
     high_close = np.abs(candles['high'] - candles['close'].shift())
