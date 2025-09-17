@@ -661,12 +661,8 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     sl, tp, r_ratio = calculate_structured_sl_tp(entry_price, direction, symbol, support, resistance, pv)
 
     if r_ratio < 1.4:
-        reasons.append("❗손익비 너무 낮음 (%.2f) → 진입 불가" % r_ratio)
-            # ✅ 로그 출력
-        print(f"[진입 차단] 손익비(r_ratio)={r_ratio:.2f} < 1.4 → 진입 불가")
-        print(f" - SL: {sl}, TP: {tp}, 진입가: {entry_price}, 손익비: {r_ratio:.2f}")
-        print(f" - 이유 목록: {reasons}")
-        return 'HOLD', signal_score, reasons, sl, tp
+        signal_score -= 2.0
+        reasons.append("📉 손익비 낮음 (%.2f) → -2.0점 감점" % r_ratio)
         
     # ====================================
     if macd < -0.02 and trend != "DOWNTREND":
