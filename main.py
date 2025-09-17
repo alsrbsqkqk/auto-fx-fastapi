@@ -17,7 +17,7 @@ _gpt_last_ts = 0.0
 _gpt_cooldown_until = 0.0
 _gpt_rate_lock = threading.Lock()
 _gpt_next_slot = 0.0
-GPT_RPM = 2                     
+GPT_RPM = 20                     
 _SLOT = 60.0 / GPT_RPM
 from oauth2client.service_account import ServiceAccountCredentials
 
