@@ -1821,9 +1821,13 @@ def parse_gpt_feedback(text):
 
     # ✅ fallback: "BUY" 또는 "SELL" 단독 등장 시 인식
     if decision == "WAIT":
-        if "BUY" in text.upper() and "SELL" not in text.upper():
+        upper_text = text.upper()
+        buy_score = upper_text.count("BUY")
+        sell_score = upper_text.count("SELL")
+    
+        if buy_score > sell_score:
             decision = "BUY"
-        elif "SELL" in text.upper() and "BUY" not in text.upper():
+        elif sell_score > buy_score:
             decision = "SELL"
 
     # ✅ TP/SL 추출 (가장 마지막 숫자 사용)
