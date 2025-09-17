@@ -1293,7 +1293,7 @@ async def webhook(request: Request):
     allow_conditional_trade = time_since_last > timedelta(hours=2)
 
     gpt_feedback = "GPT 분석 생략: 점수 미달"
-    decision, tp, sl = "WAIT", None, None
+    decision, tp, sl = None, None, None
     gpt_raw = None
     if signal_score >= 8.0:
         gpt_raw = analyze_with_gpt(payload, price)
