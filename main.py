@@ -1517,7 +1517,7 @@ async def webhook(request: Request):
             notes,
             result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi,
             pattern, trend, fibo_levels, decision, news, gpt_feedback,
-            alert_name, tp, sl, price, pnl, None,
+            alert_name, tp, sl, None, price, pnl,   # ← entry=None 추가
             outcome_analysis, adjustment_suggestion, price_movements,
             atr,
             payload.get("support"),
