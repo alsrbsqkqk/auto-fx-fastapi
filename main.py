@@ -1511,6 +1511,8 @@ async def webhook(request: Request):
             
     print(f"✅ STEP 10: 전략 요약 저장 호출 | decision: {decision}, TP: {tp}, SL: {sl}")
     try:
+        notes = "\n".join(reasons)
+        notes += f"\nATR: {round((atr or 0), 5)}"
         log_trade_result(
             pair, signal, decision, signal_score,
             "\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}",
