@@ -1521,8 +1521,8 @@ async def webhook(request: Request):
             alert_name, tp, sl, price, pnl, None,
             outcome_analysis, adjustment_suggestion, price_movements,
             atr,
-            support=payload.get("support"),    # ▼ 추가
-            resistance=payload.get("resistance")
+            payload.get("support"),
+            payload.get("resistance")
         )
     except Exception as e:
         print(f"⚠️ log_trade_result 기록 실패: {e}")
@@ -2114,18 +2114,11 @@ def safe_float(val):
 notes = "\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}"  # ✅ 변수로 저장
 def log_trade_result(
     pair, signal, decision, signal_score,
-    notes,
-    result,  # ✅ result
-    rsi.iloc[-1],   # ✅ rsi
-    macd.iloc[-1],  # ✅ macd
-    stoch_rsi,  # ✅ stoch_rsi
-    pattern, trend, fibo_levels,
-    decision, news, gpt_feedback,
+    notes, result, rsi, macd, stoch_rsi,
+    pattern, trend, fibo_levels, decision2, news, gpt_feedback,
     alert_name, tp, sl, entry, price, pnl,
     outcome_analysis, adjustment_suggestion, price_movements,
-    atr,
-    support=payload.get("support"),
-    resistance=payload.get("resistance")
+    atr, support, resistance
 )
 
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
