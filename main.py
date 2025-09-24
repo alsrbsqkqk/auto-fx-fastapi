@@ -1512,8 +1512,6 @@ async def webhook(request: Request):
             
     print(f"✅ STEP 10: 전략 요약 저장 호출 | decision: {decision}, TP: {tp}, SL: {sl}")
     try:
-        notes = "\n".join(reasons)
-        notes += f"\nATR: {round((atr or 0), 5)}"
         log_trade_result(
             pair, signal, decision, signal_score,
             notes,
@@ -2111,7 +2109,7 @@ def safe_float(val):
         return round(val, 5)
     except:
         return ""
-
+reasons = ["신호1: RSI 과매도", "신호2: MACD 골든크로스"]
 notes = "\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}"  # ✅ 변수로 저장
 def log_trade_result(
     pair, signal, decision, signal_score,
