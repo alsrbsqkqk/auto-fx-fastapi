@@ -2115,10 +2115,10 @@ notes = "\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}"  # ✅ 변수로 저
 def log_trade_result(
     pair, signal, decision, signal_score,
     notes,
-    result,
-    rsi.iloc[-1],  # rsi
-    macd.iloc[-1],  # macd
-    stoch_rsi,  # stoch_rsi
+    result,  # ✅ result
+    rsi.iloc[-1],  # ✅ rsi
+    macd.iloc[-1],  # ✅ macd
+    stoch_rsi,  # ✅ stoch_rsi
     pattern, trend, fibo_levels,
     decision, news, gpt_feedback,
     alert_name, tp, sl, entry, price, pnl,
