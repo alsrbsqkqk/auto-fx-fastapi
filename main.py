@@ -2109,8 +2109,8 @@ def safe_float(val):
         return round(val, 5)
     except:
         return ""
-reasons = ["신호1: RSI 과매도", "신호2: MACD 골든크로스"]
-notes = "\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}"  # ✅ 변수로 저장
+
+
 def log_trade_result(
     pair, signal, decision, signal_score,
     notes, result, rsi, macd, stoch_rsi,
