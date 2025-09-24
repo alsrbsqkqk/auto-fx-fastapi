@@ -1360,7 +1360,7 @@ async def webhook(request: Request):
             pattern, trend, fibo_levels,  # ✔ 위와 순서 동일
             None, news, gpt_feedback,     # ✔ None이 decision2 자리임
             alert_name, tp, sl, None, price, None,
-            outcome_analysis, adjustment_suggestion, price_movements,
+            None, None, None,
             atr,
             payload.get("support"),
             payload.get("resistance")
