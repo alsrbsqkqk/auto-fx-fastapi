@@ -2120,7 +2120,7 @@ def log_trade_result(
     alert_name, tp, sl, entry, price, pnl,
     outcome_analysis, adjustment_suggestion, price_movements,
     atr, support, resistance
-)
+):
 
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
