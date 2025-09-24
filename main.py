@@ -2114,13 +2114,17 @@ def safe_float(val):
 notes = "\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}"  # ✅ 변수로 저장
 def log_trade_result(
     pair, signal, decision, signal_score,
-    notes,   # ✅ notes
-    result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi,      # ✅ rsi~stoch_rsi
-    pattern, trend, fibo_levels,                         # ✅ pattern~fibo
-    decision, news, gpt_feedback,                        # ✅ gpt_decision까지
-    alert_name, tp, sl, entry, price, pnl,               # ✅ entry~pnl
+    notes,
+    result,
+    rsi.iloc[-1],  # rsi
+    macd.iloc[-1],  # macd
+    stoch_rsi,  # stoch_rsi
+    pattern, trend, fibo_levels,
+    decision, news, gpt_feedback,
+    alert_name, tp, sl, entry, price, pnl,
     outcome_analysis, adjustment_suggestion, price_movements,
-    atr, support=payload.get("support"),
+    atr,
+    support=payload.get("support"),
     resistance=payload.get("resistance")
 )
 
