@@ -1291,7 +1291,7 @@ async def webhook(request: Request):
     gpt_feedback = "GPT 분석 생략: 점수 미달"
     decision, tp, sl = None, None, None
     gpt_raw = None
-    if signal_score >= 5.0:
+    if signal_score >= 8.0:
         gpt_raw = analyze_with_gpt(payload, price)
         print("✅ STEP 6: GPT 응답 수신 완료")
         # ✅ 추가: 파싱 결과 강제 정규화 (대/소문자/공백/이상값 방지)
@@ -1304,7 +1304,7 @@ async def webhook(request: Request):
             print("[WARN] decision 파싱 실패 → WAIT 강제")
             decision = "WAIT"
     else:
-        print("🚫 GPT 분석 생략: 점수 5.0점 미만")
+        print("🚫 GPT 분석 생략: 점수 8.0점 미만")
 
 
     result = gpt_raw or ""
@@ -1329,29 +1329,10 @@ async def webhook(request: Request):
     
     # ❌ GPT가 WAIT이면 주문하지 않음
     if decision == "WAIT":
-        print("⛔ GPT 판단: WAIT ➜ 주문 실행하지 않음")
-
-        # 🧠 디버깅: GPT가 왜 WAIT을 선택했는지 이유 출력
-        if isinstance(gpt_feedback, str):
-            try:
-                gpt_feedback = json.loads(gpt_feedback)
-            except Exception as e:
-                print(f"🧨 gpt_feedback 파싱 실패: {e}")
-                gpt_feedback = {}
-
-        reason_debug = (
-            gpt_feedback.get("reason")
-            or gpt_feedback.get("analysis_text")
-            or gpt_feedback.get("message")
-            or "이유 없음"
-        )
-        print(f"🧠 GPT 결정 이유 (WAIT): {reason_debug}")
-
-        # 📌 outcome_analysis 및 suggestion 기본값 세팅
+        print("🚫 GPT 판단: WAIT → 주문 실행하지 않음")
+        # 시트 기록도 남기기
         outcome_analysis = "WAIT 또는 주문 미실행"
         adjustment_suggestion = ""
-
-        
         print(f"✅ STEP 10: 전략 요약 저장 호출 | decision: {decision}, TP: {tp}, SL: {sl}")
         log_trade_result(
             pair, signal, decision, signal_score,
@@ -1423,8 +1404,8 @@ async def webhook(request: Request):
     pnl = None
     should_execute = False
     
-    # 1️⃣ 기본 진입 조건: GPT가 BUY/SELL 판단 + 점수 5.0점 이상
-    if decision in ["BUY", "SELL"] and signal_score >= 5.0:
+    # 1️⃣ 기본 진입 조건: GPT가 BUY/SELL 판단 + 점수 8.0점 이상
+    if decision in ["BUY", "SELL"] and signal_score >= 8.0:
         # ✅ RSI 극단값 필터: BUY가 과매수 / SELL이 과매도이면 진입 차단
         if False and ((decision == "BUY" and rsi.iloc[-1] > 85) or (decision == "SELL" and rsi.iloc[-1] < 20)):
             reasons.append(f"❌ RSI 극단값으로 진입 차단: {decision} @ RSI {rsi.iloc[-1]:.2f}")
@@ -1840,13 +1821,9 @@ def parse_gpt_feedback(text):
 
     # ✅ fallback: "BUY" 또는 "SELL" 단독 등장 시 인식
     if decision == "WAIT":
-        upper_text = text.upper()
-        buy_score = upper_text.count("BUY")
-        sell_score = upper_text.count("SELL")
-    
-        if buy_score > sell_score:
+        if "BUY" in text.upper() and "SELL" not in text.upper():
             decision = "BUY"
-        elif sell_score > buy_score:
+        elif "SELL" in text.upper() and "BUY" not in text.upper():
             decision = "SELL"
 
     # ✅ TP/SL 추출 (가장 마지막 숫자 사용)
@@ -1950,7 +1927,7 @@ def analyze_with_gpt(payload, current_price):
             "content": (
                 "너는 실전 FX 트레이딩 전략 조력자야.\n"
                 "(1) 아래 JSON 테이블을 기반으로 전략 리포트를 작성해. score_components 리스트는 각 전략 요소가 신호 판단에 어떤 기여를 했는지를 설명해.\n"
-                "- 모든 요소를 종합적으로 분석해서 진입 판단(BUY, SELL, WAIT)과 TP, SL 값을 제시해. 너의 판단이 애매하거나 혼란스러워도, 가장 가능성이 높은 방향으로 BUY 또는 SELL 중 하나를 제시해. WAIT은 확실히 진입이 불가능할 때만 사용해..\n"
+                "- 모든 요소를 종합적으로 분석해서 진입 판단(BUY, SELL, WAIT)과 TP, SL 값을 제시해. 너의 판단이 관망일 때는 그냥 wait으로 판단해.\n"
                 "- 판단할 때는 아래 고차원 전략 사고 프레임을 참고해.\n"
                 "- GI = (O × C × P × S) / (A + B): 감정, 언급, 패턴, 종합을 강화하고 고정관념과 편향을 최소화하라.\n"
                 "- MDA = SUM(Di × Wi × Ii): 시간, 공간, 인과 등 다양한 차원에서 통찰과 영향을 조합하라.\n"
