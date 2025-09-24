@@ -2116,7 +2116,7 @@ def log_trade_result(
     pair, signal, decision, signal_score,
     notes,
     result,  # ✅ result
-    rsi.iloc[-1],  # ✅ rsi
+    rsi.iloc[-1],   # ✅ rsi
     macd.iloc[-1],  # ✅ macd
     stoch_rsi,  # ✅ stoch_rsi
     pattern, trend, fibo_levels,
