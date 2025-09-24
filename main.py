@@ -1355,13 +1355,19 @@ async def webhook(request: Request):
         print(f"✅ STEP 10: 전략 요약 저장 호출 | decision: {decision}, TP: {tp}, SL: {sl}")
         log_trade_result(
             pair, signal, decision, signal_score,
-            "\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}",
-            {}, rsi.iloc[-1], macd.iloc[-1], stoch_rsi,
+            "\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}",  # notes
+            {},                        # result
+            rsi.iloc[-1],              # rsi
+            macd.iloc[-1],             # macd
+            stoch_rsi,                 # stoch_rsi
             pattern, trend, fibo_levels, decision, news, gpt_feedback,
-            alert_name, tp, sl, price, None,
+            alert_name, tp, sl,
+            None,                     # entry
+            price,                    # price
+            None,                     # pnl (❗️추가됨)
             outcome_analysis, adjustment_suggestion, [],
             atr,
-            support=payload.get("support"),     # ▼ 추가
+            support_payload.get("support"),
             resistance=payload.get("resistance")
         )
         
