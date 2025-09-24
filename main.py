@@ -1359,7 +1359,7 @@ async def webhook(request: Request):
             {}, rsi.iloc[-1], macd.iloc[-1], stoch_rsi,
             pattern, trend, fibo_levels,  # ✔ 위와 순서 동일
             None, news, gpt_feedback,     # ✔ None이 decision2 자리임
-            alert_name, tp, sl, None, price, pnl,
+            alert_name, tp, sl, None, price, None,
             outcome_analysis, adjustment_suggestion, price_movements,
             atr,
             payload.get("support"),
@@ -1510,23 +1510,6 @@ async def webhook(request: Request):
         elif abs(tp - price) < abs(sl - price):
             adjustment_suggestion = "TP 거의 닿았으나 실패 → TP 약간 보수적일 필요 있음"
             
-    print(f"✅ STEP 10: 전략 요약 저장 호출 | decision: {decision}, TP: {tp}, SL: {sl}")
-    try:
-        log_trade_result(
-            pair, signal, decision, signal_score,
-            notes,
-            result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi,
-            pattern, trend, fibo_levels, decision, news, gpt_feedback,
-            alert_name, tp, sl, None, price, pnl,   # ← entry=None 추가
-            outcome_analysis, adjustment_suggestion, price_movements,
-            atr,
-            payload.get("support"),
-            payload.get("resistance")
-        )
-    except Exception as e:
-        print(f"⚠️ log_trade_result 기록 실패: {e}")
-    
-    return JSONResponse(content={"status": "completed", "decision": decision})
     
 def calculate_atr(candles, period=14):
     high_low = candles['high'] - candles['low']
