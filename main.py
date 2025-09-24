@@ -1521,6 +1521,9 @@ async def webhook(request: Request):
         support=payload.get("support"),    # ▼ 추가
         resistance=payload.get("resistance")
          )
+    except Exception as e:
+    print(f"⚠️ log_trade_result 기록 실패: {e}")
+    
     return JSONResponse(content={"status": "completed", "decision": decision})
     
 def calculate_atr(candles, period=14):
