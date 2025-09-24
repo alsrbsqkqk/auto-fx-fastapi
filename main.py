@@ -1515,7 +1515,7 @@ async def webhook(request: Request):
         notes += f"\nATR: {round((atr or 0), 5)}"
         log_trade_result(
             pair, signal, decision, signal_score,
-            "\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}",
+            notes,
             result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi,
             pattern, trend, fibo_levels, decision, news, gpt_feedback,
             alert_name, tp, sl, price, pnl, None,
