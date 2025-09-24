@@ -1357,13 +1357,12 @@ async def webhook(request: Request):
             pair, signal, decision, signal_score,
             "\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}",
             {}, rsi.iloc[-1], macd.iloc[-1], stoch_rsi,
-            pattern, trend, fibo_levels,  # ✔ 위와 순서 동일
-            None, news, gpt_feedback,     # ✔ None이 decision2 자리임
-            alert_name, tp, sl, None, price, None,
-            None, None, None,
+            pattern, trend, fibo_levels, decision, news, gpt_feedback,
+            alert_name, tp, sl, price, None,
+            outcome_analysis, adjustment_suggestion, [],
             atr,
-            payload.get("support"),
-            payload.get("resistance")
+            support=payload.get("support"),     # ▼ 추가
+            resistance=payload.get("resistance")
         )
         
         return JSONResponse(content={"status": "WAIT", "message": "GPT가 WAIT 판단"})
@@ -1510,6 +1509,19 @@ async def webhook(request: Request):
         elif abs(tp - price) < abs(sl - price):
             adjustment_suggestion = "TP 거의 닿았으나 실패 → TP 약간 보수적일 필요 있음"
             
+    print(f"✅ STEP 10: 전략 요약 저장 호출 | decision: {decision}, TP: {tp}, SL: {sl}")
+    log_trade_result(
+        pair, signal, decision, signal_score,
+        "\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}",
+        result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi,
+        pattern, trend, fibo_levels, decision, news, gpt_feedback,
+        alert_name, tp, sl, price, pnl, None,
+        outcome_analysis, adjustment_suggestion, price_movements,
+        atr,
+        support=payload.get("support"),    # ▼ 추가
+        resistance=payload.get("resistance")
+         )
+    return JSONResponse(content={"status": "completed", "decision": decision})
     
 def calculate_atr(candles, period=14):
     high_low = candles['high'] - candles['low']
@@ -1841,20 +1853,6 @@ def parse_gpt_feedback(text):
     lines = text.splitlines()
     tp_line = next((ln for ln in reversed(lines) if re.search(r'(?i)\bTP\b|TP 제안 값|목표', ln)), "")
     sl_line = next((ln for ln in reversed(lines) if re.search(r'(?i)\bSL\b', ln) and re.search(r'\d+\.\d+', ln)), "")
-    
-    # 🛠️ 추가: SL/TP 라벨이 없지만, BUY/SELL 줄 바로 아래 숫자만 있는 경우 커버
-    if not tp_line or not sl_line:
-        for i, line in enumerate(lines):
-            if re.search(r'\b(BUY|SELL)\b', line, re.I):
-                # 다음 줄에 가격 숫자만 있을 경우 TP/SL로 추정
-                if i+1 < len(lines) and re.search(r'\d+\.\d+', lines[i+1]):
-                    price = lines[i+1]
-                    if not tp_line:
-                        tp_line = price
-                    elif not sl_line:
-                        sl_line = price
-
-    
     if not sl_line:
         sl = None  # 결정은 유지
     # 아래처럼 결정 추출을 더 확실하게:
@@ -1952,7 +1950,7 @@ def analyze_with_gpt(payload, current_price):
             "content": (
                 "너는 실전 FX 트레이딩 전략 조력자야.\n"
                 "(1) 아래 JSON 테이블을 기반으로 전략 리포트를 작성해. score_components 리스트는 각 전략 요소가 신호 판단에 어떤 기여를 했는지를 설명해.\n"
-                "- 너의 목표는 항상 BUY 또는 SELL 중 하나를 판단해 제시하는 것이다. WAIT은 신호가 매우 약하거나 명백한 근거가 있을 때만 선택해야 한다..\n"
+                "- 모든 요소를 종합적으로 분석해서 진입 판단(BUY, SELL, WAIT)과 TP, SL 값을 제시해. 너의 판단이 애매하거나 혼란스러워도, 가장 가능성이 높은 방향으로 BUY 또는 SELL 중 하나를 제시해. WAIT은 확실히 진입이 불가능할 때만 사용해..\n"
                 "- 판단할 때는 아래 고차원 전략 사고 프레임을 참고해.\n"
                 "- GI = (O × C × P × S) / (A + B): 감정, 언급, 패턴, 종합을 강화하고 고정관념과 편향을 최소화하라.\n"
                 "- MDA = SUM(Di × Wi × Ii): 시간, 공간, 인과 등 다양한 차원에서 통찰과 영향을 조합하라.\n"
@@ -1978,11 +1976,6 @@ def analyze_with_gpt(payload, current_price):
                 "(8) 피보나치 수렴 또는 환경 여부도 참고하고, 돌파 가능성이 높다면 TP를 약간 확장해도 돼.\n"
                 "- 이동평균선, 시그널선의 정렬, 격 여부, 볼린저 밴드, ATR, 볼륨지표 등도 종합해서 TP/SL 변동폭을 보수적으로 또는 공격적으로 조정해.\n\n"
                 "- 너의 최종 목표는 거래당 약 10pip 언저리의 수익을 내는 것이고, 손실은 거래당 8pip을 넘지 않도록 설정하는 것이다."
-                "\n\n결정 판단은 아래 포맷으로 명확히 작성해:\n"
-                '"결정 판단": "BUY",\n'
-                '"TP": 1.2345,\n'
-                '"SL": 1.2280,\n'
-                '"이유": "MACD 강세 + 패턴 발생"\n'
             )
         },
         {
@@ -2022,10 +2015,6 @@ def analyze_with_gpt(payload, current_price):
                 json=body,
                 timeout=45,
             )
-            # STEP 3: GPT 응답 텍스트에서 결정/TP/SL 추출
-            text = r.json().get("choices", [{}])[0].get("message", {}).get("content", "")
-            decision, tp, sl = parse_gpt_feedback(text)
-
         except requests.exceptions.Timeout:
             print("GPT 응답 시간 초과 - fallback 처리됨")
             return {
@@ -2076,7 +2065,6 @@ def analyze_with_gpt(payload, current_price):
             r.raise_for_status()
             data = r.json()
             text = (data.get("choices", [{}])[0].get("message", {}).get("content", "") or "")
-            print(f"📩 GPT 원문 응답: {text[:500]}...")  # 너무 길면 앞 500자만 출력
             return text.strip() if str(text).strip() else "GPT 응답 없음"
     
         except Exception as e:   # ← try와 같은 깊이
@@ -2094,15 +2082,7 @@ def safe_float(val):
         return ""
 
 
-def log_trade_result(
-    pair, signal, decision, signal_score,
-    notes, result, rsi, macd, stoch_rsi,
-    pattern, trend, fibo_levels, decision2, news, gpt_feedback,
-    alert_name, tp, sl, entry=None, price=None, pnl=None,
-    outcome_analysis=None, adjustment_suggestion=None, price_movements=None,
-    atr=None, support=None, resistance=None
-):
-
+def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None, macd=None, stoch_rsi=None, pattern=None, trend=None, fibo=None, gpt_decision=None, news=None, gpt_feedback=None, alert_name=None, tp=None, sl=None, entry=None, price=None, pnl=None, outcome_analysis=None, adjustment_suggestion=None, price_movements=None, atr=None, support=None, resistance=None):
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
     client = gspread.authorize(creds)
