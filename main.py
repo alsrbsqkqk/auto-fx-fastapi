@@ -2110,7 +2110,18 @@ def safe_float(val):
         return ""
 
 
-def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None, macd=None, stoch_rsi=None, pattern=None, trend=None, fibo=None, gpt_decision=None, news=None, gpt_feedback=None, alert_name=None, tp=None, sl=None, entry=None, price=None, pnl=None, outcome_analysis=None, adjustment_suggestion=None, price_movements=None, atr=None, support=None, resistance=None):
+def log_trade_result(
+    pair, signal, decision, signal_score,
+    "\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}",  # ✅ notes
+    result, rsi.iloc[-1], macd.iloc[-1], stoch_rsi,      # ✅ rsi~stoch_rsi
+    pattern, trend, fibo_levels,                         # ✅ pattern~fibo
+    decision, news, gpt_feedback,                        # ✅ gpt_decision까지
+    alert_name, tp, sl, entry, price, pnl,               # ✅ entry~pnl
+    outcome_analysis, adjustment_suggestion, price_movements,
+    atr, support=payload.get("support"),
+    resistance=payload.get("resistance")
+)
+
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
     client = gspread.authorize(creds)
