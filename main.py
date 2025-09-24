@@ -1359,7 +1359,7 @@ async def webhook(request: Request):
             {}, rsi.iloc[-1], macd.iloc[-1], stoch_rsi,
             pattern, trend, fibo_levels,  # ✔ 위와 순서 동일
             None, news, gpt_feedback,     # ✔ None이 decision2 자리임
-            alert_name, tp, sl, entry, price, pnl,
+            alert_name, tp, sl, None, price, pnl,
             outcome_analysis, adjustment_suggestion, price_movements,
             atr,
             payload.get("support"),
@@ -2115,9 +2115,9 @@ def log_trade_result(
     pair, signal, decision, signal_score,
     notes, result, rsi, macd, stoch_rsi,
     pattern, trend, fibo_levels, decision2, news, gpt_feedback,
-    alert_name, tp, sl, entry, price, pnl,
-    outcome_analysis, adjustment_suggestion, price_movements,
-    atr, support, resistance
+    alert_name, tp, sl, entry=None, price=None, pnl=None,
+    outcome_analysis=None, adjustment_suggestion=None, price_movements=None,
+    atr=None, support=None, resistance=None
 ):
 
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
