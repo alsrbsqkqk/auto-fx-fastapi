@@ -1331,6 +1331,7 @@ async def webhook(request: Request):
     outcome_analysis = "WAIT 또는 주문 미실행"
     adjustment_suggestion = ""
     price_movements = None
+    gpt_feedback_dup = None
 
     # ❌ GPT가 WAIT이면 주문하지 않음
     if decision == "WAIT":
@@ -1343,7 +1344,7 @@ async def webhook(request: Request):
             except Exception as e:
                 print(f"🧨 gpt_feedback 파싱 실패: {e}")
                 gpt_feedback = {}
-        gpt_feedback_dup = gpt_feedback  # 또는 deepcopy
+    gpt_feedback_dup = gpt_feedback  # 또는 deepcopy
         
         reason_debug = (
             gpt_feedback.get("reason")
