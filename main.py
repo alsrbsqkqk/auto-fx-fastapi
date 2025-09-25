@@ -1344,7 +1344,7 @@ async def webhook(request: Request):
             except Exception as e:
                 print(f"🧨 gpt_feedback 파싱 실패: {e}")
                 gpt_feedback = {}
-    gpt_feedback_dup = gpt_feedback  # 또는 deepcopy
+        gpt_feedback_dup = gpt_feedback  # 또는 deepcopy
         
         reason_debug = (
             gpt_feedback.get("reason")
