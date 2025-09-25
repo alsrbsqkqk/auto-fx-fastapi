@@ -1327,6 +1327,10 @@ async def webhook(request: Request):
     print(f"✅ STEP 7: GPT 해석 완료 | decision: {decision}, TP: {tp}, SL: {sl}")
    
     
+    # 📌 outcome_analysis 및 suggestion 기본값 세팅
+    outcome_analysis = "WAIT 또는 주문 미실행"
+    adjustment_suggestion = ""
+
     # ❌ GPT가 WAIT이면 주문하지 않음
     if decision == "WAIT":
         print("⛔ GPT 판단: WAIT ➜ 주문 실행하지 않음")
@@ -1347,9 +1351,6 @@ async def webhook(request: Request):
         )
         print(f"🧠 GPT 결정 이유 (WAIT): {reason_debug}")
 
-        # 📌 outcome_analysis 및 suggestion 기본값 세팅
-        outcome_analysis = "WAIT 또는 주문 미실행"
-        adjustment_suggestion = ""
 
         
     print(f"✅ STEP 10: 전략 요약 저장 호출 | decision: {decision}, TP: {tp}, SL: {sl}")
