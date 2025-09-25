@@ -1352,34 +1352,34 @@ async def webhook(request: Request):
         adjustment_suggestion = ""
 
         
-        print(f"✅ STEP 10: 전략 요약 저장 호출 | decision: {decision}, TP: {tp}, SL: {sl}")
-        log_trade_result(
-            pair, signal, decision, signal_score,
-            "\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}",
-            {}, rsi.iloc[-1], macd.iloc[-1], stoch_rsi,
-            pattern, trend, fibo_levels, decision, news, gpt_feedback,
-            alert_name, tp, sl, price,  # entry는 None 또는 생략
-            outcome_analysis, adjustment_suggestion,
-            price_movements,  # 이 항목도 분석에 필요
-            atr,
-            support=payload.get("support"),
-            resistance=payload.get("resistance"),
+    print(f"✅ STEP 10: 전략 요약 저장 호출 | decision: {decision}, TP: {tp}, SL: {sl}")
+    log_trade_result(
+        pair, signal, decision, signal_score,
+        "\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}",
+        {}, rsi.iloc[-1], macd.iloc[-1], stoch_rsi,
+         pattern, trend, fibo_levels, decision, news, gpt_feedback,
+        alert_name, tp, sl, price,  # entry는 None 또는 생략
+        outcome_analysis, adjustment_suggestion,
+        price_movements,  # 이 항목도 분석에 필요
+        atr,
+        support=payload.get("support"),
+        resistance=payload.get("resistance"),
         
-            # 🔻 추가된 인자들
-            liquidity=payload.get("liquidity"),
-            macd_signal=payload.get("macd_signal"),
-            macd_trend=payload.get("macd_trend"),
-            macd_signal_trend=payload.get("macd_signal_trend"),
-            stoch_rsi_trend=payload.get("stoch_rsi_trend"),
-            rsi_trend=payload.get("rsi_trend"),
-            bollinger_upper=payload.get("bollinger_upper"),
-            bollinger_lower=payload.get("bollinger_lower"),
-            news_text=payload.get("news_text"),
-            gpt_feedback_dup=gpt_feedback_dup,
-            filtered_movement=filtered_movement
-        )
+        # 🔻 추가된 인자들
+        liquidity=payload.get("liquidity"),
+        macd_signal=payload.get("macd_signal"),
+        macd_trend=payload.get("macd_trend"),
+        macd_signal_trend=payload.get("macd_signal_trend"),
+        stoch_rsi_trend=payload.get("stoch_rsi_trend"),
+        rsi_trend=payload.get("rsi_trend"),
+        bollinger_upper=payload.get("bollinger_upper"),
+        bollinger_lower=payload.get("bollinger_lower"),
+        news_text=payload.get("news_text"),
+        gpt_feedback_dup=gpt_feedback_dup,
+        filtered_movement=filtered_movement
+    )
         
-        return JSONResponse(content={"status": "WAIT", "message": "GPT가 WAIT 판단"})
+    return JSONResponse(content={"status": "WAIT", "message": "GPT가 WAIT 판단"})
         
     #if is_recent_loss(pair) and recent_loss_within_cooldown(pair, window=60):
         #print(f"🚫 쿨다운 적용: 최근 {pair} 손실 후 반복 진입 차단")
