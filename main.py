@@ -1332,6 +1332,7 @@ async def webhook(request: Request):
     adjustment_suggestion = ""
     price_movements = None
     gpt_feedback_dup = None
+    filtered_movement = None
 
     # ❌ GPT가 WAIT이면 주문하지 않음
     if decision == "WAIT":
