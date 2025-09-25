@@ -1330,6 +1330,7 @@ async def webhook(request: Request):
     # 📌 outcome_analysis 및 suggestion 기본값 세팅
     outcome_analysis = "WAIT 또는 주문 미실행"
     adjustment_suggestion = ""
+    price_movements = None
 
     # ❌ GPT가 WAIT이면 주문하지 않음
     if decision == "WAIT":
