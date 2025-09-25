@@ -1358,11 +1358,25 @@ async def webhook(request: Request):
             "\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}",
             {}, rsi.iloc[-1], macd.iloc[-1], stoch_rsi,
             pattern, trend, fibo_levels, decision, news, gpt_feedback,
-            alert_name, tp, sl, price, None,
-            outcome_analysis, adjustment_suggestion, [],
+            alert_name, tp, sl, price,  # entry는 None 또는 생략
+            outcome_analysis, adjustment_suggestion,
+            price_movements,  # 이 항목도 분석에 필요
             atr,
-            support=payload.get("support"),     # ▼ 추가
-            resistance=payload.get("resistance")
+            support=payload.get("support"),
+            resistance=payload.get("resistance"),
+        
+            # 🔻 추가된 인자들
+            liquidity=payload.get("liquidity"),
+            macd_signal=payload.get("macd_signal"),
+            macd_trend=payload.get("macd_trend"),
+            macd_signal_trend=payload.get("macd_signal_trend"),
+            stoch_rsi_trend=payload.get("stoch_rsi_trend"),
+            rsi_trend=payload.get("rsi_trend"),
+            bollinger_upper=payload.get("bollinger_upper"),
+            bollinger_lower=payload.get("bollinger_lower"),
+            news_text=payload.get("news_text"),
+            gpt_feedback_dup=gpt_feedback_dup,
+            filtered_movement=filtered_movement
         )
         
         return JSONResponse(content={"status": "WAIT", "message": "GPT가 WAIT 판단"})
@@ -2093,7 +2107,25 @@ def safe_float(val):
         return ""
 
 
-def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None, macd=None, stoch_rsi=None, pattern=None, trend=None, fibo=None, gpt_decision=None, news=None, gpt_feedback=None, alert_name=None, tp=None, sl=None, entry=None, price=None, pnl=None, outcome_analysis=None, adjustment_suggestion=None, price_movements=None, atr=None, support=None, resistance=None):
+def log_trade_result(
+    pair, signal, decision, score, notes, result=None,
+    rsi=None, macd=None, stoch_rsi=None,
+    pattern=None, trend=None, fibo=None,
+    gpt_decision=None, news=None, gpt_feedback=None,
+    alert_name=None, tp=None, sl=None, entry=None,
+    price=None, pnl=None,
+    outcome_analysis=None, adjustment_suggestion=None,
+    price_movements=None, atr=None,
+    support=None, resistance=None,
+    liquidity=None,
+    macd_signal=None, macd_trend=None, macd_signal_trend=None,
+    stoch_rsi_trend=None, rsi_trend=None,
+    bollinger_upper=None, bollinger_lower=None,
+    news_text=None,  # news 전문 별도 전달 시
+    gpt_feedback_dup=None,
+    filtered_movement=None
+):
+    
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
     client = gspread.authorize(creds)
@@ -2122,7 +2154,7 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
     # ✅ 분석용 filtered_movements로 신고점/신저점 판단
     is_new_high = ""
     is_new_low = ""
-    if len(filtered_movements) > 1:
+    if len(filtered_movements) > 0:
         try:
             highs = [p["high"] for p in filtered_movements[:-1]]
             lows = [p["low"] for p in filtered_movements[:-1]]
@@ -2194,6 +2226,12 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
         is_new_high,                      # is_new_high
         is_new_low,                       # is_new_low
         safe_float(atr),                  # atr
+        liquidity,
+        macd_signal,
+        macd_trend,
+        macd_signal_trend,
+        stoch_rsi_trend,
+        rsi_trend,
 
         # ↓ 아래 필드들이 시트 헤더에 실제로 있다면 그대로 유지,
         #   없다면 이 아래 줄들만 지워도 무방 (헤더와 컬럼 수는 항상 동일해야 함)
@@ -2210,10 +2248,10 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
             try:
                 clean_row.append(json.dumps(v, ensure_ascii=False))
             except Exception as e:
-                print(f"[❌ JSON 변환 실패] ➝ {e}")
+                print(f"[❌ JSON 변환 실패 → {e}]")
                 clean_row.append(str(v))  # fallback 처리
         elif isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
-            clean_row.append("")
+            clean_row.append("")  # 빈 문자열로 처리
         else:
             clean_row.append(v)
 
