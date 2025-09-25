@@ -2207,12 +2207,15 @@ def log_trade_result(pair, signal, decision, score, notes, result=None, rsi=None
     clean_row = []
     for v in row:
         if isinstance(v, (dict, list)):
-            clean_row.append(json.dumps(v, ensure_ascii=False))
+            try:
+                clean_row.append(json.dumps(v, ensure_ascii=False))
+            except Exception as e:
+                print(f"[❌ JSON 변환 실패] ➝ {e}")
+                clean_row.append(str(v))  # fallback 처리
         elif isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
             clean_row.append("")
         else:
             clean_row.append(v)
-
 
 
 
