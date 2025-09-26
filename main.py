@@ -1847,25 +1847,26 @@ import re
 def extract_json_block(text):
     import re, json
 
-    # GPT 응답에서 코드 블록 태그 제거 + "json" 같은 접두어 제거
+    # 코드블록 태그 및 "json" 같은 접두어 제거
     cleaned = (
         text.replace("```json", "")
             .replace("```", "")
+            .replace("\njson", "")
             .replace("json\n", "")
             .replace("json", "")
             .strip()
     )
 
-    # { ... } 블록을 전부 찾기
+    # { ... } 블록을 모두 찾음
     matches = re.findall(r"\{[\s\S]*?\}", cleaned)
 
     for m in matches:
         try:
-            return json.loads(m)   # 첫 번째로 유효한 JSON 반환
-        except json.JSONDecodeError:
-            continue
+            return json.loads(m)   # 첫 번째로 파싱 성공한 JSON 반환
+        except json.JSONDecodeError as e:
+            print(f"[WARN] JSON 후보 파싱 실패: {e}, 일부 내용: {m[:150]}")
 
-    print("[WARN] JSON 블록 추출 실패, 원문 앞부분:", cleaned[:200])
+    print("[WARN] JSON 블록 추출 실패, cleaned 앞부분:", cleaned[:200])
     return None
 
 
