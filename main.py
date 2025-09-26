@@ -1302,6 +1302,7 @@ async def webhook(request: Request):
             if isinstance(gpt_raw, dict) else str(gpt_raw)
         )
         print(f"📄 GPT Raw Response: {raw_text!r}")
+        gpt_feedback = raw_text
         decision, tp, sl = parse_gpt_feedback(raw_text) if raw_text else ("WAIT", None, None)
         if decision not in ("BUY", "SELL", "WAIT"):
             print("[WARN] decision 파싱 실패 → WAIT 강제")
@@ -1370,7 +1371,8 @@ async def webhook(request: Request):
         pair, signal, decision, signal_score,
         "\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}",
         {}, rsi.iloc[-1], macd.iloc[-1], stoch_rsi,
-         pattern, trend, fibo_levels, decision, news, gpt_feedback,
+        pattern, trend, fibo_levels, gpt_decision=decision, gpt_feedback=gpt_feedback,
+        news=news,
         alert_name, tp, sl, price,  # entry는 None 또는 생략
         outcome_analysis, adjustment_suggestion,
         price_movements,  # 이 항목도 분석에 필요
