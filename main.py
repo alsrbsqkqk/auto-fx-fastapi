@@ -1847,7 +1847,11 @@ import re
 def extract_json_block(text):
     import re, json
 
-    # 코드블록 태그 및 "json" 같은 접두어 제거
+    if not text:  # text가 None 이거나 빈 문자열일 경우
+        print("[WARN] extract_json_block: 입력 text가 None 또는 빈 문자열")
+        return None
+
+    # 코드블록 태그 및 'json' 같은 접두어 제거
     cleaned = (
         text.replace("```json", "")
             .replace("```", "")
@@ -1857,12 +1861,12 @@ def extract_json_block(text):
             .strip()
     )
 
-    # { ... } 블록을 모두 찾음
+    # { ... } 블록 모두 찾기
     matches = re.findall(r"\{[\s\S]*?\}", cleaned)
 
     for m in matches:
         try:
-            return json.loads(m)   # 첫 번째로 파싱 성공한 JSON 반환
+            return json.loads(m)   # 첫 번째로 성공한 JSON 반환
         except json.JSONDecodeError as e:
             print(f"[WARN] JSON 후보 파싱 실패: {e}, 일부 내용: {m[:150]}")
 
