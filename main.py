@@ -1830,6 +1830,17 @@ def place_order(pair, units, tp, sl, digits):
 
 import re
 
+# JSON 블록만 추출하는 함수 추가
+def extract_json_block(text):
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group())
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
 
 def parse_gpt_feedback(text):
     import re
@@ -1840,7 +1851,7 @@ def parse_gpt_feedback(text):
 
         # 1) 먼저 JSON 파싱 시도
     try:
-        data = json.loads(text)
+        data = extract_json_block(text) 
         if isinstance(data, dict):  # ✅ dict인지 확인
             decision = str(data.get("decision", "WAIT")).upper()
             tp = data.get("tp")
@@ -1990,7 +2001,7 @@ def analyze_with_gpt(payload, current_price):
             "content": (
                 "너는 실전 FX 트레이딩 전략 조력자야.\n"
                 "(1) 아래 JSON 테이블을 기반으로 전략 리포트를 작성해. score_components 리스트는 각 전략 요소가 신호 판단에 어떤 기여를 했는지를 설명해.\n"
-                "- 너의 목표는 항상 BUY 또는 SELL 중 하나를 판단해 제시하는 것이다. WAIT은 신호가 매우 약하거나 명백한 근거가 있을 때만 선택해야 한다..\n"
+                "- 너의 목표는 항상 BUY 또는 SELL 중 하나를 판단해 제시하는 것이다. WAIT은 신호가 매우 약하거나 명백한 근거가 있을 때만 선택해야 한다.\n"
                 "- 판단할 때는 아래 고차원 전략 사고 프레임을 참고해.\n"
                 "- GI = (O × C × P × S) / (A + B): 감정, 언급, 패턴, 종합을 강화하고 고정관념과 편향을 최소화하라.\n"
                 "- MDA = SUM(Di × Wi × Ii): 시간, 공간, 인과 등 다양한 차원에서 통찰과 영향을 조합하라.\n"
@@ -1998,7 +2009,7 @@ def analyze_with_gpt(payload, current_price):
                 "(2) 거래는 기본적으로 1~2시간 내 청산을 목표로 하고, SL과 TP는 ATR의 최소 50% 이상 거리를 설정해.\n"
                 "- 최근 5개 캔들의 고점/저점을 참고해서 너가 설정한 TP/SL이 REASONABLE한지 꼭 검토해.\n"
                 "- TP와 SL은 현재가에서 각각 8pip 이상 차이 나야 하고, TP는 SL보다 넓게 잡아.\n"
-                "- TP:SL 비율은 1.4:1 이상이 이상적이야. 2:1을 상황 비율이지만, 조건이 맞으면 1.4:1 이상에서도 진입 조건 가능. \\\"10pip정도 이익.. BUY일 땐 TP > 진입가, SL < 진입가 / SELL일 땐 반대.\\\"\\n"
+                "- TP:SL 비율은 1.4:1 이상이 이상적이야. 2:1을 상황 비율이지만, 조건이 맞으면 1.4:1 이상에서도 진입 조건 가능.\n"
                 "(3) 지지선(support), 저항선(resistance)은 최근 1시간봉 기준 마지막 6봉의 고점/저점에서 이미 계산되어 JSON에 포함되어 있어. support와 resistance를 적절히 고려해.\n"
                 f"  • 현재가: {current_price}, 지지선: {support}, 저항선: {resistance}\n"
                 f"  • 롱일때 TP는 저항선 기준 약간 위, SL은 지지선 기준 약간 아래로 제안할 수 있음. 숏일때는 그 반대\n"
@@ -2007,20 +2018,16 @@ def analyze_with_gpt(payload, current_price):
                 "- 특히 각 보조지표의 최근 14봉 추세 데이터는 다음과 같아:\n"
                 f"RSI: {rsi_trend}, MACD: {macd_trend}, Stoch RSI: {stoch_rsi_trend}\n"
                 "- 상승/하락 흐름, 속도, 꺾임 여부 등을 함께 분석하라.\n\n"
-                "(5) 리포트 마지막에는 아래 형식으로 진입판단을 명확하게 작성해:\n"
-                "\"진입판단: BUY (또는 SELL, WAIT)\"\n"
-                "\"TP: 1.08752\\n\"\n"
-                "\"SL: 1.08214\\n\"\n\n"
-                "(6) TP와 SL은 반드시 **단일 수치만** 제시해야 하고, '~약'이나 '~부근' 같은 표현은 절대 쓰지 마. 숫자만 있어야 거래 자동화가 가능해.\n"
-                "(7) 현재가가 저항선에 가까우면 TP는 줄게, 지지선에서 멀다면 SL은 조금 여유롭게 허용해. 하지만 너무 과도하게 넓지 않게 조정해.\n"
-                "(8) 피보나치 수렴 또는 환경 여부도 참고하고, 돌파 가능성이 높다면 TP를 약간 확장해도 돼.\n"
-                "- 이동평균선, 시그널선의 정렬, 격 여부, 볼린저 밴드, ATR, 볼륨지표 등도 종합해서 TP/SL 변동폭을 보수적으로 또는 공격적으로 조정해.\n\n"
-                "- 너의 최종 목표는 거래당 약 10pip 언저리의 수익을 내는 것이고, 손실은 거래당 8pip을 넘지 않도록 설정하는 것이다."
-                "\n\n결정 판단은 아래 포맷으로 명확히 작성해:\n"
-                '"결정 판단": "BUY",\n'
-                '"TP": 1.2345,\n'
-                '"SL": 1.2280,\n'
-                '"이유": "MACD 강세 + 패턴 발생"\n'
+                "(5) 리포트는 자유롭게 작성하되, 반드시 마지막에는 아래 JSON 형식을 따르라:\n\n"
+                "### 의사결정 JSON\n"
+                "{\n"
+                '  "decision": "BUY" | "SELL" | "WAIT",\n'
+                '  "tp": <숫자>,\n'
+                '  "sl": <숫자>,\n'
+                '  "reason": "<간단한 이유>"\n'
+                "}\n\n"
+                "⚠️ 주의: JSON 블록 외에 추가 텍스트(설명, 마크다운, 코드 블록 표시 등)를 JSON 내부에 넣지 마라.\n"
+                "리포트 설명은 JSON 위에 작성하되, JSON 블록은 반드시 마지막에 독립적으로 제공하라."
             )
         },
         {
