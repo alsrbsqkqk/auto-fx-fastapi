@@ -1876,13 +1876,13 @@ def parse_gpt_feedback(text):
     try:
         data = extract_json_block(text)
         if isinstance(data, dict):  # ✅ dict인지 확인
-        decision = str(data.get("decision", "WAIT")).upper()
-        tp = data.get("tp")
-        sl = data.get("sl")
-    
-        # 🔥 수정: tp/sl 없어도 그대로 리턴
-        print(f"[DBG] JSON Parsed ✅ -> decision={decision}, tp={tp}, sl={sl}, raw={data}")
-        return decision, tp, sl
+            decision = str(data.get("decision", "WAIT")).upper()
+            tp = data.get("tp")
+            sl = data.get("sl")
+        
+            # 🔥 수정: tp/sl 없어도 그대로 리턴
+            print(f"[DBG] JSON Parsed ✅ -> decision={decision}, tp={tp}, sl={sl}, raw={data}")
+            return decision, tp, sl
 
     except Exception as e:
         print(f"[WARN] JSON 파싱 실패: {e}, fallback 실행")
