@@ -1875,17 +1875,14 @@ def parse_gpt_feedback(text):
 
     try:
         data = extract_json_block(text)
-        if isinstance(data, dict):
-            decision = str(data.get("decision", "WAIT")).upper()
-            tp = data.get("tp")
-            sl = data.get("sl")
-
-            # ✅ JSON 파싱 성공 로그
-            print(f"[DBG] JSON Parsed ✅ -> decision={decision}, tp={tp}, sl={sl}, raw={data}")
-
-            # ❌ 기존에는 tp/sl 빠지면 무조건 fallback으로 넘어갔음
-            # ⭕ 수정: decision만 있어도 그대로 return
-            return decision, tp, sl
+        if isinstance(data, dict):  # ✅ dict인지 확인
+        decision = str(data.get("decision", "WAIT")).upper()
+        tp = data.get("tp")
+        sl = data.get("sl")
+    
+        # 🔥 수정: tp/sl 없어도 그대로 리턴
+        print(f"[DBG] JSON Parsed ✅ -> decision={decision}, tp={tp}, sl={sl}, raw={data}")
+        return decision, tp, sl
 
     except Exception as e:
         print(f"[WARN] JSON 파싱 실패: {e}, fallback 실행")
