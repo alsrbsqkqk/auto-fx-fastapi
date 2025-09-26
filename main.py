@@ -1301,6 +1301,7 @@ async def webhook(request: Request):
             else json.dumps(gpt_raw, ensure_ascii=False)
             if isinstance(gpt_raw, dict) else str(gpt_raw)
         )
+        print(f"📄 GPT Raw Response: {raw_text!r}")
         decision, tp, sl = parse_gpt_feedback(raw_text) if raw_text else ("WAIT", None, None)
         if decision not in ("BUY", "SELL", "WAIT"):
             print("[WARN] decision 파싱 실패 → WAIT 강제")
@@ -1836,6 +1837,18 @@ def parse_gpt_feedback(text):
     decision = "WAIT"
     tp = None
     sl = None
+
+        # 1) 먼저 JSON 파싱 시도
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):  # ✅ dict인지 확인
+            decision = str(data.get("decision", "WAIT")).upper()
+            tp = data.get("tp")
+            sl = data.get("sl")
+            return decision, tp, sl
+    except Exception as e:
+        print(f"[WARN] JSON 파싱 실패: {e}, fallback 실행")
+        pass
 
     # ✅ 명확한 판단 패턴 탐색 (정규식 우선)
     decision_patterns = [
