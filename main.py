@@ -1297,7 +1297,8 @@ async def webhook(request: Request):
         # ✅ 추가: 파싱 결과 강제 정규화 (대/소문자/공백/이상값 방지)
         raw_text = (
             gpt_raw if isinstance(gpt_raw, str)
-            else (json.dumps(gpt_raw, ensure_ascii=False) if isinstance(gpt_raw, dict) else "")
+            else json.dumps(gpt_raw, ensure_ascii=False)
+            if isinstance(gpt_raw, dict) else str(gpt_raw)
         )
         decision, tp, sl = parse_gpt_feedback(raw_text) if raw_text else ("WAIT", None, None)
         if decision not in ("BUY", "SELL", "WAIT"):
@@ -1305,6 +1306,11 @@ async def webhook(request: Request):
             decision = "WAIT"
     else:
         print("🚫 GPT 분석 생략: 점수 5.0점 미만")
+        print("🔎 GPT 분석 상세 로그")
+        print(f" - GPT Raw (일부): {raw_text[:150]}...")  # 응답 일부만 잘라서 표시
+        print(f" - Parsed Decision: {decision}, TP: {tp}, SL: {sl}")
+        print(f" - 최종 점수: {signal_score}")
+        print(f" - 트리거 사유 목록: {reasons}")
 
 
     result = gpt_raw or ""
