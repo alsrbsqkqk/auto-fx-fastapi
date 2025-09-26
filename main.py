@@ -1832,11 +1832,14 @@ import re
 
 # JSON 블록만 추출하는 함수 추가
 def extract_json_block(text):
-    match = re.search(r"\{.*\}", text, re.DOTALL)
+    import re, json
+    # JSON 블록 { ... } 전체를 탐색 (개행 포함)
+    match = re.search(r"\{[\s\S]*\}", text)
     if match:
         try:
             return json.loads(match.group())
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            print(f"[WARN] JSON 파싱 실패: {e}, 원문 일부: {match.group()[:200]}")
             return None
     return None
 
