@@ -1368,19 +1368,30 @@ async def webhook(request: Request):
         
     print(f"✅ STEP 10: 전략 요약 저장 호출 | decision: {decision}, TP: {tp}, SL: {sl}")
     log_trade_result(
-        pair, signal, decision, signal_score,
-        "\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}",
-        {}, rsi.iloc[-1], macd.iloc[-1], stoch_rsi,
-        pattern, trend, fibo_levels, gpt_decision=decision, gpt_feedback=gpt_feedback,
+        pair=pair,
+        signal=signal,
+        decision=decision,
+        score=signal_score,
+        notes="\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}",
+        result=None,
+        rsi=rsi.iloc[-1],
+        macd=macd.iloc[-1],
+        stoch_rsi=stoch_rsi,
+        pattern=pattern,
+        trend=trend,
+        gpt_decision=decision,
+        gpt_feedback=gpt_feedback,
         news=news,
-        alert_name, tp, sl, price,  # entry는 None 또는 생략
-        outcome_analysis, adjustment_suggestion,
-        price_movements,  # 이 항목도 분석에 필요
-        atr,
+        alert_name=alert_name,
+        tp=tp,
+        sl=sl,
+        price=current_price,
+        outcome_analysis=outcome_analysis,
+        adjustment_suggestion=adjustment_suggestion,
+        price_movements=price_movements,
+        atr=atr,
         support=payload.get("support"),
         resistance=payload.get("resistance"),
-        
-        # 🔻 추가된 인자들
         liquidity=payload.get("liquidity"),
         macd_signal=payload.get("macd_signal"),
         macd_trend=payload.get("macd_trend"),
@@ -1391,9 +1402,9 @@ async def webhook(request: Request):
         bollinger_lower=payload.get("bollinger_lower"),
         news_text=payload.get("news_text"),
         gpt_feedback_dup=gpt_feedback_dup,
-        filtered_movement=filtered_movement
+        filtered_movement=filtered_movement,
     )
-        
+            
     return JSONResponse(content={"status": "WAIT", "message": "GPT가 WAIT 판단"})
         
     #if is_recent_loss(pair) and recent_loss_within_cooldown(pair, window=60):
