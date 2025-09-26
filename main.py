@@ -2062,6 +2062,7 @@ def analyze_with_gpt(payload, current_price):
             )
             # STEP 3: GPT 응답 텍스트에서 결정/TP/SL 추출
             text = r.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+            print(f"📄 GPT Raw Response: {text!r}")
             decision, tp, sl = parse_gpt_feedback(text)
 
         except requests.exceptions.Timeout:
