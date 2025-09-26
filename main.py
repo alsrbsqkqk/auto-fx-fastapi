@@ -1847,30 +1847,22 @@ import re
 def extract_json_block(text):
     import re, json
 
-    if not text:  # text가 None 이거나 빈 문자열일 경우
-        print("[WARN] extract_json_block: 입력 text가 None 또는 빈 문자열")
-        return None
-
-    # 코드블록 태그 및 'json' 같은 접두어 제거
+    # GPT 응답에서 코드 블록 태그 제거
     cleaned = (
         text.replace("```json", "")
             .replace("```", "")
-            .replace("\njson", "")
             .replace("json\n", "")
             .replace("json", "")
             .strip()
     )
 
-    # { ... } 블록 모두 찾기
-    matches = re.findall(r"\{[\s\S]*?\}", cleaned)
-
-    for m in matches:
+    match = re.search(r"\{[\s\S]*\}", cleaned)  # JSON 객체만 탐색
+    if match:
         try:
-            return json.loads(m)   # 첫 번째로 성공한 JSON 반환
+            return json.loads(match.group())
         except json.JSONDecodeError as e:
-            print(f"[WARN] JSON 후보 파싱 실패: {e}, 일부 내용: {m[:150]}")
-
-    print("[WARN] JSON 블록 추출 실패, cleaned 앞부분:", cleaned[:200])
+            print(f"[WARN] JSON 파싱 실패: {e}, 원문 일부: {match.group()[:200]}")
+            return None
     return None
 
 
@@ -1883,15 +1875,19 @@ def parse_gpt_feedback(text):
 
         # 1) 먼저 JSON 파싱 시도
     try:
-        data = extract_json_block(text) 
-        if isinstance(data, dict):  # ✅ dict인지 확인
+        data = extract_json_block(text)
+        if isinstance(data, dict):  
             decision = str(data.get("decision", "WAIT")).upper()
             tp = data.get("tp")
             sl = data.get("sl")
-            return decision, tp, sl
+            print(f"[DBG] JSON Parsed ✅ -> decision={decision}, tp={tp}, sl={sl}, raw={data}")
+    
+            # ✅ tp/sl이 빠졌을 때는 fallback 탐색 계속
+            if decision in ("BUY", "SELL") and tp and sl:
+                return decision, tp, sl
     except Exception as e:
         print(f"[WARN] JSON 파싱 실패: {e}, fallback 실행")
-        pass
+
 
     # ✅ 명확한 판단 패턴 탐색 (정규식 우선)
     decision_patterns = [
