@@ -1846,15 +1846,16 @@ import re
 
 def extract_json_block(text):
     import re, json
-    # GPT 응답에서 코드블록 태그 제거만
+    # GPT 응답에서 코드블록 태그 제거 + "json\n" 같은 패턴도 제거
     cleaned = (
         text.replace("```json", "")
             .replace("```", "")
+            .replace("json\n", "")   # 🔥 추가
             .strip()
     )
 
-    # JSON 블록 탐색
-    match = re.search(r"\{[\s\S]*\}", cleaned)
+    # JSON 블록 탐색 (non-greedy)
+    match = re.search(r"\{[\s\S]*?\}", cleaned)
     if match:
         try:
             return json.loads(match.group())
