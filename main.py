@@ -1303,10 +1303,8 @@ async def webhook(request: Request):
         )
         print(f"📄 GPT Raw Response: {raw_text!r}")
         gpt_feedback = raw_text
-        decision, tp, sl = parse_gpt_feedback(raw_text or "")
-        if decision not in ("BUY", "SELL", "WAIT"):
-            print("[WARN] decision 파싱 실패 → WAIT 강제")
-            decision = "WAIT"
+        decision, tp, sl = parse_gpt_feedback(raw_text) if raw_text else ("WAIT", None, None)
+        print(f"[✅ 최종 결정] decision={decision}, TP={tp}, SL={sl}")
     else:
         print("🚫 GPT 분석 생략: 점수 2.0점 미만")
         print("🔎 GPT 분석 상세 로그")
@@ -1879,8 +1877,6 @@ def parse_gpt_feedback(text):
             decision = str(data.get("decision", "WAIT")).upper()
             tp = data.get("tp")
             sl = data.get("sl")
-        
-            # 🔥 수정: tp/sl 없어도 그대로 리턴
             print(f"[DBG] JSON Parsed ✅ -> decision={decision}, tp={tp}, sl={sl}, raw={data}")
             return decision, tp, sl
 
