@@ -1846,16 +1846,14 @@ import re
 
 def extract_json_block(text):
     import re, json
-
-    # 👉 여기서 처리 (전역변수 안 건드리고 지역변수로 정리)
+    # GPT 응답에서 코드블록 태그 제거만
     cleaned = (
         text.replace("```json", "")
             .replace("```", "")
-            .replace("json\n", "")
-            .replace("json", "")
             .strip()
     )
 
+    # JSON 블록 탐색
     match = re.search(r"\{[\s\S]*\}", cleaned)
     if match:
         try:
