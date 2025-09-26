@@ -1830,11 +1830,20 @@ def place_order(pair, units, tp, sl, digits):
 
 import re
 
-# JSON 블록만 추출하는 함수 추가
+
 def extract_json_block(text):
     import re, json
-    # JSON 블록 { ... } 전체를 탐색 (개행 포함)
-    match = re.search(r"\{[\s\S]*\}", text)
+
+    # 👉 여기서 처리 (전역변수 안 건드리고 지역변수로 정리)
+    cleaned = (
+        text.replace("```json", "")
+            .replace("```", "")
+            .replace("json\n", "")
+            .replace("json", "")
+            .strip()
+    )
+
+    match = re.search(r"\{[\s\S]*\}", cleaned)
     if match:
         try:
             return json.loads(match.group())
@@ -1842,7 +1851,6 @@ def extract_json_block(text):
             print(f"[WARN] JSON 파싱 실패: {e}, 원문 일부: {match.group()[:200]}")
             return None
     return None
-
 
 
 def parse_gpt_feedback(text):
