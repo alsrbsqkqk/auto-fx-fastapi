@@ -1303,7 +1303,7 @@ async def webhook(request: Request):
         )
         print(f"📄 GPT Raw Response: {raw_text!r}")
         gpt_feedback = raw_text
-        decision, tp, sl = parse_gpt_feedback(raw_text) if raw_text else ("WAIT", None, None)
+        decision, tp, sl = parse_gpt_feedback(raw_text or "")
         if decision not in ("BUY", "SELL", "WAIT"):
             print("[WARN] decision 파싱 실패 → WAIT 강제")
             decision = "WAIT"
