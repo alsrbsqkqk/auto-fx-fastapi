@@ -1291,6 +1291,7 @@ async def webhook(request: Request):
     gpt_feedback = "GPT 분석 생략: 점수 미달"
     decision, tp, sl = None, None, None
     gpt_raw = None
+    raw_text = ""  # ✅ 조건문 전에 미리 초기화
     if signal_score >= 5.0:
         gpt_raw = analyze_with_gpt(payload, price)
         print("✅ STEP 6: GPT 응답 수신 완료")
