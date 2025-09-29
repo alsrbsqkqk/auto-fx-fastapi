@@ -1304,7 +1304,8 @@ async def webhook(request: Request):
         print(f"📄 GPT Raw Response: {raw_text!r}")
         gpt_feedback = raw_text
         decision, tp, sl = parse_gpt_feedback(raw_text) if raw_text else ("WAIT", None, None)
-        print(f"[✅ 최종 결정] decision={decision}, TP={tp}, SL={sl}")
+        final_decision, final_tp, final_sl = decision, tp, sl
+        print(f"[LOCK] final_decision={final_decision}, final_tp={final_tp}, final_sl={final_sl}")
     else:
         print("🚫 GPT 분석 생략: 점수 2.0점 미만")
         print("🔎 GPT 분석 상세 로그")
@@ -1342,7 +1343,7 @@ async def webhook(request: Request):
     filtered_movement = None
 
     # ❌ GPT가 WAIT이면 주문하지 않음
-    if decision == "WAIT":
+    if final_decision == "WAIT":
         print("⛔ GPT 판단: WAIT ➜ 주문 실행하지 않음")
 
         # 🧠 디버깅: GPT가 왜 WAIT을 선택했는지 이유 출력
@@ -1411,8 +1412,10 @@ async def webhook(request: Request):
 
     
     # ✅ TP/SL 값이 없을 경우 기본 설정 (15pip/10pip 기준)
-    effective_decision = decision if decision in ["BUY", "SELL"] else signal
-    if (tp is None or sl is None) and price is not None:
+    effective_decision = final_decision if final_decision in ["BUY", "SELL"] else signal
+    if (final_tp is None or final_sl is None) and price is not None:
+        print(f"[CHECK] TP/SL fallback 실행: final_decision={final_decision}, signal={signal}, 기존 tp={tp}, sl={sl}")
+    
         pip_value = 0.01 if "JPY" in pair else 0.0001
 
         tp, sl, atr_pips = calculate_realistic_tp_sl(
@@ -1423,12 +1426,12 @@ async def webhook(request: Request):
             min_pips=8
         )
 
-        if decision == "SELL":
+        if final_decision == "SELL":
             # SELL이면 방향 반대로
             tp, sl = sl, tp
 
         gpt_feedback += f"\n⚠️ TP/SL 추출 실패 → 현실적 계산 적용 (ATR: {atr}, pips: {atr_pips})"
-        tp, sl = adjust_tp_sl_for_structure(pair, price, tp, sl, support, resistance, atr)
+        final_tp, final_sl = adjust_tp_sl_for_structure(pair, price, tp, sl, support, resistance, atr)
 
     # ✅ 여기서부터 검증 블록 삽입
     pip = pip_value_for(pair)
@@ -1462,21 +1465,21 @@ async def webhook(request: Request):
     should_execute = False
     
     # 1️⃣ 기본 진입 조건: GPT가 BUY/SELL 판단 + 점수 5.0점 이상
-    if decision in ["BUY", "SELL"] and signal_score >= 2.0:
+    if final_decision in ["BUY", "SELL"] and signal_score >= 2.0:
         # ✅ RSI 극단값 필터: BUY가 과매수 / SELL이 과매도이면 진입 차단
-        if False and ((decision == "BUY" and rsi.iloc[-1] > 85) or (decision == "SELL" and rsi.iloc[-1] < 20)):
+        if False and ((final_decision == "BUY" and rsi.iloc[-1] > 85) or (final_decision == "SELL" and rsi.iloc[-1] < 20)):
             reasons.append(f"❌ RSI 극단값으로 진입 차단: {decision} @ RSI {rsi.iloc[-1]:.2f}")
             should_execute = False
         else:
             should_execute = True
 
     # 2️⃣ 조건부 진입: 최근 2시간 거래 없으면 점수 4점 미만이어도 진입 허용
-    elif allow_conditional_trade and signal_score >= 4 and decision in ["BUY", "SELL"]:
+    elif allow_conditional_trade and signal_score >= 4 and final_decision in ["BUY", "SELL"]:
         gpt_feedback += "\n⚠️ 조건부 진입: 최근 2시간 거래 없음 → 4점 이상 기준 만족하여 진입 허용"
         should_execute = True
         
     if should_execute:
-        units = 100000 if decision == "BUY" else -100000
+        units = 100000 if final_decision == "BUY" else -100000
         digits = 3 if pair.endswith("JPY") else 5
 
         # --- TP/SL 유효성 검사 & 안전 보정 (ADD HERE, after digits line) ---
@@ -1486,7 +1489,7 @@ async def webhook(request: Request):
 
         valid = True
         # 방향 관계 검증
-        if decision == "BUY":
+        if final_decision == "BUY":
             if not (tp > price and sl < price):
                 valid = False
         else:  # SELL
@@ -1506,7 +1509,7 @@ async def webhook(request: Request):
 
         # 유효하지 않으면 보수적 자동 보정
         if not valid:
-            if decision == "BUY":
+            if final_decision == "BUY":
                 sl = price - min_pips * p
                 tp = price + 2 * min_pips * p
             else:
@@ -1515,13 +1518,13 @@ async def webhook(request: Request):
         # --- END ---
         
         print(f"[DEBUG] 조건 충족 → 실제 주문 실행: {pair}, units={units}, tp={tp}, sl={sl}, digits={digits}")
-        result = place_order(pair, units, tp, sl, digits)
+        result = place_order(pair, units, final_tp, final_sl, digits)
     
         executed_time = datetime.utcnow()
         candles_post = get_candles(pair, "M30", 8)
         price_movements = candles_post[["high", "low"]].to_dict("records")
 
-    if decision in ["BUY", "SELL"] and isinstance(result, dict) and "order_placed" in result.get("status", ""):
+    if final_decision in ["BUY", "SELL"] and isinstance(result, dict) and "order_placed" in result.get("status", ""):
         if pnl is not None:
             if pnl > 0:
                 if abs(tp - price) < abs(sl - price):
@@ -1899,7 +1902,7 @@ def parse_gpt_feedback(text):
             break
 
     # ✅ fallback: "BUY" 또는 "SELL" 단독 등장 시 인식
-    if decision == "WAIT":
+    if final_decision == "WAIT":
         upper_text = text.upper()
         buy_score = upper_text.count("BUY")
         sell_score = upper_text.count("SELL")
