@@ -1303,7 +1303,7 @@ async def webhook(request: Request):
         )
         print(f"📄 GPT Raw Response: {raw_text!r}")
         gpt_feedback = raw_text
-        decision, tp, sl = parse_gpt_feedback(raw_text) if raw_text else ("WAIT", None, None)
+        final_decision, tp, sl = parse_gpt_feedback(raw_text) if raw_text else ("WAIT", None, None)
         final_decision, final_tp, final_sl = decision, tp, sl
         print(f"[LOCK] final_decision={final_decision}, final_tp={final_tp}, final_sl={final_sl}")
     else:
@@ -1870,18 +1870,18 @@ def extract_json_block(text):
 def parse_gpt_feedback(text):
     import re
 
-    decision = "WAIT"
+    final_decision = "WAIT"
     tp = None
     sl = None
 
     try:
         data = extract_json_block(text)
         if isinstance(data, dict):  # ✅ dict인지 확인
-            decision = str(data.get("decision", "WAIT")).upper()
+            final_decision = str(data.get("decision", "WAIT")).upper()
             tp = data.get("tp")
             sl = data.get("sl")
             print(f"[DBG] JSON Parsed ✅ -> decision={decision}, tp={tp}, sl={sl}, raw={data}")
-            return decision, tp, sl
+            return final_decision, tp, sl
 
     except Exception as e:
         print(f"[WARN] JSON 파싱 실패: {e}, fallback 실행")
@@ -1908,9 +1908,9 @@ def parse_gpt_feedback(text):
         sell_score = upper_text.count("SELL")
     
         if buy_score > sell_score:
-            decision = "BUY"
+            final_decision = "BUY"
         elif sell_score > buy_score:
-            decision = "SELL"
+            final_decision = "SELL"
 
     # ✅ TP/SL 추출 (가장 마지막 숫자 사용)
     lines = text.splitlines()
@@ -1948,7 +1948,7 @@ def parse_gpt_feedback(text):
     tp = extract_last_price(tp_line)
     sl = extract_last_price(sl_line)
 
-    return decision, tp, sl
+    return final_decision, tp, sl
     
  # === TP/SL 구조·ATR 보정 ===
 def adjust_tp_sl_for_structure(pair, entry, tp, sl, support, resistance, atr):
