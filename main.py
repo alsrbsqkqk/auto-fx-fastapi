@@ -1943,7 +1943,8 @@ def parse_gpt_feedback(text):
     # 아래처럼 결정 추출을 더 확실하게:
     m = re.search(r"진입판단\s*[:：]?\s*(BUY|SELL|WAIT)", text.upper())
     print(f"[TRACE] 정규식 보조 판단 결과: m={m}, decision={(m.group(1) if m else 'None')}")
-    if m: decision = m.group(1)
+    if m: 
+        decision = m.group(1)
         final_decision = decision 
     print(f"[TRACE] ✅ 최종 결정 결과: final_decision={final_decision}, tp={tp}, sl={sl}")
     # TP/SL 숫자 인식도 유연화:
