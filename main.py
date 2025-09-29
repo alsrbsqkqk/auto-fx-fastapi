@@ -1964,8 +1964,6 @@ def parse_gpt_feedback(text):
         nums = re.findall(r"\b\d{1,5}\.\d{1,5}\b", line)
         return float(nums[-1]) if nums else None
 
-    tp = extract_last_price(tp_line)
-    sl = extract_last_price(sl_line)
 
     return final_decision, tp, sl
     print(f"[DEBUG] 최종 결정 리턴: final_decision={final_decision}, tp={tp}, sl={sl}")
