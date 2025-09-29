@@ -1303,8 +1303,14 @@ async def webhook(request: Request):
         )
         print(f"📄 GPT Raw Response: {raw_text!r}")
         gpt_feedback = raw_text
-        final_decision, final_tp, final_sl = decision, tp, sl
-        print(f"[LOCK] final_decision={final_decision}, final_tp={final_tp}, final_sl={final_sl}")
+        final_decision, tp, sl = parse_gpt_feedback(raw_text) if raw_text else ("WAIT", None, None)
+        # ✅ 대신 아래처럼 명확히 처리
+        if final_decision != "WAIT" and tp is not None and sl is not None:
+            decision = final_decision
+            print(f"[LOCK] final_decision={final_decision}, final_tp={tp}, final_sl={sl}")
+        else:
+            decision, tp, sl = None, None, None
+            print(f"[LOCK] final_decision={final_decision}, final_tp={final_tp}, final_sl={final_sl}")
     else:
         print("🚫 GPT 분석 생략: 점수 2.0점 미만")
         print("🔎 GPT 분석 상세 로그")
