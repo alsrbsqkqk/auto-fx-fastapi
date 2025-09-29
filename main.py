@@ -1289,7 +1289,8 @@ async def webhook(request: Request):
     allow_conditional_trade = time_since_last > timedelta(hours=2)
 
     gpt_feedback = "GPT 분석 생략: 점수 미달"
-    decision, tp, sl = None, None, None
+    decision, tp, sl = None, None, None  
+    final_decision, final_tp, final_sl = None, None, None
     gpt_raw = None
     raw_text = ""  # ✅ 조건문 전에 미리 초기화
     if signal_score >= 2.0:
@@ -1307,9 +1308,11 @@ async def webhook(request: Request):
         # ✅ 대신 아래처럼 명확히 처리
         if final_decision != "WAIT" and tp is not None and sl is not None:
             decision = final_decision
+            final_tp, final_sl = tp, sl 
             print(f"[LOCK] final_decision={final_decision}, final_tp={tp}, final_sl={sl}")
         else:
             decision, tp, sl = None, None, None
+            final_tp, final_sl = None, None  
             print(f"[LOCK] final_decision={final_decision}, final_tp={final_tp}, final_sl={final_sl}")
     else:
         print("🚫 GPT 분석 생략: 점수 2.0점 미만")
