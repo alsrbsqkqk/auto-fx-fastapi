@@ -1869,7 +1869,7 @@ def extract_json_block(text):
 
 def parse_gpt_feedback(text):
     import re
-
+    print(f"[DEBUG] 함수 진입 - 입력 텍스트:\n{text[:300]}") 
     final_decision = "WAIT"
     tp = None
     sl = None
@@ -1881,12 +1881,13 @@ def parse_gpt_feedback(text):
             final_decision = str(data.get("decision", "WAIT")).upper()
             tp = data.get("tp")
             sl = data.get("sl")
-            print(f"[DBG] JSON Parsed -> decision={final_decision}, tp={tp}, sl={sl}, raw={data}")
+            print(f"[DEBUG] JSON 추출 성공: decision={final_decision}, tp={tp}, sl={sl}")
             print(f"[TRACE] 최종 판단 결과: final_decision={final_decision}, tp={tp}, sl={sl}")  # ← 추가
             return final_decision, tp, sl
 
     except Exception as e:
         print(f"[WARN] JSON 파싱 실패: {e}, fallback 실행")
+        print(f"[DEBUG] fallback 진입 - 원본 텍스트:\n{text[:300]}")
                 # fallback 초기화
         final_decision = "WAIT"
         tp = None
@@ -1924,6 +1925,8 @@ def parse_gpt_feedback(text):
     lines = text.splitlines()
     tp_line = next((ln for ln in reversed(lines) if re.search(r'(?i)\bTP\b|TP 제안 값|목표', ln)), "")
     sl_line = next((ln for ln in reversed(lines) if re.search(r'(?i)\bSL\b', ln) and re.search(r'\d+\.\d+', ln)), "")
+    print(f"[DEBUG] TP 라인 추출: {tp_line}")
+    print(f"[DEBUG] SL 라인 추출: {sl_line}")
     
     # 🛠️ 추가: SL/TP 라벨이 없지만, BUY/SELL 줄 바로 아래 숫자만 있는 경우 커버
     if not tp_line or not sl_line:
@@ -1961,6 +1964,7 @@ def parse_gpt_feedback(text):
     sl = extract_last_price(sl_line)
 
     return final_decision, tp, sl
+    print(f"[DEBUG] 최종 결정 리턴: final_decision={final_decision}, tp={tp}, sl={sl}")
     
  # === TP/SL 구조·ATR 보정 ===
 def adjust_tp_sl_for_structure(pair, entry, tp, sl, support, resistance, atr):
