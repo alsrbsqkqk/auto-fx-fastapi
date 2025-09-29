@@ -1876,11 +1876,13 @@ def parse_gpt_feedback(text):
 
     try:
         data = extract_json_block(text)
+        print(f"[TRACE] Extracted JSON block: {data}")
         if isinstance(data, dict):  # ✅ dict인지 확인
             final_decision = str(data.get("decision", "WAIT")).upper()
             tp = data.get("tp")
             sl = data.get("sl")
             print(f"[DBG] JSON Parsed -> decision={final_decision}, tp={tp}, sl={sl}, raw={data}")
+            print(f"[TRACE] 최종 판단 결과: final_decision={final_decision}, tp={tp}, sl={sl}")  # ← 추가
             return final_decision, tp, sl
 
     except Exception as e:
@@ -1889,7 +1891,7 @@ def parse_gpt_feedback(text):
         final_decision = "WAIT"
         tp = None
         sl = None
-    
+        print(f"[ERROR] fallback 진입. GPT 응답 텍스트: {text}")
         return final_decision, tp, sl
 
 
@@ -1940,7 +1942,10 @@ def parse_gpt_feedback(text):
         sl = None  # 결정은 유지
     # 아래처럼 결정 추출을 더 확실하게:
     m = re.search(r"진입판단\s*[:：]?\s*(BUY|SELL|WAIT)", text.upper())
+    print(f"[TRACE] 정규식 보조 판단 결과: m={m}, decision={(m.group(1) if m else 'None')}")
     if m: decision = m.group(1)
+        final_decision = decision 
+    print(f"[TRACE] ✅ 최종 결정 결과: final_decision={final_decision}, tp={tp}, sl={sl}")
     # TP/SL 숫자 인식도 유연화:
     def pick_price(line):
         nums = re.findall(r"\d{1,2}\.\d{3,5}", line)
