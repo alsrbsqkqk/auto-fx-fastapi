@@ -1885,6 +1885,12 @@ def parse_gpt_feedback(text):
 
     except Exception as e:
         print(f"[WARN] JSON 파싱 실패: {e}, fallback 실행")
+                # fallback 초기화
+        final_decision = "WAIT"
+        tp = None
+        sl = None
+    
+        return final_decision, tp, sl
 
 
     # ✅ 명확한 판단 패턴 탐색 (정규식 우선)
