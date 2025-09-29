@@ -1887,12 +1887,16 @@ def parse_gpt_feedback(text):
 
     except Exception as e:
         print(f"[WARN] JSON 파싱 실패: {e}, fallback 실행")
-        print(f"[DEBUG] fallback 진입 - 원본 텍스트:\n{text[:300]}")
-                # fallback 초기화
-        final_decision = "WAIT"
-        tp = None
-        sl = None
-        print(f"[ERROR] fallback 진입. GPT 응답 텍스트: {text}")
+    
+        # fallback 조건: 기존 판단이 없을 때만 덮어씀
+        if final_decision == "WAIT" and (not tp and not sl):
+            final_decision = "WAIT"
+            tp = None
+            sl = None
+        else:
+            print("[INFO] fallback이지만 기존 판단값이 있으므로 유지")
+    
+        print(f"[ERROR] fallback 진입. GPT 응답 텍스트: {text[:300]}")
         return final_decision, tp, sl
 
 
