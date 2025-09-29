@@ -1303,7 +1303,6 @@ async def webhook(request: Request):
         )
         print(f"📄 GPT Raw Response: {raw_text!r}")
         gpt_feedback = raw_text
-        final_decision, tp, sl = parse_gpt_feedback(raw_text) if raw_text else ("WAIT", None, None)
         final_decision, final_tp, final_sl = decision, tp, sl
         print(f"[LOCK] final_decision={final_decision}, final_tp={final_tp}, final_sl={final_sl}")
     else:
