@@ -1880,7 +1880,7 @@ def parse_gpt_feedback(text):
             final_decision = str(data.get("decision", "WAIT")).upper()
             tp = data.get("tp")
             sl = data.get("sl")
-            print(f"[DBG] JSON Parsed ✅ -> decision={decision}, tp={tp}, sl={sl}, raw={data}")
+            print(f"[DBG] JSON Parsed -> decision={final_decision}, tp={tp}, sl={sl}, raw={data}")
             return final_decision, tp, sl
 
     except Exception as e:
