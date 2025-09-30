@@ -1304,7 +1304,10 @@ async def webhook(request: Request):
         )
         print(f"📄 GPT Raw Response: {raw_text!r}")
         gpt_feedback = raw_text
-        final_decision, tp, sl = parse_gpt_feedback(raw_text) if raw_text else ("WAIT", None, None)
+        if final_decision in [None, "WAIT"]:   # 아직 결정이 없거나 WAIT일 때만 새로 할당
+            final_decision, tp, sl = parse_gpt_feedback(raw_text) if raw_text else ("WAIT", None, None)
+        else:
+            print(f"[INFO] 기존 결정 유지: {final_decision}, tp={tp}, sl={sl}")
         # ✅ 대신 아래처럼 명확히 처리
         if final_decision != "WAIT" and tp is not None and sl is not None:
             decision = final_decision
