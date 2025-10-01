@@ -1906,15 +1906,15 @@ def parse_gpt_feedback(text):
         print(f"[WARN] JSON 파싱 실패: {e}, fallback 실행")
     
         # fallback 조건: 기존 판단이 없을 때만 덮어씀
-        if final_decision == "WAIT" and (not tp and not sl):
+        if final_decision != "WAIT" and (tp is not None and sl is not None):
+            print("[INFO] fallback 진입했지만 기존 결정 BUY/SELL 유지함")
+            return final_decision, tp, sl
+        else:
+            print("[INFO] fallback 조건 충족 → WAIT 처리")
             final_decision = "WAIT"
             tp = None
             sl = None
-        else:
-            print("[INFO] fallback이지만 기존 판단값이 있으므로 유지")
-    
-        print(f"[ERROR] fallback 진입. GPT 응답 텍스트: {text[:300]}")
-        return final_decision, tp, sl
+            return final_decision, tp, sl
 
 
     # ✅ 명확한 판단 패턴 탐색 (정규식 우선)
