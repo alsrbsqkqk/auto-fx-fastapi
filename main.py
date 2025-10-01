@@ -2099,27 +2099,27 @@ def analyze_with_gpt(payload, current_price):
         if gap < min_gap:
             _t.sleep(min_gap - gap)
         _gpt_last_ts = _t.time()
-try:
-    dbg("gpt.call")
-    r = _openai_sess.post(
-        OPENAI_URL,
-        headers=OPENAI_HEADERS,
-        json=body,
-        timeout=45,
-    )
-    r.raise_for_status()  # HTTP 에러 체크
-    data = r.json()
-    text = (data.get("choices", [{}])[0].get("message", {}).get("content", "") or "").strip()
-    print(f"📩 GPT 원문 응답: {text[:500]}...")  # 앞 500자만 출력
-    return text if text else "GPT 응답 없음"
+    try:
+        dbg("gpt.call")
+        r = _openai_sess.post(
+            OPENAI_URL,
+            headers=OPENAI_HEADERS,
+            json=body,
+            timeout=45,
+        )
+        r.raise_for_status()  # HTTP 에러 체크
+        data = r.json()
+        text = (data.get("choices", [{}])[0].get("message", {}).get("content", "") or "").strip()
+        print(f"📩 GPT 원문 응답: {text[:500]}...")  # 앞 500자만 출력
+        return text if text else "GPT 응답 없음"
 
-except requests.exceptions.Timeout:
-    print("❌ GPT 응답 시간 초과")
-    return "GPT 응답 없음"
-
-except Exception as e:
-    dbg("gpt.error", msg=str(e))
-    return "GPT 응답 없음"
+    except requests.exceptions.Timeout:
+        print("❌ GPT 응답 시간 초과")
+        return "GPT 응답 없음"
+    
+    except Exception as e:
+        dbg("gpt.error", msg=str(e))
+        return "GPT 응답 없음"
     
 def safe_float(val):
     try:
