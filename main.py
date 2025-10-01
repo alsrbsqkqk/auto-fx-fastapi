@@ -2105,7 +2105,7 @@ def analyze_with_gpt(payload, current_price):
             OPENAI_URL,
             headers=OPENAI_HEADERS,
             json=body,
-            timeout=45,
+            timeout=90,
         )
         r.raise_for_status()  # HTTP 에러 체크
         data = r.json()
