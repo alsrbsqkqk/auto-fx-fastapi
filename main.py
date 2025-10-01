@@ -1312,11 +1312,9 @@ async def webhook(request: Request):
         if final_decision != "WAIT" and tp is not None and sl is not None:
             decision = final_decision
             final_tp, final_sl = tp, sl 
-            print(f"[LOCK] final_decision={final_decision}, final_tp={tp}, final_sl={sl}")
+            print(f"[LOCK] 최종 결정 반영: decision={final_decision}, final_tp={tp}, final_sl={sl}")
         else:
-            decision, tp, sl = None, None, None
-            final_tp, final_sl = None, None  
-            print(f"[LOCK] final_decision={final_decision}, final_tp={final_tp}, final_sl={final_sl}")
+            print(f"[LOCK] 조건 미달로 최종 결정 유지: decision={decision}, tp={final_tp}, sl={final_sl}")
     else:
         print("🚫 GPT 분석 생략: 점수 1.0점 미만")
         print("🔎 GPT 분석 상세 로그")
