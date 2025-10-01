@@ -1309,12 +1309,20 @@ async def webhook(request: Request):
         else:
             print(f"[INFO] 기존 결정 유지: {final_decision}, tp={tp}, sl={sl}")
         # ✅ 대신 아래처럼 명확히 처리
-        if final_decision != "WAIT" and tp is not None and sl is not None:
-            decision = final_decision
-            final_tp, final_sl = tp, sl 
-            print(f"[LOCK] 최종 결정 반영: decision={final_decision}, final_tp={tp}, final_sl={sl}")
-        else:
-            print(f"[LOCK] 조건 미달로 최종 결정 유지: decision={decision}, tp={final_tp}, sl={final_sl}")
+        parsed_decision = None
+        parsed_tp = None
+        parsed_sl = None
+        if final_decision in [None, "WAIT"] and decision in [None, "WAIT"]:
+            parsed_decision, parsed_tp, parsed_sl = parse_gpt_feedback(raw_text) if raw_text else ("WAIT", None, None)
+        
+            # ✅ 파싱이 제대로 되었을 때만 덮어씌우기
+            if parsed_decision != "WAIT" and parsed_tp is not None and parsed_sl is not None:
+                final_decision = parsed_decision
+                final_tp = parsed_tp
+                final_sl = parsed_sl
+                print(f"[✔️UPDATE] GPT 피드백으로 최종 결정 업데이트: {final_decision}, tp={final_tp}, sl={final_sl}")
+            else:
+                print(f"[⚠️SKIP] GPT 피드백 무시됨 - 불충분한 조건: {parsed_decision}, tp={parsed_tp}, sl={parsed_sl}")
     else:
         print("🚫 GPT 분석 생략: 점수 1.0점 미만")
         print("🔎 GPT 분석 상세 로그")
