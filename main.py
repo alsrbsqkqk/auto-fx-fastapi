@@ -1314,9 +1314,10 @@ async def webhook(request: Request):
         parsed_decision = None
         parsed_tp = None
         parsed_sl = None
-        if final_decision in (None, "WAIT"):
-            parsed_decision, parsed_tp, parsed_sl = parse_gpt_feedback(raw_text) if raw_text else ("WAIT", None, None)
-        
+        if final_decision in (None, "WAIT") and raw_text and str(raw_text).strip() not in ("", "None"):
+            parsed_decision, parsed_tp, parsed_sl = parse_gpt_feedback(raw_text)
+        else:
+            parsed_decision, parsed_tp, parsed_sl = ("WAIT", None, None)
             # ✅ 파싱이 제대로 되었을 때만 덮어씌우기
             if parsed_decision != "WAIT" and parsed_tp is not None and parsed_sl is not None:
                 final_decision = parsed_decision
