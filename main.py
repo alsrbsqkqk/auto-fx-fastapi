@@ -1306,13 +1306,15 @@ async def webhook(request: Request):
         gpt_feedback = raw_text
         if final_decision not in ["BUY", "SELL"]: # 아직 결정이 없거나 WAIT일 때만 새로 할당
             final_decision, tp, sl = parse_gpt_feedback(raw_text) if raw_text else ("WAIT", None, None)
+            final_tp = tp
+            final_sl = sl
         else:
             print(f"[INFO] 기존 결정 유지: {final_decision}, tp={tp}, sl={sl}")
         # ✅ 대신 아래처럼 명확히 처리
         parsed_decision = None
         parsed_tp = None
         parsed_sl = None
-        if final_decision in [None, "WAIT"] and decision in [None, "WAIT"]:
+        if final_decision in (None, "WAIT"):
             parsed_decision, parsed_tp, parsed_sl = parse_gpt_feedback(raw_text) if raw_text else ("WAIT", None, None)
         
             # ✅ 파싱이 제대로 되었을 때만 덮어씌우기
@@ -1349,7 +1351,7 @@ async def webhook(request: Request):
     if not gpt_feedback or not str(gpt_feedback).strip():
         gpt_feedback = "GPT 응답 없음"
     
-    print(f"✅ STEP 7: GPT 해석 완료 | decision: {decision}, TP: {tp}, SL: {sl}")
+    print(f"✅ STEP 7: GPT 해석 완료 | decision: {final_decision}, TP: {final_tp}, SL: {final_sl}")
    
     
     # 📌 outcome_analysis 및 suggestion 기본값 세팅
@@ -1365,7 +1367,7 @@ async def webhook(request: Request):
     log_trade_result(
         pair=pair,
         signal=signal,
-        decision=decision,
+        decision=final_decision,
         score=signal_score,
         notes="\n".join(reasons) + f"\nATR: {round(atr or 0, 5)}",
         result=None,
@@ -1378,8 +1380,8 @@ async def webhook(request: Request):
         gpt_feedback=gpt_feedback,
         news=news,
         alert_name=alert_name,
-        tp=tp,
-        sl=sl,
+        tp=final_tp,
+        sl=final_sl,
         price=current_price,
         outcome_analysis=outcome_analysis,
         adjustment_suggestion=adjustment_suggestion,
