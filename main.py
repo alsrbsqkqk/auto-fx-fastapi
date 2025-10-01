@@ -2101,7 +2101,7 @@ def analyze_with_gpt(payload, current_price):
         _gpt_last_ts = _t.time()
     try:
         dbg("gpt.call")
-        r = _openai_sess.post(
+        r = requests.post(
             OPENAI_URL,
             headers=OPENAI_HEADERS,
             json=body,
