@@ -2100,9 +2100,6 @@ def analyze_with_gpt(payload, current_price):
             _t.sleep(min_gap - gap)
         _gpt_last_ts = _t.time()
     
-        except Exception as e:   # ← try와 같은 깊이
-            dbg("gpt.error", msg=str(e))
-            break               # ← except 블록 안
 def safe_float(val):
     try:
         if val is None:
