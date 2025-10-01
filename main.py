@@ -2099,7 +2099,7 @@ def analyze_with_gpt(payload, current_price):
         if gap < min_gap:
             _t.sleep(min_gap - gap)
         _gpt_last_ts = _t.time()
-    try:
+try:
     dbg("gpt.call")
     r = _openai_sess.post(
         OPENAI_URL,
