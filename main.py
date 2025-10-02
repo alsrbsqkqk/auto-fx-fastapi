@@ -514,7 +514,7 @@ def dynamic_thresholds(pair: str, atr_value: float):
 def pips_between(a: float, b: float, pair: str) -> float:
     return abs(a - b) / pip_value_for(pair)
     
-def calculate_realistic_tp_sl(price, atr, pip_value, risk_reward_ratio=2, min_pips=8):
+def calculate_realistic_tp_sl(price, atr, pip_value, risk_reward_ratio=1, min_pips=8):
     """
     현실적인 TP/SL 계산 함수
     """
@@ -1421,7 +1421,7 @@ async def webhook(request: Request):
             price=price,
             atr=atr,
             pip_value=pip_value,
-            risk_reward_ratio=2,
+            risk_reward_ratio=1,
             min_pips=8
         )
 
