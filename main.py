@@ -1482,12 +1482,14 @@ async def webhook(request: Request):
         digits = 3 if pair.endswith("JPY") else 5
 
         
-        Print(f"[DEBUG] WILL PLACE ORDER → pair={pair}, side={final_decision}, units={units}, "
+        print(f"[DEBUG] WILL PLACE ORDER → pair={pair}, side={final_decision}, units={units}, "
             f"price={price}, tp={final_tp}, sl={final_sl}, digits={digits}, score={signal_score}")
-        result = place_order(pair, units, final_tp, final_sl, digits)
+        pair_for_order = pair.replace("/", "_")
+        result = place_order(pair_for_order, units, final_tp, final_sl, digits)
         else:
             print(f"[DEBUG] SKIP ORDER → should_execute={should_execute}, "
                   f"decision={final_decision}, score={signal_score}")
+            result = {"status": "skipped"}
     
         executed_time = datetime.utcnow()
         candles_post = get_candles(pair, "M30", 8)
@@ -1818,28 +1820,55 @@ def place_order(pair, units, tp, sl, digits):
     except requests.exceptions.RequestException as e:
         return {"status": "error", "message": str(e)}
 
-import re
+import re, json
 
 
-def extract_json_block(text):
-    import re, json
+def extract_json_block(text: str):
+    """
+    응답에서 '마지막 JSON 덩어리'를 안전하게 추출한다.
+    - ```json/``` 같은 코드블록 표식 제거
+    - 맨 마지막 { ... } 후보부터 파싱 시도
+    - 실패하면 중괄호 스택으로 모든 덩어리 역순 시도
+    """
+    if not text:
+        return None
 
-    # GPT 응답에서 코드 블록 태그 제거
+    # 1) 코드블록/표식 제거
     cleaned = (
-        text.replace("```json", "")
-            .replace("```", "")
-            .replace("json\n", "")
-            .replace("json", "")
-            .strip()
+        str(text)
+        .replace("```json", "")
+        .replace("```JSON", "")
+        .replace("```", "")
+        .strip()
     )
 
-    match = re.search(r"\{[\s\S]*\}", cleaned)  # JSON 객체만 탐색
-    if match:
+    # 2) '마지막 { ... }' 구간 먼저 시도
+    last_open = cleaned.rfind("{")
+    last_close = cleaned.rfind("}")
+    if last_open != -1 and last_close != -1 and last_close > last_open:
+        candidate = cleaned[last_open:last_close + 1]
         try:
-            return json.loads(match.group())
-        except json.JSONDecodeError as e:
-            print(f"[WARN] JSON 파싱 실패: {e}, 원문 일부: {match.group()[:200]}")
-            return None
+            return json.loads(candidate)
+        except Exception as e:
+            print(f"[WARN] JSON 파싱 실패(마지막 블록): {e} | cand[:200]={candidate[:200]}")
+
+    # 3) 중괄호 매칭 스택으로 모든 후보 역순 시도
+    stack = []
+    spans = []
+    for i, ch in enumerate(cleaned):
+        if ch == "{":
+            stack.append(i)
+        elif ch == "}" and stack:
+            start = stack.pop()
+            spans.append((start, i + 1))
+
+    for start, end in reversed(spans):
+        s = cleaned[start:end]
+        try:
+            return json.loads(s)
+        except Exception:
+            continue
+
     return None
 
 
@@ -2050,7 +2079,7 @@ def analyze_with_gpt(payload, current_price):
                 "}\n"
                 "\n"
                 "// 코드블록(````json ... ````) 절대 사용 금지. 마크다운 태그도 금지.\n"
-                "// JSON 블록은 분석 텍스트 뒤 마지막에 한 번만 출력. JSON 내부에 단위/기호(% pips 등) 넣지 말 것.\n"
+                "// JSON 이외의 텍스트(설명)는 모두 위에 쓰고, 마지막 줄에는 **오직 JSON 한 덩어리**만 출력해라.\n"
             )
         },
         {
