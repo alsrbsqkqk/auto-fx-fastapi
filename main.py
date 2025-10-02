@@ -1798,7 +1798,7 @@ def place_order(pair, units, tp, sl, digits):
     try:
         response = requests.post(url, headers=headers, json=data)
         response.raise_for_status()
-        j = resp.json()
+        j = response.json() 
         return {
             "status": "order_placed",
             "raw": j
