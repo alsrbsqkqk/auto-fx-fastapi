@@ -1403,7 +1403,7 @@ async def webhook(request: Request):
         filtered_movement=filtered_movement,
     )
             
-    return JSONResponse(content={"status": "WAIT", "message": "GPT가 WAIT 판단"})
+    #return JSONResponse(content={"status": "WAIT", "message": "GPT가 WAIT 판단"})
         
     #if is_recent_loss(pair) and recent_loss_within_cooldown(pair, window=60):
         #print(f"🚫 쿨다운 적용: 최근 {pair} 손실 후 반복 진입 차단")
