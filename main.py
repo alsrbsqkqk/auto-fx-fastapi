@@ -1489,7 +1489,7 @@ async def webhook(request: Request):
     else:
         print(f"[DEBUG] SKIP ORDER → should_execute={should_execute}, "
                 f"decision={final_decision}, score={signal_score}")
-         result = {"status": "skipped"}
+        result = {"status": "skipped"}
     
     executed_time = datetime.utcnow()
     candles_post = get_candles(pair, "M30", 8)
