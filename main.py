@@ -1496,9 +1496,8 @@ async def webhook(request: Request):
     price_movements = candles_post[["high", "low"]].to_dict("records")
 
     if final_decision in ("BUY", "SELL") and isinstance(result, dict) and result.get("status") == "order_placed":
-    else:
-        
-    print("[DEBUG] ORDER RESULT:", result)
+
+        print("[DEBUG] ORDER RESULT:", result)
         if pnl is not None:
             if pnl > 0:
                 if abs(tp - price) < abs(sl - price):
