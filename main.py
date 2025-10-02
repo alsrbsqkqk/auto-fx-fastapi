@@ -1481,40 +1481,6 @@ async def webhook(request: Request):
         units = 100000 if final_decision == "BUY" else -100000
         digits = 3 if pair.endswith("JPY") else 5
 
-        # --- TP/SL 유효성 검사 & 안전 보정 (ADD HERE, after digits line) ---
-        p = pip_value_for(pair)     # 이미 있는 함수 사용
-        min_pips = 8
-        rr_min = 2.0
-
-        valid = True
-        # 방향 관계 검증
-        if final_decision == "BUY":
-            if not (tp > price and sl < price):
-                valid = False
-        else:  # SELL
-            if not (tp < price and sl > price):
-                valid = False
-
-        # 최소 거리(양쪽 모두 min_pips 이상)
-        if valid and (abs(tp - price) < min_pips * p or abs(price - sl) < min_pips * p):
-            valid = False
-
-        # RR(보상/위험) ≥ 2:1
-        if valid:
-            risk = abs(price - sl)
-            reward = abs(tp - price)
-            if risk == 0 or reward / risk < rr_min:
-                valid = False
-
-        # 유효하지 않으면 보수적 자동 보정
-        if not valid:
-            if final_decision == "BUY":
-                sl = price - min_pips * p
-                tp = price + 2 * min_pips * p
-            else:
-                sl = price + min_pips * p
-                tp = price - 2 * min_pips * p
-        # --- END ---
         
         print(f"[DEBUG] 조건 충족 → 실제 주문 실행: {pair}, units={units}, tp={tp}, sl={sl}, digits={digits}")
         result = place_order(pair, units, final_tp, final_sl, digits)
@@ -2064,13 +2030,16 @@ def analyze_with_gpt(payload, current_price):
                 "(5) 리포트는 자유롭게 작성하되, 반드시 마지막에는 아래 JSON 형식을 따르라:\n\n"
                 "### 의사결정 JSON\n"
                 "{\n"
-                '  "decision": "BUY" | "SELL" | "WAIT",\n'
-                '  "tp": <숫자>,\n'
-                '  "sl": <숫자>,\n'
-                '  "reason": "<간단한 이유>"\n'
-                "}\n\n"
-                "⚠️ 주의: JSON 블록 외에 추가 텍스트(설명, 마크다운, 코드 블록 표시 등)를 JSON 내부에 넣지 마라.\n"
-                "리포트 설명은 JSON 위에 작성하되, JSON 블록은 반드시 마지막에 독립적으로 제공하라."
+                "### 의사결정 JSON\n"
+                "{\n"
+                "  \"decision\": \"BUY\" | \"SELL\" | \"WAIT\",\n"
+                "  \"tp\": <숫자>,       // 반드시 숫자(float). 따옴표 금지. 예: 1.1745\n"
+                "  \"sl\": <숫자>,       // 반드시 숫자(float). 따옴표 금지.\n"
+                "  \"reason\": \"<간단한 이유>\"\n"
+                "}\n"
+                "\n"
+                "// 코드블록(````json ... ````) 절대 사용 금지. 마크다운 태그도 금지.\n"
+                "// JSON 블록은 분석 텍스트 뒤 마지막에 한 번만 출력. JSON 내부에 단위/기호(% pips 등) 넣지 말 것.\n"
             )
         },
         {
