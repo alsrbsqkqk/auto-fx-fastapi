@@ -1486,14 +1486,14 @@ async def webhook(request: Request):
             f"price={price}, tp={final_tp}, sl={final_sl}, digits={digits}, score={signal_score}")
         pair_for_order = pair.replace("/", "_")
         result = place_order(pair_for_order, units, final_tp, final_sl, digits)
-        else:
-            print(f"[DEBUG] SKIP ORDER → should_execute={should_execute}, "
-                  f"decision={final_decision}, score={signal_score}")
-            result = {"status": "skipped"}
+    else:
+        print(f"[DEBUG] SKIP ORDER → should_execute={should_execute}, "
+                f"decision={final_decision}, score={signal_score}")
+         result = {"status": "skipped"}
     
-        executed_time = datetime.utcnow()
-        candles_post = get_candles(pair, "M30", 8)
-        price_movements = candles_post[["high", "low"]].to_dict("records")
+    executed_time = datetime.utcnow()
+    candles_post = get_candles(pair, "M30", 8)
+    price_movements = candles_post[["high", "low"]].to_dict("records")
 
     if final_decision in ("BUY", "SELL") and isinstance(result, dict) and result.get("status") == "order_placed":
     else:
@@ -1884,8 +1884,8 @@ def parse_gpt_feedback(text):
         print(f"[TRACE] Extracted JSON block: {data}")
         if isinstance(data, dict):  # ✅ dict인지 확인
             final_decision = str(data.get("decision", "WAIT")).upper()
-            tp = data.get("tp")
-            sl = data.get("sl")
+            tp = safe_float(data.get("tp"))
+            sl = safe_float(data.get("sl"))
             print(f"[DEBUG] JSON 추출 성공: decision={final_decision}, tp={tp}, sl={sl}")
             print(f"[TRACE] 최종 판단 결과: final_decision={final_decision}, tp={tp}, sl={sl}")  # ← 추가
             return final_decision, tp, sl
