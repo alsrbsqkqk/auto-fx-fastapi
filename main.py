@@ -1482,14 +1482,21 @@ async def webhook(request: Request):
         digits = 3 if pair.endswith("JPY") else 5
 
         
-        print(f"[DEBUG] 조건 충족 → 실제 주문 실행: {pair}, units={units}, tp={tp}, sl={sl}, digits={digits}")
+        Print(f"[DEBUG] WILL PLACE ORDER → pair={pair}, side={final_decision}, units={units}, "
+            f"price={price}, tp={final_tp}, sl={final_sl}, digits={digits}, score={signal_score}")
         result = place_order(pair, units, final_tp, final_sl, digits)
+        else:
+            print(f"[DEBUG] SKIP ORDER → should_execute={should_execute}, "
+                  f"decision={final_decision}, score={signal_score}")
     
         executed_time = datetime.utcnow()
         candles_post = get_candles(pair, "M30", 8)
         price_movements = candles_post[["high", "low"]].to_dict("records")
 
-    if final_decision in ["BUY", "SELL"] and isinstance(result, dict) and "order_placed" in result.get("status", ""):
+    if final_decision in ("BUY", "SELL") and isinstance(result, dict) and result.get("status") == "order_placed":
+    else:
+        
+    print("[DEBUG] ORDER RESULT:", result)
         if pnl is not None:
             if pnl > 0:
                 if abs(tp - price) < abs(sl - price):
@@ -1803,7 +1810,11 @@ def place_order(pair, units, tp, sl, digits):
     try:
         response = requests.post(url, headers=headers, json=data)
         response.raise_for_status()
-        return response.json()
+        j = resp.json()
+        return {
+            "status": "order_placed",
+            "raw": j
+        }
     except requests.exceptions.RequestException as e:
         return {"status": "error", "message": str(e)}
 
