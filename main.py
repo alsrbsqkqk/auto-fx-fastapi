@@ -1438,19 +1438,6 @@ async def webhook(request: Request):
     tp_sl_ratio = abs(tp - price) / max(1e-9, abs(price - sl))
 
 
-    # 1번: TP/SL 조건 검증
-    if abs(tp - price) < min_pip or abs(price - sl) < min_pip:
-        reasons.append("❌ TP/SL 거리 너무 짧음 → 거래 배제")
-        signal_score = 0
-
-    # 2번: TP:SL 비율 확인
-    if tp_sl_ratio < 1.6:
-        if signal_score >= 10:
-            signal_score -= 1
-            reasons.append("TP:SL 비율 < 2:1 → 감점 적용, 전략 점수 충분하므로 조건부 진입 허용")
-        else:
-            reasons.append("TP:SL 비율 < 2:1 + 점수 미달 → 거래 배제")
-            return 0, reasons
     # ✅ ATR 조건 강화 (보완)
     last_atr = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr)
     if last_atr < 0.0009:
