@@ -166,7 +166,7 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
         reasons.append("🟡 Stoch RSI > 0.6 + RSI > 60 + 상승 추세 → 피로감 주의 감점-0.5")
     # ✅ NEUTRAL 추세이지만 RSI + MACD가 강한 경우 강제 진입 기회 부여
     if trend == "NEUTRAL" and rsi > 65 and macd > 0.1:
-        opportunity_score += 1.0
+        opportunity_score += 5.0
         reasons.append("📌 추세 중립이나 RSI > 65 & MACD 강세 → 관망보다 진입 우위 가능성 높음 가점+1")
 
     # 💡 강세 반전 패턴 + 과매도
@@ -1293,7 +1293,7 @@ async def webhook(request: Request):
     final_decision, final_tp, final_sl = None, None, None
     gpt_raw = None
     raw_text = ""  # ✅ 조건문 전에 미리 초기화
-    if signal_score >= 1.0:
+    if signal_score >= 5.0:
         gpt_raw = analyze_with_gpt(payload, price)
         print("✅ STEP 6: GPT 응답 수신 완료")
         # ✅ 추가: 파싱 결과 강제 정규화 (대/소문자/공백/이상값 방지)
@@ -1327,7 +1327,7 @@ async def webhook(request: Request):
             else:
                 print(f"[⚠️SKIP] GPT 피드백 무시됨 - 불충분한 조건: {parsed_decision}, tp={parsed_tp}, sl={parsed_sl}")
     else:
-        print("🚫 GPT 분석 생략: 점수 1.0점 미만")
+        print("🚫 GPT 분석 생략: 점수 5.0점 미만")
         print("🔎 GPT 분석 상세 로그")
         print(f" - GPT Raw (일부): {raw_text[:150]}...")  # 응답 일부만 잘라서 표시
         print(f" - Parsed Decision: {decision}, TP: {tp}, SL: {sl}")
@@ -1451,7 +1451,7 @@ async def webhook(request: Request):
     should_execute = False
     
     # 1️⃣ 기본 진입 조건: GPT가 BUY/SELL 판단 + 점수 5.0점 이상
-    if final_decision in ["BUY", "SELL"] and signal_score >= 1.0:
+    if final_decision in ["BUY", "SELL"] and signal_score >= 5.0:
         # ✅ RSI 극단값 필터: BUY가 과매수 / SELL이 과매도이면 진입 차단
         if False and ((final_decision == "BUY" and rsi.iloc[-1] > 85) or (final_decision == "SELL" and rsi.iloc[-1] < 20)):
             reasons.append(f"❌ RSI 극단값으로 진입 차단: {decision} @ RSI {rsi.iloc[-1]:.2f}")
