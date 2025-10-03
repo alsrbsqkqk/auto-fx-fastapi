@@ -2044,7 +2044,7 @@ def analyze_with_gpt(payload, current_price):
                 "(2) 거래는 기본적으로 1시간 내 청산을 목표로 하고 는 단타 트레이딩이다(최대 2시간), SL과 TP는 ATR의 가급적이면 최소 50% 이상 거리를 설정하되 너무 청산까지 오래 걸릴꺼 같으면 무시해. TP는 현재가에서 10pip이내에 SL은 6pip이내로 설정해줘\n"
                 "- 최근 5개 캔들의 고점/저점을 참고해서 너가 설정한 TP/SL이 REASONABLE한지 꼭 검토해.\n"
                 "- TP:SL 비율은 1.4:1 이상이 이상적이야. 2:1을 상황 비율이지만, 조건이 맞으면 1.4:1 이상에서도 진입 조건 가능.\n"
-                "(3) 지지선(support), 저항선(resistance)은 최근 1시간봉 기준 마지막 6봉의 고점/저점에서 이미 계산되어 JSON에 포함되어 있어. support와 resistance를 적절히 고려해.\n"
+                "(3) 지지선(support), 저항선(resistance)은 최근 1시간봉 기준 마지막 6봉의 고점/저점에서 이미 계산되어 JSON에 포함되어 있어. support와 resistance를 적절히 고려하되 TP/SL설정은 suppor resistance가 아무리 멀어도 10 pip이내로 설정해 .\n"
                 f"  • 현재가: {current_price}, 지지선: {support}, 저항선: {resistance}\n"
                 "- 이 숫자만 참고하고 그 외 고점/저점은 무시해.\n\n"
                 "(4) 추세 판단 시 캔들 패턴뿐 아니라 보조지표(RSI, MACD, Stoch RSI)의 흐름과 방향성도 함께 고려해.\n"
