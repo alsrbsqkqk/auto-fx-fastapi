@@ -894,8 +894,29 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
         if macd > 0:
             signal_score += 1
             reasons.append(f"{pair} 강화: MACD 양수 유지 (상승 흐름 유지) 가점+1")
+        # === SELL 강화 조건 (대칭) ===
+    if pair in BOOST_PAIRS and signal == "SELL":
+        if trend == "DOWNTREND":
+            signal_score += 1
+            reasons.append(f"{pair} 강화: DOWNTREND 유지 → 매도 기대 가점 +1")
+    
+        if 50 <= rsi <= 60:
+            signal_score += 1
+            reasons.append(f"{pair} 강화: RSI 50~60 과매수 눌림목 영역 기대 가점 +1")
+    
+        if 0.7 <= stoch_rsi <= 0.9:
+            signal_score += 1
+            reasons.append(f"{pair} 강화: Stoch RSI 천장 반락 초기 가점 +1")
+    
+        if pattern in ["SHOOTING_STAR", "LONG_BODY_BEAR"]:
+            signal_score += 1
+            reasons.append(f"{pair} 강화: 매도 캔들 패턴 확인 가점 +1")
+    
+        if macd < 0:
+            signal_score += 1
+            reasons.append(f"{pair} 강화: MACD 음수 유지 → 하락 흐름 유지 가점 +1")
 
-    # === 눌림목 BUY 조건 점수 가산 (모든 페어 공통) ===
+    # === 눌림목 BUY/SELL 조건 점수 가산 (모든 페어 공통) ===
     if signal == "BUY" and trend == "UPTREND":
         if 45 <= rsi <= 55 and 0.0 <= stoch_rsi <= 0.3 and macd > 0:
             signal_score += 1.5
@@ -2036,7 +2057,7 @@ def analyze_with_gpt(payload, current_price):
             "content": (
                 "너는 실전 FX 트레이딩 전략 조력자야.\n"
                 "(1) 아래 JSON 테이블을 기반으로 전략 리포트를 작성해. score_components 리스트는 각 전략 요소가 신호 판단에 어떤 기여를 했는지를 설명해.\n"
-                "- 너의 목표는 항상 BUY 또는 SELL 중 하나를 판단해 제시하는 것이다. WAIT은 신호가 매우 약하거나 명백한 근거가 있을 때만 선택해야 한다.\n"
+                "- 너의 목표는 BUY 또는 SELL을 사전에 고정하지 않고, BUY 점수와 SELL 점수를 각각 산출한 뒤 더 높은 점수를 최종 판단으로 선택하는 것이야. BUY 점수가 SELL 점수보다 높으면 'BUY', SELL 점수가 BUY 점수보다 높으면 'SELL', 두 점수가 같거나 모두 낮으면 'WAIT'으로 한다.\n"
                 "- 판단할 때는 아래 고차원 전략 사고 프레임을 참고해.\n"
                 "- GI = (O × C × P × S) / (A + B): 감정, 언급, 패턴, 종합을 강화하고 고정관념과 편향을 최소화하라.\n"
                 "- MDA = SUM(Di × Wi × Ii): 시간, 공간, 인과 등 다양한 차원에서 통찰과 영향을 조합하라.\n"
