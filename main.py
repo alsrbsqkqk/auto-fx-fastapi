@@ -375,7 +375,7 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window
         return support, resistance
 
     # 🎯 가까운 레벨 병합 (군집화)
-    def cluster_levels(levels, *, pip: float, threshold_pips: int = 6, min_touch_count: int = 2):
+    def cluster_levels(levels, *, pip: float, threshold_pips: int = 4, min_touch_count: int = 1):
         """
         인접 레벨 병합(클러스터) + 최소 터치 수 필터
         - threshold_pips: 단타는 6~8pip 권장(기본 6)
@@ -402,8 +402,8 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window
 
     # 📌 스윙 지지/저항 구하기
     support_levels, resistance_levels = find_local_extrema(df, order=order)
-    support_levels    = cluster_levels(support_levels,    pip=pip, threshold_pips=6, min_touch_count=min_touch_count)
-    resistance_levels = cluster_levels(resistance_levels, pip=pip, threshold_pips=6, min_touch_count=min_touch_count)
+    support_levels    = cluster_levels(support_levels,    pip=pip, threshold_pips=4, min_touch_count=min_touch_count or 1)
+    resistance_levels = cluster_levels(resistance_levels, pip=pip, threshold_pips=4, min_touch_count=min_touch_count or 1)
     
     # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
     # [A] 후보 부족 시 창을 2배로 확장해 1회 재시도 (단타용)
@@ -412,8 +412,8 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window
         order2 = max(2, min(3, (window * 2) // 10))
         if (window * 2) >= (2 * order2 + 1):
             s2, r2 = find_local_extrema(df2, order=order2)
-            s2 = cluster_levels(s2, pip=pip, threshold_pips=6, min_touch_count=min_touch_count)
-            r2 = cluster_levels(r2, pip=pip, threshold_pips=6, min_touch_count=min_touch_count)
+            s2 = cluster_levels(s2, pip=pip, threshold_pips=4, min_touch_count=min_touch_count or 1)
+            r2 = cluster_levels(r2, pip=pip, threshold_pips=4, min_touch_count=min_touch_count or 1)
             if s2: support_levels = s2
             if r2: resistance_levels = r2
     # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
@@ -1194,7 +1194,7 @@ async def webhook(request: Request):
 
     # ✅ 지지/저항 계산 - timeframe 키 "H1" 로, atr에는 Series 전달
     support, resistance = get_enhanced_support_resistance(
-        candles, price=current_price, atr=atr_series, timeframe="M30", pair=pair
+        candles, price=current_price, atr=atr_series, timeframe="M15", pair=pair
     )
 
     support_resistance = {"support": support, "resistance": resistance}
