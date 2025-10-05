@@ -316,19 +316,6 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
         reasons.append(f"🟢 보조 캔들 패턴 가점+0.5: {pattern}")
     else:
         reasons.append("⚪ 주요 캔들 패턴 없음")
-   
-    # === 기대 방향 필터 적용 ===
-    buy_score = opportunity_score if expected_direction == "BUY" else 0
-    sell_score = opportunity_score if expected_direction == "SELL" else 0
-
-    if expected_direction == "BUY" and sell_score > buy_score:
-        reasons.append("❌ 기대 방향은 BUY인데 SELL 조건이 우세함 → 신호 제외")
-        opportunity_score -= 2.0  # 감점만 적용
-
-    if expected_direction == "SELL" and buy_score > sell_score:
-        reasons.append("❌ 기대 방향은 SELL인데 BUY 조건이 우세함 → 신호 제외")
-        opportunity_score -= 2.0  # 감점만 적용
-    
 
     return opportunity_score, reasons
     
