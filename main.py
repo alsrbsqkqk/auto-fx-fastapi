@@ -316,6 +316,19 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
         reasons.append(f"🟢 보조 캔들 패턴 가점+0.5: {pattern}")
     else:
         reasons.append("⚪ 주요 캔들 패턴 없음")
+   
+    # === 기대 방향 필터 적용 ===
+    buy_score = opportunity_score if expected_direction == "BUY" else 0
+    sell_score = opportunity_score if expected_direction == "SELL" else 0
+
+    if expected_direction == "BUY" and sell_score > buy_score:
+        reasons.append("❌ 기대 방향은 BUY인데 SELL 조건이 우세함 → 신호 제외")
+        return 0, reasons
+
+    if expected_direction == "SELL" and buy_score > sell_score:
+        reasons.append("❌ 기대 방향은 SELL인데 BUY 조건이 우세함 → 신호 제외")
+        return 0, reasons
+    
 
     return opportunity_score, reasons
     
@@ -362,7 +375,7 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window
         return support, resistance
 
     # 🎯 가까운 레벨 병합 (군집화)
-    def cluster_levels(levels, *, pip: float, threshold_pips: int = 4, min_touch_count: int = 1):
+    def cluster_levels(levels, *, pip: float, threshold_pips: int = 6, min_touch_count: int = 2):
         """
         인접 레벨 병합(클러스터) + 최소 터치 수 필터
         - threshold_pips: 단타는 6~8pip 권장(기본 6)
@@ -389,8 +402,8 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window
 
     # 📌 스윙 지지/저항 구하기
     support_levels, resistance_levels = find_local_extrema(df, order=order)
-    support_levels    = cluster_levels(support_levels,    pip=pip, threshold_pips=4, min_touch_count=min_touch_count or 1)
-    resistance_levels = cluster_levels(resistance_levels, pip=pip, threshold_pips=4, min_touch_count=min_touch_count or 1)
+    support_levels    = cluster_levels(support_levels,    pip=pip, threshold_pips=6, min_touch_count=min_touch_count)
+    resistance_levels = cluster_levels(resistance_levels, pip=pip, threshold_pips=6, min_touch_count=min_touch_count)
     
     # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
     # [A] 후보 부족 시 창을 2배로 확장해 1회 재시도 (단타용)
@@ -399,8 +412,8 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window
         order2 = max(2, min(3, (window * 2) // 10))
         if (window * 2) >= (2 * order2 + 1):
             s2, r2 = find_local_extrema(df2, order=order2)
-            s2 = cluster_levels(s2, pip=pip, threshold_pips=4, min_touch_count=min_touch_count or 1)
-            r2 = cluster_levels(r2, pip=pip, threshold_pips=4, min_touch_count=min_touch_count or 1)
+            s2 = cluster_levels(s2, pip=pip, threshold_pips=6, min_touch_count=min_touch_count)
+            r2 = cluster_levels(r2, pip=pip, threshold_pips=6, min_touch_count=min_touch_count)
             if s2: support_levels = s2
             if r2: resistance_levels = r2
     # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
@@ -509,70 +522,7 @@ def calculate_realistic_tp_sl(price, atr, pip_value, risk_reward_ratio=1, min_pi
     sl_price = price - (atr_pips * pip_value)
     tp_price = price + (atr_pips * pip_value * risk_reward_ratio)
     return round(tp_price, 5), round(sl_price, 5), atr_pips
-    
-# === 상·하위 타임프레임 상관 분석: 빠른 캐시 포함 (TTL 30s) ===
-_MTF_CACHE = {}  # key: (pair, base_tf, higher_tf) -> (ts, corr)
 
-def multi_timeframe_correlation(pair: str, base_tf: str = "M30", higher_tf: str = "H1", ttl_sec: int = 30) -> float:
-    """
-    하위/상위 타임프레임 간 RSI·MACD·Trend 상관도 (0.0~1.0)
-    - 1.0: 완전 일치, 0.0: 완전 반대
-    - 데이터 부족/오류 시 0.5(중립) 반환
-    """
-    import time as _t
-
-    key = (pair, base_tf, higher_tf)
-    now = _t.time()
-    if key in _MTF_CACHE:
-        ts, cached = _MTF_CACHE[key]
-        if now - ts <= ttl_sec:
-            return cached
-
-    try:
-        lower = get_candles(pair, base_tf, 200)
-        higher = get_candles(pair, higher_tf, 200)
-        if lower is None or higher is None or lower.empty or higher.empty:
-            _MTF_CACHE[key] = (now, 0.5)
-            return 0.5
-
-        # --- 하위 TF 지표
-        lower_close = lower["close"]
-        lower_rsi_series = calculate_rsi(lower_close)
-        lower_macd_series, lower_macd_sig_series = calculate_macd(lower_close)
-        lower_bu, lower_bm, lower_bl = calculate_bollinger_bands(lower_close)
-
-        # --- 상위 TF 지표
-        higher_close = higher["close"]
-        higher_rsi_series = calculate_rsi(higher_close)
-        higher_macd_series, higher_macd_sig_series = calculate_macd(higher_close)
-        higher_bu, higher_bm, higher_bl = calculate_bollinger_bands(higher_close)
-
-        # 최근 값
-        lower_rsi  = float(lower_rsi_series.iloc[-1])
-        higher_rsi = float(higher_rsi_series.iloc[-1])
-        lower_macd  = float(lower_macd_series.iloc[-1])
-        higher_macd = float(higher_macd_series.iloc[-1])
-
-        # 지표 상관 (0~1로 클램프)
-        rsi_corr  = max(0.0, min(1.0, 1.0 - abs(lower_rsi - higher_rsi) / 100.0))
-        macd_scale = abs(higher_macd) + abs(lower_macd) + 1e-6
-        macd_corr = max(0.0, min(1.0, 1.0 - abs(lower_macd - higher_macd) / macd_scale))
-
-        # 추세 일치 여부 (detect_trend는 rsi_series & boll_mid_series 필요)
-        low_trend  = detect_trend(lower,  lower_rsi_series,  lower_bm)
-        high_trend = detect_trend(higher, higher_rsi_series, higher_bm)
-        trend_corr = 1.0 if low_trend == high_trend else 0.0
-
-        correlation = 0.4 * rsi_corr + 0.4 * macd_corr + 0.2 * trend_corr
-        correlation = round(float(correlation), 2)
-
-        _MTF_CACHE[key] = (now, correlation)
-        return correlation
-
-    except Exception:
-        _MTF_CACHE[key] = (now, 0.5)
-        return 0.5
-        
 def conflict_check(rsi, pattern, trend, signal):
     """
     추세-패턴-시그널 충돌 방지 필터 (V2 최종)
@@ -757,34 +707,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
         if candles["close"].iloc[-1] > candles["open"].iloc[-1] and candles["close"].iloc[-2] > candles["open"].iloc[-2]:
             score -= 1.0
             reasons.append("📈 최근 연속 양봉 + 추세 미약 ➝ SELL 타이밍 부적절 (감점 -1.0)")
-        # === 다중 타임프레임 상관 분석 (상위 추세 방향과 단기 신호 비교) ===
-    try:
-        # ⚠️ 현재 메인 분석 타임프레임에 맞춰 base_tf 지정 (M15/M30 등)
-        #     너는 상단에서 get_candles(pair, "M30", 200)을 쓰고 있으니 base_tf="M30"이 자연스러움.
-        corr_score = multi_timeframe_correlation(pair, base_tf="M30", higher_tf="H1")
 
-        if corr_score < 0.45:
-            signal_score -= 1.0
-            reasons.append(f"⚠️ 상위 타임프레임과 방향 불일치 (상관도 {corr_score*100:.0f}%) → 신호 신뢰도 약화 (감점 -1.0)")
-        elif corr_score > 0.75:
-            signal_score += 0.5
-            reasons.append(f"✅ 상위 타임프레임과 일치 (상관도 {corr_score*100:.0f}%) → 신호 신뢰도 강화 (+0.5)")
-
-        # (선택) ‘정반대’일 때 소폭 추가 감점: 방향성 기반 미세 보정
-        # high_trend만 빠르게 다시 얻어 -0.5 추가 (관망 X)
-        # 주석 해제 시 사용
-        # _higher = get_candles(pair, "H1", 200)
-        # _rsi_h = calculate_rsi(_higher["close"])
-        # _bu, _bm, _bl = calculate_bollinger_bands(_higher["close"])
-        # _t_high = detect_trend(_higher, _rsi_h, _bm)
-        # if (signal == "BUY" and _t_high == "DOWNTREND") or (signal == "SELL" and _t_high == "UPTREND"):
-        #     signal_score -= 0.5
-        #     reasons.append("↘ 상위 추세 정반대 → 보수적 감점 추가 (-0.5)")
-
-    except Exception as e:
-        reasons.append(f"⚙️ 다중 타임프레임 상관 분석 오류: {str(e)} → 기본 로직으로 진행")
-
-    
     # 트렌드 전환 직후 경계 구간 감점
     if trend == "UPTREND" and prev_trend == "DOWNTREND" and signal == "BUY":
         score -= 0.5
@@ -972,56 +895,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
             signal_score += 1
             reasons.append(f"{pair} 강화: MACD 양수 유지 (상승 흐름 유지) 가점+1")
 
-        # --- 강화 대상 페어 세트(매수/매도 동일 세트 사용) ---
-    BOOST_BUY_PAIRS  = {"EUR_USD", "GBP_USD", "USD_JPY"}
-    BOOST_SELL_PAIRS = {"EUR_USD", "GBP_USD", "USD_JPY"}
-    
-    # 과거 코드 호환용(이미 사용된 이름 방지)
-    BOOST_PAIRS = BOOST_SELL_PAIRS
-        # === SELL 강화 조건 (대칭) ===
-    if pair in BOOST_SELL_PAIRS and signal == "SELL":
-        if trend == "DOWNTREND":
-            signal_score += 1
-            reasons.append(f"{pair} 강화: DOWNTREND 유지 → 매도 기대 가점 +1")
-    
-        if 50 <= rsi <= 60:
-            signal_score += 1
-            reasons.append(f"{pair} 강화: RSI 50~60 과매수 눌림목 영역 기대 가점 +1")
-    
-        if 0.7 <= stoch_rsi <= 0.9:
-            signal_score += 1
-            reasons.append(f"{pair} 강화: Stoch RSI 천장 반락 초기 가점 +1")
-    
-        if pattern in ["SHOOTING_STAR", "LONG_BODY_BEAR"]:
-            signal_score += 1
-            reasons.append(f"{pair} 강화: 매도 캔들 패턴 확인 가점 +1")
-    
-        if macd < 0:
-            signal_score += 1
-            reasons.append(f"{pair} 강화: MACD 음수 유지 → 하락 흐름 유지 가점 +1")
-            
-    if pair in BOOST_BUY_PAIRS and signal == "BUY":
-        if trend == "UPTREND":
-            signal_score += 1
-            reasons.append(f"{pair} 강화: UPTREND 유지 → 매수 기대 가점 +1")
-    
-        if 40 <= rsi <= 50:
-            signal_score += 1
-            reasons.append(f"{pair} 강화: RSI 40~50 눌림목 영역 → 반등 기대 +1")
-    
-        if 0.1 <= stoch_rsi <= 0.3:
-            signal_score += 1
-            reasons.append(f"{pair} 강화: Stoch RSI 바닥 반등 초기 구간 +1")
-    
-        if pattern in ["HAMMER", "BULLISH_ENGULFING"]:
-            signal_score += 1
-            reasons.append(f"{pair} 강화: 매수 캔들 패턴 확인 +1")
-    
-        if macd > 0:
-            signal_score += 1
-            reasons.append(f"{pair} 강화: MACD 양수 유지 → 상승 흐름 유지 +1")
-
-    # === 눌림목 BUY/SELL 조건 점수 가산 (모든 페어 공통) ===
+    # === 눌림목 BUY 조건 점수 가산 (모든 페어 공통) ===
     if signal == "BUY" and trend == "UPTREND":
         if 45 <= rsi <= 55 and 0.0 <= stoch_rsi <= 0.3 and macd > 0:
             signal_score += 1.5
@@ -1299,7 +1173,7 @@ async def webhook(request: Request):
 
     # ✅ 지지/저항 계산 - timeframe 키 "H1" 로, atr에는 Series 전달
     support, resistance = get_enhanced_support_resistance(
-        candles, price=current_price, atr=atr_series, timeframe="M15", pair=pair
+        candles, price=current_price, atr=atr_series, timeframe="M30", pair=pair
     )
 
     support_resistance = {"support": support, "resistance": resistance}
