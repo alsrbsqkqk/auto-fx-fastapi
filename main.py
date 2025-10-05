@@ -984,8 +984,15 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
         if macd > 0:
             signal_score += 1
             reasons.append(f"{pair} 강화: MACD 양수 유지 (상승 흐름 유지) 가점+1")
+
+        # --- 강화 대상 페어 세트(매수/매도 동일 세트 사용) ---
+    BOOST_BUY_PAIRS  = {"EUR_USD", "GBP_USD", "USD_JPY"}
+    BOOST_SELL_PAIRS = {"EUR_USD", "GBP_USD", "USD_JPY"}
+    
+    # 과거 코드 호환용(이미 사용된 이름 방지)
+    BOOST_PAIRS = BOOST_SELL_PAIRS
         # === SELL 강화 조건 (대칭) ===
-    if pair in BOOST_PAIRS and signal == "SELL":
+    if pair in BOOST_SELL_PAIRS and signal == "SELL":
         if trend == "DOWNTREND":
             signal_score += 1
             reasons.append(f"{pair} 강화: DOWNTREND 유지 → 매도 기대 가점 +1")
@@ -1005,6 +1012,27 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
         if macd < 0:
             signal_score += 1
             reasons.append(f"{pair} 강화: MACD 음수 유지 → 하락 흐름 유지 가점 +1")
+            
+    if pair in BOOST_BUY_PAIRS and signal == "BUY":
+        if trend == "UPTREND":
+            signal_score += 1
+            reasons.append(f"{pair} 강화: UPTREND 유지 → 매수 기대 가점 +1")
+    
+        if 40 <= rsi <= 50:
+            signal_score += 1
+            reasons.append(f"{pair} 강화: RSI 40~50 눌림목 영역 → 반등 기대 +1")
+    
+        if 0.1 <= stoch_rsi <= 0.3:
+            signal_score += 1
+            reasons.append(f"{pair} 강화: Stoch RSI 바닥 반등 초기 구간 +1")
+    
+        if pattern in ["HAMMER", "BULLISH_ENGULFING"]:
+            signal_score += 1
+            reasons.append(f"{pair} 강화: 매수 캔들 패턴 확인 +1")
+    
+        if macd > 0:
+            signal_score += 1
+            reasons.append(f"{pair} 강화: MACD 양수 유지 → 상승 흐름 유지 +1")
 
     # === 눌림목 BUY/SELL 조건 점수 가산 (모든 페어 공통) ===
     if signal == "BUY" and trend == "UPTREND":
