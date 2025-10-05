@@ -323,11 +323,11 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
 
     if expected_direction == "BUY" and sell_score > buy_score:
         reasons.append("❌ 기대 방향은 BUY인데 SELL 조건이 우세함 → 신호 제외")
-        return 0, reasons
+        opportunity_score -= 2.0  # 감점만 적용
 
     if expected_direction == "SELL" and buy_score > sell_score:
         reasons.append("❌ 기대 방향은 SELL인데 BUY 조건이 우세함 → 신호 제외")
-        return 0, reasons
+        opportunity_score -= 2.0  # 감점만 적용
     
 
     return opportunity_score, reasons
