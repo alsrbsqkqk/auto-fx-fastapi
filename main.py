@@ -2071,7 +2071,7 @@ def adjust_tp_sl_for_structure(pair, entry, tp, sl, support, resistance, atr):
 
     digits = 3 if pair.endswith("JPY") else 5
     return round(tp, digits), round(sl, digits)   
-def analyze_with_gpt(payload, current_price):
+def analyze_with_gpt(payload, current_price, pair):
     global _gpt_cooldown_until, _gpt_last_ts
     dbg("gpt.enter", t=int(_t.time()*1000))
 
