@@ -1530,39 +1530,65 @@ def calculate_fibonacci_levels(high, low):
     }
 def get_multi_tf_scalping_data(pair):
     """
-    30분봉 단타 분석을 위한 MTF 캔들 + 보조지표 수집
+    30분봉 단타 분석을 위한 MTF 캔들 + 보조지표 추세 리스트 수집
     M30 (진입), H1 (보조 흐름), H4 (큰 흐름)
     """
-    timeframes = ['M30', 'H1', 'H4']
+
+    timeframes = {
+        'M30': 100,
+        'H1': 100,
+        'H4': 60
+    }
+
     tf_data = {}
 
-    for tf in timeframes:
-        candles = get_candles(pair, tf, 100)
+    for tf, count in timeframes.items():
+        candles = get_candles(pair, tf, count)
         if candles is None or candles.empty:
             continue
 
         df = candles.copy()
         try:
+            # 보조지표 계산
             df['rsi'] = ta.momentum.RSIIndicator(close=df['close'], window=14).rsi()
             macd = ta.trend.MACD(close=df['close'])
             df['macd'] = macd.macd()
             df['macd_signal'] = macd.macd_signal()
             df['stoch_rsi'] = ta.momentum.StochRSIIndicator(close=df['close'], window=14).stochrsi()
-        except Exception as e:
-            print(f"보조지표 계산 오류 ({tf}):", e)
-            continue
 
-        tf_data[tf] = df
+            # 최근 10개 (H4는 6개) 보조지표 리스트 저장
+            n = 10 if tf in ['M30', 'H1'] else 6
+            tf_data[tf] = {
+                'rsi_trend': df['rsi'].dropna().iloc[-n:].tolist(),
+                'macd_trend': df['macd'].dropna().iloc[-n:].tolist(),
+                'macd_signal_trend': df['macd_signal'].dropna().iloc[-n:].tolist(),
+                'stoch_rsi_trend': df['stoch_rsi'].dropna().iloc[-n:].tolist()
+            }
+
+        except Exception as e:
+            print(f"[{tf}] 보조지표 계산 오류:", e)
+            continue
 
     return tf_data
     
 def summarize_mtf_indicators(mtf_data):
     summary = []
-    for tf, df in mtf_data.items():
-        if df is None or df.empty:
-            continue
-        last_row = df.iloc[-1]
-        summary.append(f"[{tf}] RSI: {last_row['rsi']:.2f}, MACD: {last_row['macd']:.5f}, Signal: {last_row['macd_signal']:.5f}, Stoch RSI: {last_row['stoch_rsi']:.2f}")
+    for tf, data in mtf_data.items():
+        if not data:
+        continue
+    
+    
+        rsi_trend = data.get('rsi_trend', [])
+        macd_trend = data.get('macd_trend', [])
+        signal_trend = data.get('macd_signal_trend', [])
+        stoch_rsi_trend = data.get('stoch_rsi_trend', [])
+    
+    
+        summary.append(
+            f"[{tf}] RSI: {rsi_trend}, MACD: {macd_trend}, Signal: {signal_trend}, Stoch RSI: {stoch_rsi_trend}"
+        )
+    
+    
     return "\n".join(summary)
 
 def get_candles(pair, granularity, count):
