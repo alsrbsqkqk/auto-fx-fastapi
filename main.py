@@ -10,6 +10,7 @@ import openai
 import numpy as np
 import gspread
 import threading
+import ta
 import time as _t
 import math
 _gpt_lock = threading.Lock()
@@ -1527,6 +1528,42 @@ def calculate_fibonacci_levels(high, low):
         "0.618": high - 0.618 * diff,
         "1.0": high
     }
+def get_multi_tf_scalping_data(pair):
+    """
+    30분봉 단타 분석을 위한 MTF 캔들 + 보조지표 수집
+    M30 (진입), H1 (보조 흐름), H4 (큰 흐름)
+    """
+    timeframes = ['M30', 'H1', 'H4']
+    tf_data = {}
+
+    for tf in timeframes:
+        candles = get_candles(pair, tf, 100)
+        if candles is None or candles.empty:
+            continue
+
+        df = candles.copy()
+        try:
+            df['rsi'] = ta.momentum.RSIIndicator(close=df['close'], window=14).rsi()
+            macd = ta.trend.MACD(close=df['close'])
+            df['macd'] = macd.macd()
+            df['macd_signal'] = macd.macd_signal()
+            df['stoch_rsi'] = ta.momentum.StochRSIIndicator(close=df['close'], window=14).stochrsi()
+        except Exception as e:
+            print(f"보조지표 계산 오류 ({tf}):", e)
+            continue
+
+        tf_data[tf] = df
+
+    return tf_data
+    
+def summarize_mtf_indicators(mtf_data):
+    summary = []
+    for tf, df in mtf_data.items():
+        if df is None or df.empty:
+            continue
+        last_row = df.iloc[-1]
+        summary.append(f"[{tf}] RSI: {last_row['rsi']:.2f}, MACD: {last_row['macd']:.5f}, Signal: {last_row['macd_signal']:.5f}, Stoch RSI: {last_row['stoch_rsi']:.2f}")
+    return "\n".join(summary)
 
 def get_candles(pair, granularity, count):
     url = f"https://api-fxpractice.oanda.com/v3/instruments/{pair}/candles"
@@ -2029,7 +2066,9 @@ def analyze_with_gpt(payload, current_price):
     resistance  = payload.get("resistance", current_price)
     boll_up     = payload.get("bollinger_upper", current_price)
     boll_low    = payload.get("bollinger_lower", current_price)
-
+    mtf_indicators = get_multi_tf_scalping_data(pair)
+    mtf_summary = summarize_mtf_indicators(mtf_indicators)
+    
     messages = [
         {
             "role": "system",
@@ -2049,6 +2088,7 @@ def analyze_with_gpt(payload, current_price):
                 "- 이 숫자만 참고하고 그 외 고점/저점은 무시해.\n\n"
                 "(4) 추세 판단 시 캔들 패턴뿐 아니라 보조지표(RSI, MACD, Stoch RSI)의 흐름과 방향성도 함께 고려해.\n"
                 "- 특히 각 보조지표의 최근 14봉 추세 데이터는 다음과 같아:\n"
+                "※ 멀티타임프레임(M30/H1/H4) 지표 요약:\n" + mtf_summary + "\n\n" +
                 f"RSI: {rsi_trend}, MACD: {macd_trend}, Stoch RSI: {stoch_rsi_trend}\n"
                 "- 상승/하락 흐름, 속도, 꺾임 여부 등을 함께 분석하라.\n\n"
                 "(5) 리포트는 자유롭게 작성하되, 반드시 마지막에는 아래 JSON 형식을 따르라:\n\n"
