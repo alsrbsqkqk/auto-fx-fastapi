@@ -1575,7 +1575,7 @@ def summarize_mtf_indicators(mtf_data):
     summary = []
     for tf, data in mtf_data.items():
         if not data:
-        continue
+            continue
     
     
         rsi_trend = data.get('rsi_trend', [])
