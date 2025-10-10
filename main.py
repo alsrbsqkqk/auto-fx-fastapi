@@ -2068,7 +2068,7 @@ def analyze_with_gpt(payload, current_price):
     boll_low    = payload.get("bollinger_lower", current_price)
     mtf_indicators = get_multi_tf_scalping_data(pair)
     mtf_summary = summarize_mtf_indicators(mtf_indicators)
-    dbg("✅ MTF Summary (debug용):", mtf_summary)
+    print("✅ 테스트 출력: ", mtf_summary)
     
     messages = [
         {
