@@ -741,14 +741,29 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
         signal_score += 1
         opportunity_score += 0.5  # ✅ 패턴-추세 일치 시 추가 점수
         reasons.append("✅ 강한 하락추세 + 매도 캔들 패턴 일치 → 보너스 + 기회 점수 강화 가점 +1.5")
+        
+        # ✅ 거래 제한 시간 필터 (애틀랜타 기준)
+        now_utc = datetime.utcnow()
+        now_atlanta = now_utc - timedelta(hours=4)  # 애틀랜타는 UTC-4
+        
+        atlanta_hour = now_atlanta.hour
+        atlanta_minute = now_atlanta.minute
+        
+        # ❌ 거래 금지 시간대 정의
+        is_restricted = (
+            (3 <= atlanta_hour < 5) or  # 새벽 3~5시
+            (atlanta_hour == 11 and atlanta_minute >= 30) or  # 11:30 ~ 11:59
+            (atlanta_hour == 12) or  # 12:00 ~ 12:59
+            (13 <= atlanta_hour < 14) or  # 13:00 ~ 13:59
+            (16 <= atlanta_hour < 19)  # 16:00 ~ 18:59
+        )
+        
+        if is_restricted:
+            reasons.append("⏰ 현재 시간은 거래 제한 시간대이며 유동성 부족 / 신호 신뢰도 저하로 관망")
+            return 0, reasons
+
+
     
-    #✅ 거래 제한 시간 필터 (애틀랜타 기준)
-    now_utc = datetime.utcnow()
-    now_atlanta = now_utc - timedelta(hours=4)
-    #✅ 전략 시간대: 오전 08~15시 또는 저녁 18~23시
-    #if not ((8 <= now_atlanta.hour <= 15) or (18 <= now_atlanta.hour <= 23)):
-    #    reasons.append("🕒 전략 외 시간대 → 유동성 부족 / 성공률 저하로 관망")
-    #    return 0, reasons
     # ▼▼▼ 여기에 붙여넣기 ▼▼▼
     digits = int(abs(np.log10(pip_value_for(pair))))   # EURUSD=4, JPY계열=2
     pv = pip_value_for(pair)
