@@ -2134,7 +2134,12 @@ def analyze_with_gpt(payload, current_price, pair):
                 "- 아래는 멀티타임프레임(M30, H1, H4) 기준 요약 정보이다. 각 시간대별 추세가 일치하면 강한 확신으로 간주하고, 상반된 경우 보수적으로 판단하라:\\n"
                 "📊 MTF 요약:\\n"
                  f"{summarize_mtf_indicators(mtf_indicators)}\n\n" +
-                "📉 RSI: {rsi_trend}, 📈 MACD: {macd_trend}, 🔄 Stoch RSI: {stoch_rsi_trend}\\n"
+                "📉 RSI: {rsi_trend}, 📈 MACD: {macd_trend}, 🔄 Stoch RSI: {stoch_rsi_trend}\\n" +
+                "📊 아래는 RSI, MACD, Stoch RSI의 최근 14개 수치야. 이를 기반으로 추세를 요약해줘.\\n" +
+                f"↪️ RSI: {recent_rsi_values}\\n" +
+                f"↪️ MACD: {recent_macd_values}\\n" +
+                f"↪️ Stoch RSI: {recent_stoch_rsi_values}\\n" +
+                "➡️ 위 수치를 기반으로 최근 추세 흐름이 '상승세', '하락세', 또는 '횡보세'인지 간단히 요약해줘. 강도나 방향성도 덧붙여 분석에 반영해.\\n"
                 "- 각 지표의 상승/하락 추세, 변화 속도, 과매수/과매도 여부, 꺾임 여부 등을 분석해\\n"
                 "- 가능하면 수치적인 기준 또는 '강세', '약세', '중립' 등의 판단 용어를 사용해 설명하라.\\n\\n"
                 "(5) 전략 리포트는 자유롭게 작성하되 반드시 아래 4단계 형식을 따르라:\\n"
