@@ -2094,7 +2094,10 @@ def analyze_with_gpt(payload, current_price, pair):
         return "GPT 응답 없음(쿨다운)"
     gpt_rate_gate()  # 3-b: 계정 단위 슬롯 대기
     headers = OPENAI_HEADERS
-    
+
+    recent_rsi_values = payload.get("recent_rsi_values", [])
+    recent_macd_values = payload.get("recent_macd_values", [])
+    recent_stoch_rsi_values = payload.get("recent_stoch_rsi_values", [])
     macd_signal = payload.get("macd_signal", None)
     rsi_trend = payload.get("rsi_trend", [])
     macd_trend = payload.get("macd_trend", [])
