@@ -2133,7 +2133,7 @@ def analyze_with_gpt(payload, current_price, pair):
                 "- 특히 보조지표의 최근 14봉 흐름 분석은 핵심 판단 자료다.\\n"
                 "- 아래는 멀티타임프레임(M30, H1, H4) 기준 요약 정보이다. 각 시간대별 추세가 일치하면 강한 확신으로 간주하고, 상반된 경우 보수적으로 판단하라:\\n"
                 "📊 MTF 요약:\\n"
-                 summarize_mtf_indicators(mtf_indicators) + '\n\n' +
+                 f"{summarize_mtf_indicators(mtf_indicators)}\n\n" +
                 "📉 RSI: {rsi_trend}, 📈 MACD: {macd_trend}, 🔄 Stoch RSI: {stoch_rsi_trend}\\n"
                 "- 각 지표의 상승/하락 추세, 변화 속도, 과매수/과매도 여부, 꺾임 여부 등을 분석해\\n"
                 "- 가능하면 수치적인 기준 또는 '강세', '약세', '중립' 등의 판단 용어를 사용해 설명하라.\\n\\n"
