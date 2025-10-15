@@ -752,10 +752,10 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
         # ❌ 거래 금지 시간대 정의
         is_restricted = (
             (3 <= atlanta_hour < 5) or  # 새벽 3~5시
-            (atlanta_hour == 11 and atlanta_minute >= 30) or  # 11:30 ~ 11:59
-            (atlanta_hour == 12) or  # 12:00 ~ 12:59
-            (13 <= atlanta_hour < 14) or  # 13:00 ~ 13:59
-            (16 <= atlanta_hour < 19)  # 16:00 ~ 18:59
+            (atlanta_hour == 11) or  # 오전 11시부터 오후 2시
+            (atlanta_hour == 12) or  # 
+            (13 <= atlanta_hour < 14) or  # 
+            (16 <= atlanta_hour < 19)  # 오후 4시부터 오후 7시
         )
         
         if is_restricted:
@@ -1571,8 +1571,8 @@ def get_multi_tf_scalping_data(pair):
             df['macd_signal'] = macd.macd_signal()
             df['stoch_rsi'] = ta.momentum.StochRSIIndicator(close=df['close'], window=14).stochrsi()
 
-            # 최근 10개 (H4는 6개) 보조지표 리스트 저장
-            n = 10 if tf in ['M30', 'H1'] else 6
+            # 최근 14개 (H4는 10개) 보조지표 리스트 저장
+            n = 14 if tf in ['M30', 'H1'] else 10
             tf_data[tf] = {
                 'rsi_trend': df['rsi'].dropna().iloc[-n:].tolist(),
                 'macd_trend': df['macd'].dropna().iloc[-n:].tolist(),
@@ -1587,24 +1587,20 @@ def get_multi_tf_scalping_data(pair):
     return tf_data
     
 def summarize_mtf_indicators(mtf_data):
-    summary = []
+    summary = {}  # ✅ 문자열 리스트 → 딕셔너리로 변경
+
     for tf, data in mtf_data.items():
         if not data:
             continue
-    
-    
-        rsi_trend = data.get('rsi_trend', [])
-        macd_trend = data.get('macd_trend', [])
-        signal_trend = data.get('macd_signal_trend', [])
-        stoch_rsi_trend = data.get('stoch_rsi_trend', [])
-    
-    
-        summary.append(
-            f"[{tf}] RSI: {rsi_trend}, MACD: {macd_trend}, Signal: {signal_trend}, Stoch RSI: {stoch_rsi_trend}"
-        )
-    
-    
-    return "\n".join(summary)
+
+        summary[tf] = {
+            "rsi_trend": data.get('rsi_trend', []),
+            "macd_trend": data.get('macd_trend', []),
+            "macd_signal_trend": data.get('macd_signal_trend', []),
+            "stoch_rsi_trend": data.get('stoch_rsi_trend', [])
+        }
+
+    return summary  # ✅ 문자열이 아닌 JSON 딕셔너리 그대로 반환
 
 def get_candles(pair, granularity, count):
     url = f"https://api-fxpractice.oanda.com/v3/instruments/{pair}/candles"
