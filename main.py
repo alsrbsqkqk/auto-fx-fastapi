@@ -759,7 +759,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
         )
         
         if is_restricted:
-            reasons.append("⏰ 현재 시간은 거래 제한 시간대이며 유동성 부족 / 신호 신뢰도 저하로 관망")
+            print("❌ 현재 시간은 거래 제한 시간대입니다. GPT 호출 생략")
             return 0, reasons
 
 
@@ -2085,7 +2085,25 @@ def adjust_tp_sl_for_structure(pair, entry, tp, sl, support, resistance, atr):
 def analyze_with_gpt(payload, current_price, pair):
     global _gpt_cooldown_until, _gpt_last_ts
     dbg("gpt.enter", t=int(_t.time()*1000))
+    # ✅ 거래 시간대 필터 추가
+    from datetime import datetime, timedelta
+    now_atlanta = now_utc - timedelta(hours=4)
+    atlanta_hour = now_atlanta.hour
 
+    is_restricted = (
+        (3 <= atlanta_hour < 5) or
+        (atlanta_hour == 11) or
+        (atlanta_hour == 12) or
+        (13 <= atlanta_hour < 14) or
+        (16 <= atlanta_hour < 19)
+    )
+
+    if is_restricted:
+        print("🚫 현재 시간은 거래 제한 시간대입니다. GPT 호출을 건너뜁니다.")
+        return "🚫 GPT 호출 스킵됨 (거래 제한 시간대)"
+
+
+    
     # ── 전역 쿨다운: 429 맞은 뒤 일정 시간은 호출 자체 스킵 ──
     global _gpt_cooldown_until
     now = _t.time()
