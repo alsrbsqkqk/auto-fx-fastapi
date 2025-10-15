@@ -2104,7 +2104,8 @@ def analyze_with_gpt(payload, current_price, pair):
     boll_up     = payload.get("bollinger_upper", current_price)
     boll_low    = payload.get("bollinger_lower", current_price)
     mtf_indicators = get_multi_tf_scalping_data(pair)
-    mtf_summary = summarize_mtf_indicators(mtf_indicators)
+    mtf_summary_dict = summarize_mtf_indicators(mtf_indicators)
+    mtf_summary = json.dumps(mtf_summary_dict, ensure_ascii=False, indent=2)
     print("✅ 테스트 출력: ", mtf_summary)
     
     messages = [
