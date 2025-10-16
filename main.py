@@ -2087,6 +2087,7 @@ def analyze_with_gpt(payload, current_price, pair):
     dbg("gpt.enter", t=int(_t.time()*1000))
     # ✅ 거래 시간대 필터 추가
     from datetime import datetime, timedelta
+    now_utc = datetime.utcnow()
     now_atlanta = now_utc - timedelta(hours=4)
     atlanta_hour = now_atlanta.hour
 
