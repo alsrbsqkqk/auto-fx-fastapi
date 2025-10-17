@@ -435,30 +435,66 @@ def additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, tre
     """ 기존 필터 이후, 추가 가중치 기반 보완 점수 """
     score = 0
     reasons = []
+    is_buy = signal == "BUY"
+    is_sell = signal == "SELL"
 
-    # RSI 30 이하
+    # RSI
     if rsi < 30:
-        score += 2.5
-        reasons.append("🔴 RSI 30 이하 (추가 기회 요인 가점+2.5)")
+        if is_buy:
+            score += 2.5
+            reasons.append("🟢 RSI 30 이하 ➝ BUY 반등 기대 가점+2.5")
+        elif is_sell:
+            score -= 1.0
+            reasons.append("🔻 RSI 과매도 ➝ SELL 위험 감점 -1.0")
+    elif rsi > 70:
+        if is_sell:
+            score += 1.5
+            reasons.append("🔴 RSI 과매수 ➝ SELL 기회 가점+1.5")
+        elif is_buy:
+            score -= 1.0
+            reasons.append("⚠️ RSI 과매수 ➝ BUY 위험 감점 -1.0")
 
-    # Stoch RSI 극단
-    if stoch_rsi < 0.05:
-        score += 1.5
-        reasons.append("🟢 Stoch RSI 0.05 이하 (반등 기대 가점+1.5)")
+    # Stoch RSI
+    if stoch_rsi < 0.1:
+        if is_buy:
+            score += 1.5
+            reasons.append("🟢 Stoch RSI < 0.1 ➝ BUY 반등 기대 가점+1.5")
+        elif is_sell:
+            score -= 1.0
+            reasons.append("🔻 Stoch RSI 과매도 ➝ SELL 위험 감점 -1.0")
+    elif stoch_rsi > 0.9:
+        if is_sell:
+            score += 1.5
+            reasons.append("🔴 Stoch RSI 과매수 ➝ SELL 기회 가점+1.5")
+        elif is_buy:
+            score -= 1.0
+            reasons.append("⚠️ Stoch RSI 과매수 ➝ BUY 피로감 감점 -1.0")
 
-    # MACD 상승 전환
-    if macd > 0 and macd > macd_signal:
-        score += 1
-        reasons.append("🟢 MACD 상승 전환 (추가 확인 요인 가점+1)")
+        # MACD
+    if macd > macd_signal:
+        if is_buy:
+            score += 1.0
+            reasons.append("📈 MACD 상승 전환 ➝ BUY 진입 근거 가점+1")
+        elif is_sell:
+            score -= 0.5
+            reasons.append("⚠️ MACD 상승 전환 ➝ SELL 불리 감점 -0.5")
+    elif macd < macd_signal:
+        if is_sell:
+            score += 1.0
+            reasons.append("📉 MACD 약세 전환 ➝ SELL 진입 근거 가점+1")
+        elif is_buy:
+            score -= 0.5
+            reasons.append("⚠️ MACD 약세 전환 ➝ BUY 불리 감점 -0.5")
 
     # 캔들 패턴
-    if pattern in ["BULLISH_ENGULFING", "BEARISH_ENGULFING"]:
-        score += 1
-        reasons.append(f"📊 {pattern} 발생 (심리 반전 가점+1)")
-        
-    if pattern in ["DOJI", "MORNING_STAR", "EVENING_STAR"]:
-        score += 0.4
-        reasons.append(f"🕯 {pattern} 패턴 → 반전 가능성 강화로 가점 (+0.4)")
+    if is_buy:
+        if pattern in ["BULLISH_ENGULFING", "HAMMER", "MORNING_STAR"]:
+            score += 1
+            reasons.append(f"🕯 BUY 반등 패턴 감지 ({pattern}) ➝ 가점 +1")
+    elif is_sell:
+        if pattern in ["BEARISH_ENGULFING", "SHOOTING_STAR", "EVENING_STAR"]:
+            score += 1
+            reasons.append(f"🕯 SELL 반전 패턴 감지 ({pattern}) ➝ 가점 +1")
 
 
     return score, reasons
@@ -635,7 +671,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     reasons = []
 
     score, base_reasons = must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles, trend, atr, price, bollinger_upper, bollinger_lower, support, resistance, support_distance, resistance_distance, pip_size, expected_direction=signal)
-    extra_score, extra_reasons = additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, trend)
+    extra_score, extra_reasons = additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, trend, signal)
 
     # ★ 통합 임계치 준비 (pip/ATR 기반)
     thr = dynamic_thresholds(pair, atr)
