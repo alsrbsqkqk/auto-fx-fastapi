@@ -431,7 +431,7 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window
     return round(support_price, round_digits), round(resistance_price, round_digits)
 
 
-def additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, trend):
+def additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, trend, signal):
     """ 기존 필터 이후, 추가 가중치 기반 보완 점수 """
     score = 0
     reasons = []
