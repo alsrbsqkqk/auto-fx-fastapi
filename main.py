@@ -1003,7 +1003,11 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
         reasons.append("📦 박스권 하단 돌파 + 매도 신호 일치 가점+3")
     elif box_info["in_box"] and box_info["breakout"] is None:
         reasons.append("📦 박스권 유지 중 → 관망 경계")
-    
+
+    # SELL 점수 상한 제한
+    if signal == "SELL" and signal_score > 5:
+        reasons.append("⚠️ SELL 점수 상한 적용 (최대 5점)")
+        signal_score = 5
 
         # --- MACD 교차 가점: 모든 페어 공통 (pip/ATR 스케일 적용) ---
     macd_diff = macd - macd_signal
