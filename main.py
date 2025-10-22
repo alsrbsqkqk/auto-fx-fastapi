@@ -471,7 +471,7 @@ def additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, tre
             reasons.append("⚠️ Stoch RSI 과매수 ➝ BUY 피로감 감점 -1.0")
 
     # 1. MACD 정확한 약세 감점 강화
-    macd_hist = macd - macd_signal
+    macd_hist_strict = macd - macd_signal
     if macd < macd_signal:
         if macd > 0:
             score -= 1.0
