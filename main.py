@@ -470,21 +470,36 @@ def additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, tre
             score -= 1.0
             reasons.append("⚠️ Stoch RSI 과매수 ➝ BUY 피로감 감점 -1.0")
 
-        # MACD
-    if macd > macd_signal:
-        if is_buy:
+    # 1. MACD 정확한 약세 감점 강화
+    macd_hist = macd - macd_signal
+    if macd < macd_signal:
+        if macd > 0:
+            score -= 1.0
+            reasons.append("⚠️ MACD 약세 전환 (신호선 하향 교차) → BUY 불리 감점 -1.0")
+        else:
+            score -= 1.5
+            reasons.append("❌ MACD & 신호선 모두 0 이하 → 강한 하락 추세 감점 -1.5")
+    elif macd > macd_signal:
+        if macd < 0:
+            score += 0.5
+            reasons.append("🔄 MACD 상승 전환 (음수 영역) → 회복 초기 가능성 가점 +0.5")
+        else:
             score += 1.0
-            reasons.append("📈 MACD 상승 전환 ➝ BUY 진입 근거 가점+1")
-        elif is_sell:
-            score -= 0.5
-            reasons.append("⚠️ MACD 상승 전환 ➝ SELL 불리 감점 -0.5")
-    elif macd < macd_signal:
-        if is_sell:
-            score += 1.0
-            reasons.append("📉 MACD 약세 전환 ➝ SELL 진입 근거 가점+1")
-        elif is_buy:
-            score -= 0.5
-            reasons.append("⚠️ MACD 약세 전환 ➝ BUY 불리 감점 -0.5")
+            reasons.append("✅ MACD 상승 전환 (양수 영역) → BUY 근거 가점 +1.0")
+    
+    # 2. 과매도 영역 가점 조건 강화 (추세 고려)
+    if stoch_rsi < 0.1:
+        if macd < macd_signal and macd < 0:
+            score += 0.5
+            reasons.append("📉 Stoch RSI 극단적 과매도이나 하락 추세 지속 → 반등 제한 가점 +0.5")
+        else:
+            score += 2.0
+            reasons.append("🟢 Stoch RSI 과매도 → 반등 기대 가점 +2.0")
+    
+    # 기존 is_buy/is_sell 판단 유지 시 아래 보강 가능
+    if is_buy and macd < macd_signal and macd > 0:
+        score -= 1.0
+        reasons.append("⚠️ BUY 진입 중 MACD 약세 전환 → 진입 부적절 감점 -1.0")
 
     # 캔들 패턴
     if is_buy:
