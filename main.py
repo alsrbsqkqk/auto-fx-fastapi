@@ -834,12 +834,12 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     # ✅ 점수 감점 방식으로 변경
     digits_pip = 1 if pair.endswith("JPY") else 2
     if signal == "BUY" and dist_to_res_pips <= NEAR_PIPS:
-        signal_score -= 0.5
-        reasons.append(f"📉 저항까지 {dist_to_res_pips:.{digits_pip}f} pip → 거리 너무 가까움 → 감점 -0.5")
+        signal_score -= 1
+        reasons.append(f"📉 저항까지 {dist_to_res_pips:.{digits_pip}f} pip → 거리 너무 가까움 → 감점 -1")
         
     if signal == "SELL" and dist_to_sup_pips <= NEAR_PIPS:
-        signal_score -= 0.5
-        reasons.append(f"📉 지지까지 {dist_to_sup_pips:.{digits_pip}f} pip → 거리 너무 가까움 → 감점 -0.5")
+        signal_score -= 1
+        reasons.append(f"📉 지지까지 {dist_to_sup_pips:.{digits_pip}f} pip → 거리 너무 가까움 → 감점 -1")
         
     conflict_flag = conflict_check(rsi, pattern, trend, signal)
 
@@ -871,8 +871,8 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
         confirmed_breakout_up = over1 or (over1 and over2)
 
         if not confirmed_breakout_up and dist_to_res_pips <= 10:
-            signal_score -= 1
-            reasons.append("⛔ 저항선 돌파 미확인 + 10pip 이내 → 감점-1")
+            signal_score -= 1.5
+            reasons.append("⛔ 저항선 돌파 미확인 + 10pip 이내 → 감점-1.5")
 
     # SELL: 지지 3pip 이내면 금지. 이탈(확정) 없고 10pip 이내도 금지
     if signal == "SELL":
@@ -932,8 +932,8 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
 
     if rsi > 70 and pattern not in ["SHOOTING_STAR", "BEARISH_ENGULFING"]:
         if macd > macd_signal and macd > 0 and trend == "UPTREND":
-            reasons.append("📈 RSI > 70 but MACD 상승 + UPTREND → 진입 허용 가점+1")
-            signal_score += 1  # 보정 점수
+            reasons.append("📈 RSI > 70 but MACD 상승 + UPTREND → 진입 허용 가점+0.5")
+            signal_score += 0.5  # 보정 점수
         else:
             signal_score -= 2  # 감점 처리
             reasons.append("⚠️ RSI > 70 + 약한 패턴 → 진입 위험 → 감점 -2")
@@ -1055,7 +1055,8 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
    
     if stoch_rsi == 1.0:
         if trend == "UPTREND" and macd > 0:
-            reasons.append("🔄 Stoch RSI 과열이지만 상승추세 + MACD 양수 → 감점 생략")
+            signal_score -= 0.5
+            reasons.append("🟡 Stoch RSI 과열이지만 상승추세 + MACD 양수 → 조건부 감점 -0.5")
         else:
             signal_score -= 1
             reasons.append("🔴 Stoch RSI 1.0 → 극단적 과매수 → 피로감 주의 감점 -1")
