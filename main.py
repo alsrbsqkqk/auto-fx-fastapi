@@ -444,15 +444,15 @@ def additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, tre
             score += 2.5
             reasons.append("🟢 RSI 30 이하 ➝ BUY 반등 기대 가점+2.5")
         elif is_sell:
-            score -= 1.0
-            reasons.append("🔻 RSI 과매도 ➝ SELL 위험 감점 -1.0")
+            score -= 5.0
+            reasons.append("🔻 RSI 과매도 ➝ SELL 위험 감점 -5.0")
     elif rsi > 70:
         if is_sell:
             score += 1.5
             reasons.append("🔴 RSI 과매수 ➝ SELL 기회 가점+1.5")
         elif is_buy:
-            score -= 1.0
-            reasons.append("⚠️ RSI 과매수 ➝ BUY 위험 감점 -1.0")
+            score -= 5.0
+            reasons.append("⚠️ RSI 과매수 ➝ BUY 위험 감점 -5.0")
 
     # Stoch RSI
     if stoch_rsi < 0.1:
@@ -460,15 +460,15 @@ def additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, tre
             score += 1.5
             reasons.append("🟢 Stoch RSI < 0.1 ➝ BUY 반등 기대 가점+1.5")
         elif is_sell:
-            score -= 1.0
-            reasons.append("🔻 Stoch RSI 과매도 ➝ SELL 위험 감점 -1.0")
+            score -= 5.0
+            reasons.append("🔻 Stoch RSI 과매도 ➝ SELL 위험 감점 -5.0")
     elif stoch_rsi > 0.9:
         if is_sell:
             score += 1.5
             reasons.append("🔴 Stoch RSI 과매수 ➝ SELL 기회 가점+1.5")
         elif is_buy:
-            score -= 1.0
-            reasons.append("⚠️ Stoch RSI 과매수 ➝ BUY 피로감 감점 -1.0")
+            score -= 5.0
+            reasons.append("⚠️ Stoch RSI 과매수 ➝ BUY 피로감 감점 -5.0")
 
     # 1. MACD 정확한 약세 감점 강화
     macd_hist_strict = macd - macd_signal
@@ -2200,7 +2200,7 @@ def analyze_with_gpt(payload, current_price, pair):
                 "  • IL = (S × E × T) / (L × R): 직관도 논리/경험과 파악하고 전략과 경험 기반 도약도 반영하라.\\n\\n"
                 "(2) 거래는 기본적으로 1~2시간 내 청산을 목표로 하는 단타 트레이딩이다.\\n"
                 "- SL과 TP는 ATR 기준 가급적 최소 50% 이상 거리로 설정하되, 시간이 너무 오래 걸릴 것 같으면 무시해도 좋다.\\n"
-                "- 하지만 반드시 **현재가 기준으로 TP는 ±10 pip 이내**, SL은 ±13 pip 이내 범위에서 설정하라.\\n"
+                "- 하지만 반드시 **현재가 기준으로 TP는 ±10 pip 이내**, SL은 ±15 pip 이내 범위에서 설정하라.\\n"
                 "- 최근 5개 캔들의 고점/저점을 참고해서 너가 설정한 TP/SL이 **REASONABLE한지 꼭 검토**해.\\n"
                 "- TP:SL 비율은 1.4:1 이상이 이상적이며, 2:1을 이상적이지만 1.4:1 이상이면 진입 가능하다.\\n\\n"
                 "(3) 지지선(support), 저항선(resistance)은 최근 1시간봉 기준 마지막 6개 캔들의 고점/저점에서 계산되었고 이미 JSON에 포함되어 있다.\\n"
