@@ -444,15 +444,21 @@ def additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, tre
             score += 2.5
             reasons.append("🟢 RSI 30 이하 ➝ BUY 반등 기대 가점+2.5")
         elif is_sell:
-            score -= 5.0
-            reasons.append("🔻 RSI 과매도 ➝ SELL 위험 감점 -5.0")
+            score -= 2.5
+            reasons.append("🔻 RSI 과매도 → SELL 진입 주의 감점 -2.5")
+            if trend == "DOWNTREND":
+                score += 1.5
+                reasons.append("📉 RSI 과매도지만 하락 추세 지속 → 반등 우려 적음 가점 +1.5")
     elif rsi > 70:
         if is_sell:
             score += 1.5
             reasons.append("🔴 RSI 과매수 ➝ SELL 기회 가점+1.5")
         elif is_buy:
-            score -= 5.0
-            reasons.append("⚠️ RSI 과매수 ➝ BUY 위험 감점 -5.0")
+            score -= 2.5
+            reasons.append("⚠️ RSI 과매수 → BUY 위험 감점 -2.5")
+            if trend == "UPTREND":
+                score += 1.5
+                reasons.append("📈 RSI 과매수지만 상승 추세 지속 → 매수 우선 적용 가점 +1.5")
 
     # Stoch RSI
     if stoch_rsi < 0.1:
@@ -460,15 +466,21 @@ def additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, tre
             score += 1.5
             reasons.append("🟢 Stoch RSI < 0.1 ➝ BUY 반등 기대 가점+1.5")
         elif is_sell:
-            score -= 5.0
-            reasons.append("🔻 Stoch RSI 과매도 ➝ SELL 위험 감점 -5.0")
+            score -= 2.5
+            reasons.append("🔻 Stoch RSI 과매도 → SELL 주의 감점 -2.5")
+            if trend == "DOWNTREND":
+                score += 1.5
+                reasons.append("📉 Stoch RSI 과매도지만 하락 추세 지속 → 반등 가능성 낮음 가점 +1.5")
     elif stoch_rsi > 0.9:
         if is_sell:
             score += 1.5
             reasons.append("🔴 Stoch RSI 과매수 ➝ SELL 기회 가점+1.5")
         elif is_buy:
-            score -= 5.0
-            reasons.append("⚠️ Stoch RSI 과매수 ➝ BUY 피로감 감점 -5.0")
+            score -= 2.5
+            reasons.append("⚠️ Stoch RSI 과매수 → BUY 피로감 감점 -2.5")
+            if trend == "UPTREND":
+                score += 1.5
+                reasons.append("📈 Stoch RSI 과매수지만 상승 추세 지속 → BUY 지속 가능성 높음 +1.5")
 
     # 1. MACD 정확한 약세 감점 강화
     macd_hist_strict = macd - macd_signal
@@ -477,8 +489,8 @@ def additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, tre
             score -= 1.0
             reasons.append("⚠️ MACD 약세 전환 (신호선 하향 교차) → BUY 불리 감점 -1.0")
         else:
-            score -= 1.5
-            reasons.append("❌ MACD & 신호선 모두 0 이하 → 강한 하락 추세 감점 -1.5")
+            score -= 0.5
+            reasons.append("❌ MACD & 신호선 모두 0 이하 → 강한 하락 추세 감점 -0.5")
     elif macd > macd_signal:
         if macd < 0:
             score += 0.5
