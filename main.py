@@ -1304,7 +1304,7 @@ async def webhook(request: Request):
     news = fetch_forex_news()
     news_score, news_msg = news_risk_score(pair)
     high_low_analysis = analyze_highs_lows(candles)
-    atr = float(atr_series.iloc[-1])
+    atr = float(atr_series.dropna().iloc[-1]) if not atr_series.dropna().empty else 0.0
     fibo_levels = calculate_fibonacci_levels(candles["high"].max(), candles["low"].min())
     # 📌 현재가 계산
     price = current_price
@@ -1735,7 +1735,7 @@ def detect_box_breakout(candles, pair, box_window=10, box_threshold_pips=None):
 
     # ATR 기반 임계치 계산
     atr_series = calculate_atr(candles)
-    last_atr = float(atr_series.iloc[-1]) if not atr_series.empty else 0.0
+    last_atr = float(atr_series.dropna().iloc[-1]) if not atr_series.dropna().empty else 0.0
     thr = dynamic_thresholds(pair, last_atr)
 
     # 외부에서 임계치가 안 오면 동적값 사용
