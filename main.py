@@ -2333,7 +2333,7 @@ def log_trade_result(
     creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
     client = gspread.authorize(creds)
     sheet = client.open("민균 FX trading result").sheet1
-    now_atlanta = datetime.utcnow() - timedelta(hours=4)
+    now_atlanta = datetime.now(ZoneInfo("America/New_York"))
     if isinstance(price_movements, list):
         try:
             filtered_movements = [
