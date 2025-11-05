@@ -1,6 +1,7 @@
     # ⚠️ V2 업그레이드된 자동 트레이딩 스크립트 (학습 강화, 트렌드 보강, 시트 시간 보정 포함)
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from zoneinfo import ZoneInfo
 import os
 import requests
 import json
@@ -806,8 +807,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
         reasons.append("✅ 강한 하락추세 + 매도 캔들 패턴 일치 → 보너스 + 기회 점수 강화 가점 +1.5")
         
         # ✅ 거래 제한 시간 필터 (애틀랜타 기준)
-        now_utc = datetime.utcnow()
-        now_atlanta = now_utc - timedelta(hours=4)  # 애틀랜타는 UTC-4
+        now_atlanta = datetime.now(ZoneInfo("America/New_York"))
         
         atlanta_hour = now_atlanta.hour
         atlanta_minute = now_atlanta.minute
@@ -2155,8 +2155,7 @@ def analyze_with_gpt(payload, current_price, pair):
     dbg("gpt.enter", t=int(_t.time()*1000))
     # ✅ 거래 시간대 필터 추가
     from datetime import datetime, timedelta
-    now_utc = datetime.utcnow()
-    now_atlanta = now_utc - timedelta(hours=4)
+    now_atlanta = datetime.now(ZoneInfo("America/New_York"))
     atlanta_hour = now_atlanta.hour
 
     is_restricted = (
