@@ -1204,6 +1204,23 @@ def analyze_highs_lows(candles, window=20):
         "new_low": new_low
     }
 
+def summarize_recent_candle_flow(candles, window=20):
+    highs = candles['high'].tail(window).dropna()
+    lows = candles['low'].tail(window).dropna()
+    closes = candles['close'].tail(window).dropna()
+
+    if highs.empty or lows.empty or closes.empty:
+        return "최근 캔들 데이터 부족"
+
+    new_high = closes.iloc[-1] >= highs.max()
+    new_low = closes.iloc[-1] <= lows.min()
+    direction = "상승추세" if new_high else ("하락추세" if new_low else "횡보")
+
+    up_count = (closes.diff() > 0).sum()
+    down_count = (closes.diff() < 0).sum()
+
+    return f"최근 {window}개 캔들 기준 {direction}, 상승:{up_count}개, 하락:{down_count}개"
+
 @app.post("/webhook")
 async def webhook(request: Request):
     print("✅ STEP 1: 웹훅 진입")
@@ -2182,6 +2199,7 @@ def analyze_with_gpt(payload, current_price, pair):
     headers = OPENAI_HEADERS
     score = payload.get("score", 0)
     signal_score = payload.get("signal_score", 0)
+    recent_candle_summary = summarize_recent_candle_flow(candles)
     reasons = payload.get("reasons", [])
     recent_rsi_values = payload.get("recent_rsi_values", [])
     recent_macd_values = payload.get("recent_macd_values", [])
@@ -2227,6 +2245,7 @@ def analyze_with_gpt(payload, current_price, pair):
                 "- 아래는 멀티타임프레임(M30, H1, H4) 기준 요약 정보이다. 각 시간대별 추세가 일치하면 강한 확신으로 간주하고, 상반된 경우 보수적으로 판단하라:\\n"
                 f"📌 시스템 스코어: {score}, 신호 스코어: {signal_score}\n"
                 f"📎 점수 산정 근거 (reasons):\n" + "\n".join([f"- {r}" for r in reasons]) + "\n\n"
+                f"🕯️ 최근 캔들 흐름 요약: {recent_candle_summary}\n\n" +
                 "📊 MTF 요약:\\n"
                 f"{summarize_mtf_indicators(mtf_indicators)}\n\n" +
                 "📉 RSI: {rsi_trend}, 📈 MACD: {macd_trend}, 🔄 Stoch RSI: {stoch_rsi_trend}\\n" +
