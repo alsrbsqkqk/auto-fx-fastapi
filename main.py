@@ -2180,7 +2180,9 @@ def analyze_with_gpt(payload, current_price, pair):
         return "GPT 응답 없음(쿨다운)"
     gpt_rate_gate()  # 3-b: 계정 단위 슬롯 대기
     headers = OPENAI_HEADERS
-
+    score = payload.get("score", 0)
+    signal_score = payload.get("signal_score", 0)
+    reasons = payload.get("reasons", [])
     recent_rsi_values = payload.get("recent_rsi_values", [])
     recent_macd_values = payload.get("recent_macd_values", [])
     recent_stoch_rsi_values = payload.get("recent_stoch_rsi_values", [])
@@ -2223,8 +2225,10 @@ def analyze_with_gpt(payload, current_price, pair):
                 "(4) 추세 판단 시 캔들 패턴뿐 아니라 보조지표(RSI, MACD, Stoch RSI)의 **방향성과 강도**를 반드시 함께 고려하라.\\n"
                 "- 특히 보조지표의 최근 14봉 흐름 분석은 핵심 판단 자료다.\\n"
                 "- 아래는 멀티타임프레임(M30, H1, H4) 기준 요약 정보이다. 각 시간대별 추세가 일치하면 강한 확신으로 간주하고, 상반된 경우 보수적으로 판단하라:\\n"
+                f"📌 시스템 스코어: {score}, 신호 스코어: {signal_score}\n"
+                f"📎 점수 산정 근거 (reasons):\n" + "\n".join([f"- {r}" for r in reasons]) + "\n\n"
                 "📊 MTF 요약:\\n"
-                 f"{summarize_mtf_indicators(mtf_indicators)}\n\n" +
+                f"{summarize_mtf_indicators(mtf_indicators)}\n\n" +
                 "📉 RSI: {rsi_trend}, 📈 MACD: {macd_trend}, 🔄 Stoch RSI: {stoch_rsi_trend}\\n" +
                 "📊 아래는 RSI, MACD, Stoch RSI의 최근 14개 수치야. 이를 기반으로 추세를 요약해줘.\\n" +
                 f"↪️ RSI: {recent_rsi_values}\\n" +
