@@ -1566,7 +1566,7 @@ async def webhook(request: Request):
         should_execute = True
         
     if should_execute:
-        units = 200000 if final_decision == "BUY" else -200000
+        units = 150000 if final_decision == "BUY" else -150000
         digits = 3 if pair.endswith("JPY") else 5
 
         
