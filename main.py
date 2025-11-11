@@ -708,8 +708,8 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
 
     # RSI 중립 구간 (45~55) → 추세 애매로 감점
     if 45 <= rsi <= 55:
-        score -= 2
-        reasons.append("⚠️ RSI 중립 구간 ➔ 추세 애매 → 진입 신호 약화 (감점-2)")
+        score -= 1
+        reasons.append("⚠️ RSI 중립 구간 ➔ 추세 애매 → 진입 신호 약화 (감점-1)")
 
     if rsi > 40 and stoch_rsi > 0.4 and macd < macd_signal and trend != "UPTREND":
         score -= 1.0
