@@ -1395,7 +1395,7 @@ async def webhook(request: Request):
     gpt_raw = None
     raw_text = ""  # ✅ 조건문 전에 미리 초기화
     if signal_score >= 4.0:
-        gpt_raw = analyze_with_gpt(payload, price, pair)
+        gpt_raw = analyze_with_gpt(payload, price, pair, candles)
         print("✅ STEP 6: GPT 응답 수신 완료")
         # ✅ 추가: 파싱 결과 강제 정규화 (대/소문자/공백/이상값 방지)
         raw_text = (
@@ -2167,7 +2167,7 @@ def adjust_tp_sl_for_structure(pair, entry, tp, sl, support, resistance, atr):
 
     digits = 3 if pair.endswith("JPY") else 5
     return round(tp, digits), round(sl, digits)   
-def analyze_with_gpt(payload, current_price, pair):
+def analyze_with_gpt(payload, current_price, pair, candles):
     global _gpt_cooldown_until, _gpt_last_ts
     dbg("gpt.enter", t=int(_t.time()*1000))
     # ✅ 거래 시간대 필터 추가
