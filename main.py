@@ -813,17 +813,17 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
         atlanta_minute = now_atlanta.minute
         
         # ❌ 거래 금지 시간대 정의
-        is_restricted = (
-            (3 <= atlanta_hour < 5) or  # 새벽 3~5시
-            (atlanta_hour == 11) or  # 오전 11시부터 오후 2시
-            (atlanta_hour == 12) or  # 
-            (13 <= atlanta_hour < 14) or  # 
-            (16 <= atlanta_hour < 19)  # 오후 4시부터 오후 7시
-        )
+        #is_restricted = (
+        #    (3 <= atlanta_hour < 5) or  # 새벽 3~5시
+        #    (atlanta_hour == 11) or  # 오전 11시부터 오후 2시
+        #    (atlanta_hour == 12) or  # 
+        #    (13 <= atlanta_hour < 14) or  # 
+        #    (16 <= atlanta_hour < 19)  # 오후 4시부터 오후 7시
+        #)
         
-        if is_restricted:
-            print("❌ 현재 시간은 거래 제한 시간대입니다. GPT 호출 생략")
-            return 0, reasons
+        #if is_restricted:
+        #    print("❌ 현재 시간은 거래 제한 시간대입니다. GPT 호출 생략")
+        #    return 0, reasons
 
 
     
@@ -2175,13 +2175,13 @@ def analyze_with_gpt(payload, current_price, pair, candles):
     now_atlanta = datetime.now(ZoneInfo("America/New_York"))
     atlanta_hour = now_atlanta.hour
 
-    is_restricted = (
-        (3 <= atlanta_hour < 5) or
-        (atlanta_hour == 11) or
-        (atlanta_hour == 12) or
-        (13 <= atlanta_hour < 14) or
-        (16 <= atlanta_hour < 19)
-    )
+    #is_restricted = (
+    #    (3 <= atlanta_hour < 5) or
+    #    (atlanta_hour == 11) or
+    #    (atlanta_hour == 12) or
+    #    (13 <= atlanta_hour < 14) or
+    #    (16 <= atlanta_hour < 19)
+    #)
 
     if is_restricted:
         print("🚫 현재 시간은 거래 제한 시간대입니다. GPT 호출을 건너뜁니다.")
