@@ -1405,8 +1405,9 @@ async def webhook(request: Request):
         )
         print(f"📄 GPT Raw Response: {raw_text!r}")
         gpt_feedback = raw_text
-        if final_decision not in ["BUY", "SELL"]: # 아직 결정이 없거나 WAIT일 때만 새로 할당
-            final_decision, tp, sl = parse_gpt_feedback(raw_text) if raw_text else ("WAIT", None, None)
+        parsed_decision, tp, sl = parse_gpt_feedback(raw_text) if raw_text else ("WAIT", None, None)
+        if final_decision not in ["BUY", "SELL"]:
+            final_decision = parsed_decision
             final_tp = tp
             final_sl = sl
         else:
