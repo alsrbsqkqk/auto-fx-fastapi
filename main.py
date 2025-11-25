@@ -2034,6 +2034,12 @@ def parse_gpt_feedback(text):
             sl = safe_float(data.get("sl"))
             print(f"[DEBUG] JSON 추출 성공: decision={final_decision}, tp={tp}, sl={sl}")
             print(f"[TRACE] 최종 판단 결과: final_decision={final_decision}, tp={tp}, sl={sl}")  # ← 추가
+            # ⛔️ 파싱 실패 시 강제 초기화
+            if final_decision not in ["BUY", "SELL"]:
+                final_decision = "WAIT"
+                tp = None
+                sl = None
+            
             return final_decision, tp, sl
 
     except Exception as e:
