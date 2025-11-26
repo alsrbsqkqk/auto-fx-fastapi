@@ -1689,7 +1689,7 @@ def summarize_mtf_indicators(mtf_data):
     return summary  # ✅ 문자열이 아닌 JSON 딕셔너리 그대로 반환
 
 def get_candles(pair, granularity, count):
-    url = f"https://api-fxpractice.oanda.com/v3/instruments/{pair}/candles"
+    url = f"https://api-fxtrade.oanda.com/v3/instruments/{pair}/candles"
     headers = {"Authorization": f"Bearer {OANDA_API_KEY}"}
     params = {"granularity": granularity, "count": count, "price": "M"}
     
@@ -1934,7 +1934,7 @@ def fetch_and_score_forex_news(pair):
 
 
 def place_order(pair, units, tp, sl, digits):
-    url = f"https://api-fxpractice.oanda.com/v3/accounts/{ACCOUNT_ID}/orders"
+    url = f"https://api-fxtrade.oanda.com/v3/accounts/{ACCOUNT_ID}/orders"
     headers = {
         "Authorization": f"Bearer {OANDA_API_KEY}",
         "Content-Type": "application/json"
