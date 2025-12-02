@@ -506,8 +506,8 @@ def additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, tre
             score += 0.0
             reasons.append("📉 Stoch RSI 극단적 과매도이나 하락 추세 지속 → 반등 제한 가점 +0.0")
         else:
-            score += 2.0
-            reasons.append("🟢 Stoch RSI 과매도 → 반등 기대 가점 +2.0")
+            score += 1.0
+            reasons.append("🟢 Stoch RSI 과매도 → 반등 기대 가점 +1.0")
     
     # 기존 is_buy/is_sell 판단 유지 시 아래 보강 가능
     if is_buy and macd < macd_signal and macd > 0:
@@ -2245,8 +2245,8 @@ def analyze_with_gpt(payload, current_price, pair, candles):
                 "- TP:SL 비율은 1.4:1 이상이 이상적이며, 2:1을 이상적이지만 1.4:1 이상이면 진입 가능하다.\\n\\n"
                 "(3) 지지선(support), 저항선(resistance)은 최근 1시간봉 기준 마지막 6개 캔들의 고점/저점에서 계산되었고 이미 JSON에 포함되어 있다.\\n"
                 "  • 현재가: {current_price}, 지지선: {support}, 저항선: {resistance}\\n"
-                "- TP/SL 설정 시 support와 resistance는 참고만 하되, TP는 반드시 현재가로부터 ±10 pip 이내여야 하며 이 기준을 벗어나면 안 된다.\\n"
-                "- BUY 결정이면 TP는 현재가보다 높고 SL은 낮아야 하며, SELL 결정이면 TP는 낮고 SL은 높아야 한다. 이 규칙을 어기면 거래가 취소되므로 반드시 지켜야 한다.\\n\\n"
+                "- TP/SL 설정 시 support와 resistance는 참고만 하되, TP는 반드시 현재가로부터 ±10 pip 이내여야 하며 이 기준을 벗어나면 안된다.\\n"
+                "- BUY 결정이면 TP는 현재가보다 높고 SL은 낮아야 하며, SELL 결정이면 TP는 낮고 SL은 높아야 한다. USD/JPY는 pip 단위가 소수점 둘째 자리입니다. TP와 SL은 반드시 이 기준으로 계산하세요. 이 규칙을 어기면 거래가 취소되므로 반드시 지켜야 한다.\\n\\n"
                 "(4) 추세 판단 시 캔들 패턴뿐 아니라 보조지표(RSI, MACD, Stoch RSI, 볼린저밴드)의 **방향성과 강도**를 반드시 함께 고려하라.\\n"
                 "- 특히 보조지표의 최근 14봉 흐름 분석은 핵심 판단 자료다. 반드시 함께 고려해라\\n"
                 "- 아래는 멀티타임프레임(M30, H1, H4) 기준 요약 정보이다. 각 시간대별 추세가 일치하면 강한 확신으로 간주하고, 상반된 경우 보수적으로 판단하라:\\n"
