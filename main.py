@@ -1390,9 +1390,9 @@ async def webhook(request: Request):
     allow_conditional_trade = time_since_last > timedelta(hours=2)
 
     strategy_thresholds = {
-    "Balance breakout": 2.0,
-    "SELL_ONLY_BREAKOUT_ENGULFING_11252025": 4.0,
-    "BUY_ONLY_BREAKOUT_ENGULFING_11252025": 4.0,
+    "Balance breakout": 4.0,
+    "SELL_ONLY_BREAKOUT_ENGULFING_11252025": 3.0,
+    "BUY_ONLY_BREAKOUT_ENGULFING_11252025": 3.0,
     }
 
     alert_data = payload.get("alert_data", {})
@@ -2187,22 +2187,21 @@ def adjust_tp_sl_for_structure(pair, entry, tp, sl, support, resistance, atr):
 def analyze_with_gpt(payload, current_price, pair, candles):
     global _gpt_cooldown_until, _gpt_last_ts
     dbg("gpt.enter", t=int(_t.time()*1000))
-    # ✅ 거래 시간대 필터 추가
+    ✅ 거래 시간대 필터 추가
     from datetime import datetime, timedelta
     now_atlanta = datetime.now(ZoneInfo("America/New_York"))
     atlanta_hour = now_atlanta.hour
 
-    #is_restricted = (
-    #    (3 <= atlanta_hour < 5) or
-    #    (atlanta_hour == 11) or
-    #    (atlanta_hour == 12) or
-    #    (13 <= atlanta_hour < 14) or
-    #    (16 <= atlanta_hour < 19)
-    #)
+    is_restricted = (
+        (3 <= atlanta_hour < 5) or
+        (atlanta_hour == 11) or
+        (atlanta_hour == 12) or
+        (13 <= atlanta_hour < 14) 
+    )
 
-    #if is_restricted:
-    #    print("🚫 현재 시간은 거래 제한 시간대입니다. GPT 호출을 건너뜁니다.")
-    #   return "🚫 GPT 호출 스킵됨 (거래 제한 시간대)"
+    if is_restricted:
+        print("🚫 현재 시간은 거래 제한 시간대입니다. GPT 호출을 건너뜁니다.")
+       return "🚫 GPT 호출 스킵됨 (거래 제한 시간대)"
 
 
     
