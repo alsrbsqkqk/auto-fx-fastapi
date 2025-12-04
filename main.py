@@ -2187,7 +2187,7 @@ def adjust_tp_sl_for_structure(pair, entry, tp, sl, support, resistance, atr):
 def analyze_with_gpt(payload, current_price, pair, candles):
     global _gpt_cooldown_until, _gpt_last_ts
     dbg("gpt.enter", t=int(_t.time()*1000))
-    ✅ 거래 시간대 필터 추가
+    #✅ 거래 시간대 필터 추가
     from datetime import datetime, timedelta
     now_atlanta = datetime.now(ZoneInfo("America/New_York"))
     atlanta_hour = now_atlanta.hour
