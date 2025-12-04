@@ -1389,12 +1389,21 @@ async def webhook(request: Request):
     time_since_last = datetime.utcnow() - recent_trade_time if recent_trade_time else timedelta(hours=999)
     allow_conditional_trade = time_since_last > timedelta(hours=2)
 
+    strategy_thresholds = {
+    "Balance breakout": 2.0,
+    "SELL_ONLY_BREAKOUT_ENGULFING_11252025": 4.0,
+    "BUY_ONLY_BREAKOUT_ENGULFING_11252025": 4.0,
+    }
+    
+    strategy_name = alert_data.get("strategy_name") or alert_data.get("alert_name", "")
+    threshold = strategy_thresholds.get(strategy_name, 2.0)
+    
     gpt_feedback = "GPT 분석 생략: 점수 미달"
     decision, tp, sl = None, None, None  
     final_decision, final_tp, final_sl = None, None, None
     gpt_raw = None
     raw_text = ""  # ✅ 조건문 전에 미리 초기화
-    if signal_score >= 2.0:
+    if signal_score >= threshold:
         gpt_raw = analyze_with_gpt(payload, price, pair, candles)
         print("✅ STEP 6: GPT 응답 수신 완료")
         # ✅ 추가: 파싱 결과 강제 정규화 (대/소문자/공백/이상값 방지)
