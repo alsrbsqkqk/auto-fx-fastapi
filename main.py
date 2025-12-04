@@ -1394,7 +1394,8 @@ async def webhook(request: Request):
     "SELL_ONLY_BREAKOUT_ENGULFING_11252025": 4.0,
     "BUY_ONLY_BREAKOUT_ENGULFING_11252025": 4.0,
     }
-    
+
+    alert_data = payload.get("alert_data", {})
     strategy_name = alert_data.get("strategy_name") or alert_data.get("alert_name", "")
     threshold = strategy_thresholds.get(strategy_name, 2.0)
     
