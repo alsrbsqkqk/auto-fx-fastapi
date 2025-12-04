@@ -2201,7 +2201,7 @@ def analyze_with_gpt(payload, current_price, pair, candles):
 
     if is_restricted:
         print("🚫 현재 시간은 거래 제한 시간대입니다. GPT 호출을 건너뜁니다.")
-       return "🚫 GPT 호출 스킵됨 (거래 제한 시간대)"
+        return "🚫 GPT 호출 스킵됨 (거래 제한 시간대)"
 
 
     
