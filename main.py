@@ -1404,26 +1404,22 @@ async def webhook(request: Request):
     final_decision, final_tp, final_sl = None, None, None
     gpt_raw = None
     raw_text = ""  # ✅ 조건문 전에 미리 초기화
-
+    if signal_score >= threshold:
         gpt_raw = analyze_with_gpt(payload, price, pair, candles)
         print("✅ STEP 6: GPT 응답 수신 완료")
         # ✅ 추가: 파싱 결과 강제 정규화 (대/소문자/공백/이상값 방지)
         raw_text = (
             gpt_raw if isinstance(gpt_raw, str)
             else json.dumps(gpt_raw, ensure_ascii=False)
-            if isinstance(gpt_raw, dict)
-            else str(gpt_raw)
+            if isinstance(gpt_raw, dict) else str(gpt_raw)
         )
         print(f"📄 GPT Raw Response: {raw_text!r}")
         gpt_feedback = raw_text
-
         parsed_decision, tp, sl = parse_gpt_feedback(raw_text) if raw_text else ("WAIT", None, None)
-
-        if signal_score >= threshold:        
-            if final_decision not in ["BUY", "SELL"]:
-                final_decision = parsed_decision
-                final_tp = tp
-                final_sl = sl
+        if final_decision not in ["BUY", "SELL"]:
+            final_decision = parsed_decision
+            final_tp = tp
+            final_sl = sl
         else:
             print(f"[INFO] 기존 결정 유지: {final_decision}, tp={tp}, sl={sl}")
         # ✅ 대신 아래처럼 명확히 처리
