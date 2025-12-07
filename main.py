@@ -1451,18 +1451,6 @@ async def webhook(request: Request):
             final_tp = None
             final_sl = None
 
-        log_trade_result(
-            pair=pair,
-            signal=signal_score,
-            score=signal_score,
-            result=final_decision,
-            tp=final_tp,
-            sl=final_sl,
-            strategy_name=strategy_name,
-            gpt_feedback_dup=raw_text
-        )
-
-
     result = gpt_raw or ""
 
     # GPT 텍스트 추출(반환 키 다양성 대비)
