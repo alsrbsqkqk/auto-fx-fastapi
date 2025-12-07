@@ -1389,12 +1389,22 @@ async def webhook(request: Request):
     time_since_last = datetime.utcnow() - recent_trade_time if recent_trade_time else timedelta(hours=999)
     allow_conditional_trade = time_since_last > timedelta(hours=2)
 
+    strategy_thresholds = {
+    "Balance breakout": 4.0,
+    "SELL_ONLY_BREAKOUT_ENGULFING_11252025": 2.5,
+    "BUY_ONLY_BREAKOUT_ENGULFING_11252025": 2.5,
+    }
+
+    alert_data = payload.get("alert_data", {})
+    strategy_name = alert_data.get("strategy_name") or alert_data.get("alert_name", "")
+    threshold = strategy_thresholds.get(strategy_name, 2.0)
+    
     gpt_feedback = "GPT 분석 생략: 점수 미달"
     decision, tp, sl = None, None, None  
     final_decision, final_tp, final_sl = None, None, None
     gpt_raw = None
     raw_text = ""  # ✅ 조건문 전에 미리 초기화
-    if signal_score >= 3.0:
+    if signal_score >= threshold:
         gpt_raw = analyze_with_gpt(payload, price, pair, candles)
         print("✅ STEP 6: GPT 응답 수신 완료")
         # ✅ 추가: 파싱 결과 강제 정규화 (대/소문자/공백/이상값 방지)
@@ -1429,12 +1439,28 @@ async def webhook(request: Request):
             else:
                 print(f"[⚠️SKIP] GPT 피드백 무시됨 - 불충분한 조건: {parsed_decision}, tp={parsed_tp}, sl={parsed_sl}")
     else:
-        print("🚫 GPT 분석 생략: 점수 3.0점 미만")
+        print("🚫 GPT 분석 생략: 점수 2.0점 미만")
         print("🔎 GPT 분석 상세 로그")
         print(f" - GPT Raw (일부): {raw_text[:150]}...")  # 응답 일부만 잘라서 표시
         print(f" - Parsed Decision: {decision}, TP: {tp}, SL: {sl}")
         print(f" - 최종 점수: {signal_score}")
         print(f" - 트리거 사유 목록: {reasons}")
+
+        if final_decision is None:
+            final_decision = "SKIPPED_BY_THRESHOLD"
+            final_tp = None
+            final_sl = None
+
+        log_trade_result(
+            pair=pair,
+            signal=signal_score,
+            score=signal_score,
+            result=final_decision,
+            tp=final_tp,
+            sl=final_sl,
+            strategy_name=strategy_name,
+            gpt_feedback_dup=raw_text
+        )
 
 
     result = gpt_raw or ""
@@ -1553,7 +1579,7 @@ async def webhook(request: Request):
     should_execute = False
     
     # 1️⃣ 기본 진입 조건: GPT가 BUY/SELL 판단 + 점수 2.0점 이상
-    if final_decision in ["BUY", "SELL"] and signal_score >= 3.0:
+    if final_decision in ["BUY", "SELL"] and signal_score >= 2.0:
         # ✅ RSI 극단값 필터: BUY가 과매수 / SELL이 과매도이면 진입 차단
         if False and ((final_decision == "BUY" and rsi.iloc[-1] > 85) or (final_decision == "SELL" and rsi.iloc[-1] < 20)):
             reasons.append(f"❌ RSI 극단값으로 진입 차단: {decision} @ RSI {rsi.iloc[-1]:.2f}")
@@ -2177,22 +2203,21 @@ def adjust_tp_sl_for_structure(pair, entry, tp, sl, support, resistance, atr):
 def analyze_with_gpt(payload, current_price, pair, candles):
     global _gpt_cooldown_until, _gpt_last_ts
     dbg("gpt.enter", t=int(_t.time()*1000))
-    # ✅ 거래 시간대 필터 추가
+    #✅ 거래 시간대 필터 추가
     from datetime import datetime, timedelta
     now_atlanta = datetime.now(ZoneInfo("America/New_York"))
     atlanta_hour = now_atlanta.hour
 
-    #is_restricted = (
-    #    (3 <= atlanta_hour < 5) or
-    #    (atlanta_hour == 11) or
-    #    (atlanta_hour == 12) or
-    #    (13 <= atlanta_hour < 14) or
-    #    (16 <= atlanta_hour < 19)
-    #)
+    is_restricted = (
+        (3 <= atlanta_hour < 5) or
+        (atlanta_hour == 11) or
+        (atlanta_hour == 12) or
+        (13 <= atlanta_hour < 14) 
+    )
 
-    #if is_restricted:
-    #    print("🚫 현재 시간은 거래 제한 시간대입니다. GPT 호출을 건너뜁니다.")
-    #   return "🚫 GPT 호출 스킵됨 (거래 제한 시간대)"
+    if is_restricted:
+        print("🚫 현재 시간은 거래 제한 시간대입니다. GPT 호출을 건너뜁니다.")
+        return "🚫 GPT 호출 스킵됨 (거래 제한 시간대)"
 
 
     
@@ -2240,7 +2265,7 @@ def analyze_with_gpt(payload, current_price, pair, candles):
                 "- SL과 TP는 ATR 기준 가급적 최소 50% 이상 거리로 설정하되, 시간이 너무 오래 걸릴 것 같으면 무시해도 좋다.\\n"
                 "- 하지만 반드시 **현재가 기준으로 TP는 ±10 pip 이내**, SL은 반드시 꼭 최근 ATR의 최소 1.3배 이상으로 설정하라 어떻게 계산했는지도 보여줘. 예외는 없다 그렇지 않으면 시장 변동성 대비 손실 확률이 급격히 높아진다.\\n"
                 "- 최근 5개 캔들의 고점/저점을 참고해서 너가 설정한 TP/SL이 **REASONABLE한지 꼭 검토**해.\\n"
-                "- RSI가 60 이상이고 Stoch RSI가 0.9 이상이며, 가격이 볼린저밴드 상단에 근접한 경우에는 'BUY 피로감'으로 간주해 'WAIT'을 좀 더 고려해라.\\n"
+                "- RSI가 60 이상이고 Stoch RSI가 0.8 이상이며, 가격이 볼린저밴드 상단에 근접한 경우에는 'BUY 피로감'으로 간주해 'WAIT'을 좀 더 고려해라.\\n"
                 "- RSI가 40 이하이고 Stoch RSI가 0.1 이하이며, 가격이 볼린저밴드 하단에 근접한 경우에는 'SELL 피로감'으로 간주해'WAIT'을 좀 더 고려해라.\\n"
                 "- TP:SL 비율은 1.4:1 이상이 이상적이며, 2:1을 이상적이지만 1.4:1 이상이면 진입 가능하다.\\n\\n"
                 "(3) 지지선(support), 저항선(resistance)은 최근 1시간봉 기준 마지막 6개 캔들의 고점/저점에서 계산되었고 이미 JSON에 포함되어 있다.\\n"
@@ -2250,7 +2275,7 @@ def analyze_with_gpt(payload, current_price, pair, candles):
                 "- SELL 결정일 경우 TP는 반드시 현재가보다 낮은 가격(하방)에, SL은 반드시 현재가보다 높은 가격(상방)에 설정해야 한다.\\n"
                 "- 이 규칙은 예외 없이 무조건 지켜야 하며, 이를 위반하는 TP 또는 SL을 생성하는 것은 허용되지 않는다.\\n"
                 "- GPT는 BUY/SELL 방향을 기준으로 TP/SL의 방향을 항상 먼저 판단한 후 값(pip 거리)을 계산해야 한다.\\n"
-                "- USD/JPY는 pip 단위가 소수점 둘째 자리입니다. TP와 SL은 반드시 이 기준으로 계산하세요. 이 규칙을 어기면 거래가 취소되므로 반드시 지켜야 한다.\\n\\n"
+                "- USD/JPY는 pip 단위가 소수점 둘째 자리입니다. TP와 SL은 반드시 이 기준으로 계산하세요. 이 규칙을 어기면 거래가 취소되므로 반드시 지켜야 한다. 예를들면 sell 거래의 진입가가 155.015라면 TP는 154.915가 10pip차이이다 \\n\\n"
                 "(4) 추세 판단 시 캔들 패턴뿐 아니라 보조지표(RSI, MACD, Stoch RSI, 볼린저밴드)의 **방향성과 강도**를 반드시 함께 고려하라.\\n"
                 "- 특히 보조지표의 최근 14봉 흐름 분석은 핵심 판단 자료다. 반드시 함께 고려해라\\n"
                 "- 아래는 멀티타임프레임(M30, H1, H4) 기준 요약 정보이다. 각 시간대별 추세가 일치하면 강한 확신으로 간주하고, 상반된 경우 보수적으로 판단하라:\\n"
