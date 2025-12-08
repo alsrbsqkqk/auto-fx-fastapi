@@ -97,7 +97,7 @@ def _save_rate_headers(h: dict) -> None:
         pass
         
 # === OpenAI 공통 설정 & 세션 ===
-OPENAI_URL = "https://api.openai.com/v1/chat/completions"
+OPENAI_URL = "https://api.openai.com/v1/responses"
 OPENAI_HEADERS = {
     "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
     "Content-Type": "application/json",
@@ -2304,7 +2304,7 @@ def analyze_with_gpt(payload, current_price, pair, candles):
     ]
 
     # 2-c) 요청 바이트 수 로깅 (선택)
-    body = {"model": "gpt-4o-latest", "messages": messages, "temperature": 0.3, "max_tokens": 800}
+    body = {"model": "gpt-4o-latest", "input": messages, "temperature": 0.3, "max_output_tokens": 800}
     need_tokens = _approx_tokens(messages)
     _preflight_gate(need_tokens)   # 요청 직전 선대기
     try:
