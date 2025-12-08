@@ -2311,7 +2311,7 @@ def analyze_with_gpt(payload, current_price, pair, candles):
         _bytes = len(json.dumps(payload, ensure_ascii=False))
     except Exception:
         _bytes = -1
-    dbg("gpt.body", bytes=_bytes, max_tokens=body.get("max_tokens"))
+    dbg("gpt.body", bytes=_bytes, max_tokens=body.get("max_output_tokens"))
 
 
     # 2-d) 최소 스로틀: 같은 프로세스에서 1.2초(또는 네가 정한 값) 간격 보장
