@@ -2333,8 +2333,21 @@ def analyze_with_gpt(payload, current_price, pair, candles):
         )
         r.raise_for_status()  # HTTP 에러 체크
         data = r.json()
-        text = (data.get("choices", [{}])[0].get("message", {}).get("content", "") or "").strip()
-        print(f"📩 GPT 원문 응답: {text[:500]}...")  # 앞 500자만 출력
+        
+        output_blocks = data.get("output", [])
+        
+        text = ""
+        for block in output_blocks:
+            if block.get("role") == "assistant":
+                for c in block.get("content", []):
+                    if c.get("type") == "output_text":
+                        text = c.get("text", "")
+                        break
+                if text:
+                    break
+        
+        text = (text or "").strip()
+        print(f"📩 GPT 원문 응답: {text[:500]}...")
         return text if text else "GPT 응답 없음"
 
     except requests.exceptions.Timeout:
