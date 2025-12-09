@@ -2339,11 +2339,18 @@ def analyze_with_gpt(payload, current_price, pair, candles):
         
         text = ""
         for block in output_blocks:
-            if block.get("type") == "output_text":
-                text = block.get("text", "")
-                break
+            # 1) assistant 메시지 찾기
+            if block.get("role") == "assistant":
+                # 2) 그 안에서 output_text 찾기
+                for c in block.get("content", []):
+                    if c.get("type") == "output_text":
+                        text = c.get("text", "")
+                        break
+                if text:
+                    break
         
         text = (text or "").strip()
+        print(f"📩 GPT 원문 응답: {text[:500]}...")
         return text if text else "GPT 응답 없음"
 
     except requests.exceptions.Timeout:
