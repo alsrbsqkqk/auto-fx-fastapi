@@ -2304,7 +2304,7 @@ def analyze_with_gpt(payload, current_price, pair, candles):
     ]
 
     # 2-c) 요청 바이트 수 로깅 (선택)
-    body = {"model": "gpt-4o-latest", "input": messages, "temperature": 0.3, "max_output_tokens": 800}
+    body = {"model": "gpt-4o", "input": messages, "temperature": 0.3, "max_output_tokens": 800}
     need_tokens = _approx_tokens(messages)
     _preflight_gate(need_tokens)   # 요청 직전 선대기
     try:
