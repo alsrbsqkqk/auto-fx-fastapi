@@ -14,6 +14,7 @@ import threading
 import ta
 import time as _t
 import math
+print("🔥 CURRENT OPENAI KEY:", os.getenv("OPENAI_API_KEY"))
 _gpt_lock = threading.Lock()
 _gpt_last_ts = 0.0
 _gpt_cooldown_until = 0.0
