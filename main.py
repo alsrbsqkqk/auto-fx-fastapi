@@ -102,6 +102,7 @@ OPENAI_URL = "https://api.openai.com/v1/responses"
 OPENAI_HEADERS = {
     "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
     "Content-Type": "application/json",
+    "OpenAI-Beta": "responses=v1"   # ← 이 줄 추가 (필수)
 }
 _openai_sess = requests.Session()  # keep-alive로 커넥션 재사용 (429 억제에 도움)
 
