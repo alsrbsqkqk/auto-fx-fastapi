@@ -1979,8 +1979,6 @@ def place_order(pair, units, tp, sl, digits):
             "raw": j
         }
     except requests.exceptions.RequestException as e:
-        print("🔴 OpenAI error body:", r.text if 'r' in locals() else "(no response)")
-        dbg("gpt.error", msg=str(e))
         return {"status": "error", "message": str(e)}
 
 import re, json
@@ -2342,6 +2340,7 @@ def analyze_with_gpt(payload, current_price, pair, candles):
             json=body,
             timeout=90,
         )
+        print("❌ OpenAI error body:", r.text)
         r.raise_for_status()  # HTTP 에러 체크
         data = r.json()
         
