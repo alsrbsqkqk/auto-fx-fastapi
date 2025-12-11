@@ -2307,7 +2307,7 @@ def analyze_with_gpt(payload, current_price, pair, candles):
     
     # 2-c) 요청 바이트 수 로깅 (선택)
     body = {
-        "model": "gpt-4o",
+        "model": "gpt-4o-2024-11-20",
         "input": prompt_text,    
         "temperature": 0.3,
         "max_output_tokens": 800,
