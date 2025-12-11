@@ -2303,12 +2303,11 @@ def analyze_with_gpt(payload, current_price, pair, candles):
             "content": json.dumps(payload, ensure_ascii=False)
         }
     ]
-    prompt_text = messages[-1]["content"]
     
     # 2-c) 요청 바이트 수 로깅 (선택)
     body = {
         "model": "gpt-4o-2024-11-20",
-        "input": prompt_text,    
+        "input": messages,    
         "temperature": 0.3,
         "max_output_tokens": 800,
     
