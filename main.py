@@ -102,7 +102,6 @@ OPENAI_URL = "https://api.openai.com/v1/responses"
 OPENAI_HEADERS = {
     "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
     "Content-Type": "application/json",
-    "OpenAI-Beta": "responses=v1"   # ← 이 줄 추가 (필수)
 }
 _openai_sess = requests.Session()  # keep-alive로 커넥션 재사용 (429 억제에 도움)
 
@@ -1980,6 +1979,8 @@ def place_order(pair, units, tp, sl, digits):
             "raw": j
         }
     except requests.exceptions.RequestException as e:
+        print("🔴 OpenAI error body:", r.text if 'r' in locals() else "(no response)")
+        dbg("gpt.error", msg=str(e))
         return {"status": "error", "message": str(e)}
 
 import re, json
@@ -2304,11 +2305,12 @@ def analyze_with_gpt(payload, current_price, pair, candles):
             "content": json.dumps(payload, ensure_ascii=False)
         }
     ]
-
+    prompt_text = messages[-1]["content"]
+    
     # 2-c) 요청 바이트 수 로깅 (선택)
     body = {
         "model": "gpt-4o",
-        "messages": messages,           # ← 핵심 수정
+        "input": prompt_text,    
         "temperature": 0.3,
         "max_output_tokens": 800,
     
