@@ -1391,14 +1391,14 @@ async def webhook(request: Request):
     allow_conditional_trade = time_since_last > timedelta(hours=2)
 
     strategy_thresholds = {
-    "Balance breakout": 4.0,
-    "SELL_ONLY_BREAKOUT_ENGULFING_11252025": 2.5,
-    "BUY_ONLY_BREAKOUT_ENGULFING_11252025": 2.5,
+    "Balance breakout": 5.0,
+    "SELL_ONLY_BREAKOUT_ENGULFING_11252025": 3.0,
+    "BUY_ONLY_BREAKOUT_ENGULFING_11252025": 3.0,
     }
 
     alert_data = payload.get("alert_data", {})
     strategy_name = alert_data.get("strategy_name") or alert_data.get("alert_name", "")
-    threshold = strategy_thresholds.get(strategy_name, 2.0)
+    threshold = strategy_thresholds.get(strategy_name, 3.0)
     
     gpt_feedback = "GPT 분석 생략: 점수 미달"
     decision, tp, sl = None, None, None  
@@ -2198,7 +2198,7 @@ def analyze_with_gpt(payload, current_price, pair, candles):
     atlanta_hour = now_atlanta.hour
 
     is_restricted = (
-        (3 <= atlanta_hour < 5) or
+        (2 <= atlanta_hour < 8) or
         (atlanta_hour == 11) or
         (atlanta_hour == 12) or
         (13 <= atlanta_hour < 14) 
