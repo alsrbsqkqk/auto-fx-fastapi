@@ -1398,7 +1398,7 @@ async def webhook(request: Request):
 
     alert_data = payload.get("alert_data", {})
     strategy_name = alert_data.get("strategy_name") or alert_data.get("alert_name", "")
-    threshold = strategy_thresholds.get(strategy_name, 3.0)
+    threshold = strategy_thresholds.get(strategy_name, 999)
     
     gpt_feedback = "GPT 분석 생략: 점수 미달"
     decision, tp, sl = None, None, None  
@@ -1567,20 +1567,37 @@ async def webhook(request: Request):
     pnl = None
     should_execute = False
     
-    # 1️⃣ 기본 진입 조건: GPT가 BUY/SELL 판단 + 점수 2.0점 이상
-    if final_decision in ["BUY", "SELL"] and signal_score >= 2.0:
-        # ✅ RSI 극단값 필터: BUY가 과매수 / SELL이 과매도이면 진입 차단
-        if False and ((final_decision == "BUY" and rsi.iloc[-1] > 85) or (final_decision == "SELL" and rsi.iloc[-1] < 20)):
-            reasons.append(f"❌ RSI 극단값으로 진입 차단: {decision} @ RSI {rsi.iloc[-1]:.2f}")
+    
+    # 1️⃣ 기본 진입 조건
+    # - GPT가 BUY/SELL
+    # - 전략별 threshold (Balance=4.0 / Engulfing=2.5) 통과
+    should_execute = (
+        final_decision in ["BUY", "SELL"]
+        and signal_score >= threshold
+    )
+    
+    # 2️⃣ RSI 극단값 필터 (❗ 차단만 가능, True로 되살리지 않음)
+    if should_execute:
+        if (
+            (final_decision == "BUY" and rsi.iloc[-1] > 85)
+            or (final_decision == "SELL" and rsi.iloc[-1] < 20)
+        ):
+            reasons.append(
+                f"❌ RSI 극단값으로 진입 차단: {final_decision} @ RSI {rsi.iloc[-1]:.2f}"
+            )
             should_execute = False
-        else:
-            should_execute = True
-
-    # 2️⃣ 조건부 진입: 최근 2시간 거래 없으면 점수 4점 미만이어도 진입 허용
-    #elif allow_conditional_trade and signal_score >= 4 and final_decision in ["BUY", "SELL"]:
-    #    gpt_feedback += "\n⚠️ 조건부 진입: 최근 2시간 거래 없음 → 4점 이상 기준 만족하여 진입 허용"
-    #    should_execute = True
-        
+    
+    # 3️⃣ (선택) ATR 보수 필터 – 이미 점수에 반영했으므로 여기선 추가 차단 안 함
+    # if should_execute and last_atr < 0.0009:
+    #     reasons.append("❌ ATR 너무 낮음 → 진입 차단")
+    #     should_execute = False
+    
+    # 4️⃣ 디버그 로그 (강력 추천)
+    print(
+        f"[EXEC CHECK] decision={final_decision}, "
+        f"score={signal_score:.2f}, threshold={threshold}, "
+        f"execute={should_execute}"
+    )
     if should_execute:
         units = 150000 if final_decision == "BUY" else -150000
         digits = 3 if pair.endswith("JPY") else 5
