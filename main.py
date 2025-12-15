@@ -1397,9 +1397,12 @@ async def webhook(request: Request):
     }
 
     alert_data = payload.get("alert_data", {})
-    strategy_name = alert_data.get("strategy_name") or alert_data.get("alert_name", "")
+    strategy_name = (
+        alert_data.get("strategy_name")
+        or alert_data.get("alert_name", "")
+    ).strip()
     threshold = strategy_thresholds.get(strategy_name, 999)
-    
+    print(f"[DEBUG] strategy_name='{strategy_name}', threshold={threshold}, score={signal_score}")
     gpt_feedback = "GPT 분석 생략: 점수 미달"
     decision, tp, sl = None, None, None  
     final_decision, final_tp, final_sl = None, None, None
