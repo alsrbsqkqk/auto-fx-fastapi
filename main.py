@@ -1399,7 +1399,10 @@ async def webhook(request: Request):
     alert_data = payload.get("alert_data", {})
     strategy_name = (
         alert_data.get("strategy_name")
-        or alert_data.get("alert_name", "")
+        or alert_data.get("alert_name")
+        or payload.get("strategy_name")
+        or payload.get("alert_name")
+        or ""
     ).strip()
     threshold = strategy_thresholds.get(strategy_name, 999)
     print(f"[DEBUG] strategy_name='{strategy_name}', threshold={threshold}, score={signal_score}")
