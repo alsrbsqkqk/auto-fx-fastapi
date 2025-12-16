@@ -1123,7 +1123,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     elif pattern in ["LONG_BODY_BULL"]:
         signal_score += 1
         reasons.append(f"🟢 양봉 확장 캔들 ({pattern}) → 상승 흐름 가정")
-    elif pattern in ["SHOOTING_STAR", "BEARISH_ENGULFING", "HANGING_MAN", "EVENING_STAR 가점+1"]:
+    elif pattern in ["SHOOTING_STAR", "BEARISH_ENGULFING", "HANGING_MAN", "EVENING_STAR 가점"]:
         signal_score -= 2
         reasons.append(f"🔴 반전형 패턴 ({pattern}) → 매도 고려 필요 감점-2")
     # 교과서적 기회 포착 보조 점수
