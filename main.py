@@ -889,28 +889,38 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     # 7️⃣ 눌림목 BUY 강화 (페어 공통)
     # ==================================================
     BOOST_BUY_PAIRS = {"EUR_USD", "GBP_USD", "USD_JPY"}
-    
+        
     if pair in BOOST_BUY_PAIRS and signal == "BUY":
-        if trend == "UPTREND":
-            signal_score += 1
-            reasons.append(f"{pair}: 상승추세 유지 → 눌림목 매수 기대 (+1)")
     
-        if 40 <= rsi <= 50:
-            signal_score += 1
-            reasons.append(f"{pair}: RSI 40~50 눌림목 영역 (+1)")
+        # ❌ 하락추세에서는 눌림목 BUY 보너스 금지
+        if trend != "UPTREND":
+            reasons.append(f"{pair}: 하락/중립 추세 → 눌림목 BUY 보너스 제외")
+        else:
+            if 40 <= rsi <= 50:
+                signal_score += 1
+                reasons.append(f"{pair}: RSI 40~50 눌림목 영역 (+1)")
     
-        if 0.1 <= stoch_rsi <= 0.3:
-            signal_score += 1
-            reasons.append(f"{pair}: Stoch RSI 바닥 반등 초기 (+1)")
+            if 0.1 <= stoch_rsi <= 0.3:
+                signal_score += 1
+                reasons.append(f"{pair}: Stoch RSI 바닥 반등 초기 (+1)")
     
-        if pattern in ["HAMMER", "LONG_BODY_BULL"]:
-            signal_score += 1
-            reasons.append(f"{pair}: 매수 캔들 패턴 확인 (+1)")
+            if pattern in ["HAMMER", "LONG_BODY_BULL"]:
+                signal_score += 1
+                reasons.append(f"{pair}: 매수 캔들 패턴 확인 (+1)")
     
-        if macd > 0:
-            signal_score += 1
-            reasons.append(f"{pair}: MACD 양수 유지 (+1)")
-    
+            if macd > 0:
+                signal_score += 1
+                reasons.append(f"{pair}: MACD 양수 유지 (+1)")
+
+
+        # 7️⃣-2 과매도 반등 BUY (DOWNTREND 허용, 단 조건 엄격)
+    if signal == "BUY" and trend == "DOWNTREND":
+        if rsi < 30 and stoch_rsi < 0.15 and macd > macd_signal:
+            signal_score += 1.5
+            reasons.append("🟢 하락추세 과매도 + MACD 반등 → 제한적 반등 BUY (+1.5)")
+        else:
+            signal_score -= 1
+            reasons.append("❌ 하락추세 BUY → 반등 조건 미흡 (감점 -1)")
     
     # ==================================================
     # 8️⃣ 눌림목 조건 (모든 페어 공통)
