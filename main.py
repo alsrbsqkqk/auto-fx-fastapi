@@ -1337,6 +1337,12 @@ async def webhook(request: Request):
         "macd_trend": macd_trend[-8:],
         "macd_signal_trend": macd_signal_trend[-8:],
         "stoch_rsi_trend": stoch_rsi_trend[-8:]
+        "strategy_name": (
+            data.get("strategy_name", "").strip()
+            or data.get("alert_name", "").strip()
+        ),
+        "alert_name": data.get("alert_name", "").strip(),
+        "alert_data": data.get("alert_data", {}),
     }
 
 
