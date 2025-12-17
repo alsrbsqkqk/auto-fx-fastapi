@@ -1336,7 +1336,7 @@ async def webhook(request: Request):
         "rsi_trend": rsi_trend[-8:],      # ✅ 최근 5개로 압축
         "macd_trend": macd_trend[-8:],
         "macd_signal_trend": macd_signal_trend[-8:],
-        "stoch_rsi_trend": stoch_rsi_trend[-8:]
+        "stoch_rsi_trend": stoch_rsi_trend[-8:],
         "strategy_name": (
             data.get("strategy_name", "").strip()
             or data.get("alert_name", "").strip()
