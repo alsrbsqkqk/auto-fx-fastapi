@@ -129,7 +129,6 @@ def gpt_rate_gate():
         _t.sleep(wait) 
 
 
-# score_signal_with_filters 위쪽에 추가
 def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles, trend, atr, price, bollinger_upper, bollinger_lower, support, resistance, support_distance, resistance_distance, pip_size, expected_direction=None):
     opportunity_score = 0
     reasons = []
@@ -157,46 +156,7 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
         opportunity_score += 2
         reasons.append("🔻 Stoch RSI 과열 + RSI 약세 + MACD 하락 → 강한 SELL (+2)")
 
-    # ==================================================
-    # 2️⃣ RSI 핵심 영역 (중복 제거)
-    # ==================================================
-    if is_buy:
-        if rsi < 30:
-            opportunity_score += 1.5
-            reasons.append("🟢 RSI < 30 → BUY 반등 기대 (+1.5)")
-        elif 48 < rsi < 52:
-            opportunity_score += 0.5
-            reasons.append("🟡 RSI 50 전환 구간 (+0.5)")
-        elif rsi >= 70:
-            opportunity_score -= 0.5
-            reasons.append("❌ RSI 과매수 → BUY 위험 (-0.5)")
 
-    if is_sell:
-        if rsi > 70:
-            opportunity_score += 1.5
-            reasons.append("🔴 RSI > 70 → SELL 기회 (+1.5)")
-        elif rsi < 30:
-            opportunity_score -= 1.0
-            reasons.append("⚠️ RSI 과매도 → SELL 위험 (-1)")
-
-    # ==================================================
-    # 3️⃣ Stoch RSI (방향 단일 반영)
-    # ==================================================
-    if is_buy:
-        if stoch_rsi < 0.2:
-            opportunity_score += 1
-            reasons.append("🟢 Stoch RSI 과매도 → BUY 강화 (+1)")
-        elif stoch_rsi > 0.8:
-            opportunity_score -= 1
-            reasons.append("⚠️ Stoch RSI 과열 → BUY 피로 (-1)")
-
-    if is_sell:
-        if stoch_rsi > 0.8:
-            opportunity_score += 1
-            reasons.append("🔴 Stoch RSI 과열 → SELL 강화 (+1)")
-        elif stoch_rsi < 0.2:
-            opportunity_score -= 1
-            reasons.append("⚠️ Stoch RSI 과매도 → SELL 위험 (-1)")
 
     # ==================================================
     # 4️⃣ 추세 필터 (가장 중요)
@@ -209,16 +169,6 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
         opportunity_score -= 2
         reasons.append("❌ 상승 추세 + SELL 역방향 (-2)")
 
-    # ==================================================
-    # 5️⃣ MACD 방향성
-    # ==================================================
-    if is_buy and macd > macd_signal:
-        opportunity_score += 0.5
-        reasons.append("📈 MACD 상승 흐름 (+0.5)")
-
-    if is_sell and macd < macd_signal:
-        opportunity_score += 0.5
-        reasons.append("📉 MACD 하락 흐름 (+0.5)")
 
     # ==================================================
     # 6️⃣ 캔들 패턴
@@ -241,15 +191,13 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     # ==================================================
     # 8️⃣ 최종 방향 충돌 필터 (조기 차단)
     # ==================================================
-    if expected_direction == "BUY" and opportunity_score < 0:
-        reasons.append("❌ BUY 기대 방향 대비 점수 부적합 → 차단")
-        return 0, reasons
-
-    if expected_direction == "SELL" and opportunity_score < 0:
-        reasons.append("❌ SELL 기대 방향 대비 점수 부적합 → 차단")
-        return 0, reasons
-
-    return opportunity_score, reasons
+    if is_buy and opportunity_score < 0:
+        opportunity_score -= 1.5
+        reasons.append("⚠️ BUY 기대 방향 대비 opportunity_score 역행 → 신호 약화 (-1.5)")
+    
+    if is_sell and opportunity_score < 0:
+        opportunity_score -= 1.5
+        reasons.append("⚠️ SELL 기대 방향 대비 opportunity_score 역행 → 신호 약화 (-1.5)")
     
 def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window=20, min_touch_count=2):
     # 단타(3h/10pip) 최적화된 창 길이
@@ -360,47 +308,7 @@ def additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, tre
         macd_signal = macd
         reasons.append("⚠️ macd_signal 없음 → macd 사용")
 
-    # ==================================================
-    # 1️⃣ RSI 피로 / 반등 보정 (대점수 제거)
-    # ==================================================
-    if rsi < 30:
-        if is_buy:
-            score += 1.0
-            reasons.append("🟢 RSI 과매도 → BUY 반등 기대 (+1.0)")
-        elif is_sell:
-            score -= 1.0
-            reasons.append("⚠️ RSI 과매도 → SELL 신뢰도 감소 (-1.0)")
-
-    elif rsi > 70:
-        if is_sell:
-            score += 1.0
-            reasons.append("🔴 RSI 과매수 → SELL 강화 (+1.0)")
-        elif is_buy:
-            score -= 1.0
-            reasons.append("⚠️ RSI 과매수 → BUY 피로 (-1.0)")
-
-    # ==================================================
-    # 2️⃣ Stoch RSI 극단 구간 (보조 역할만)
-    # ==================================================
-    if stoch_rsi < 0.1:
-        if is_buy:
-            score += 0.5
-            reasons.append("🟢 Stoch RSI 극단 과매도 → BUY 보정 (+0.5)")
-        elif is_sell:
-            score -= 0.5
-            reasons.append("⚠️ Stoch RSI 극단 과매도 → SELL 약화 (-0.5)")
-
-    elif stoch_rsi > 0.9:
-        if is_sell:
-            score += 0.5
-            reasons.append("🔴 Stoch RSI 극단 과매수 → SELL 보정 (+0.5)")
-        elif is_buy:
-            score -= 0.5
-            reasons.append("⚠️ Stoch RSI 극단 과매수 → BUY 피로 (-0.5)")
-
-    # ==================================================
-    # 3️⃣ MACD 미세 방향 보정 (추세 보조)
-    # ==================================================
+    # MACD 약화/반등 조짐만 유지
     if is_buy and macd < macd_signal and macd > 0:
         score -= 0.5
         reasons.append("⚠️ BUY 중 MACD 약화 조짐 (-0.5)")
@@ -409,34 +317,8 @@ def additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, tre
         score -= 0.5
         reasons.append("⚠️ SELL 중 MACD 반등 조짐 (-0.5)")
 
-    # ==================================================
-    # 4️⃣ 추세 일치 보너스 (작게)
-    # ==================================================
-    if is_buy and trend == "UPTREND":
-        score += 0.5
-        reasons.append("📈 상승 추세 지속 → BUY 신뢰도 보정 (+0.5)")
-
-    if is_sell and trend == "DOWNTREND":
-        score += 0.5
-        reasons.append("📉 하락 추세 지속 → SELL 신뢰도 보정 (+0.5)")
-
-    # ==================================================
-    # 5️⃣ 캔들 패턴 (보조 강화만)
-    # ==================================================
-    if is_buy and pattern in ["BULLISH_ENGULFING", "HAMMER", "MORNING_STAR"]:
-        score += 0.5
-        reasons.append(f"🕯 BUY 반전 패턴 감지 ({pattern}) (+0.5)")
-
-    if is_sell and pattern in ["BEARISH_ENGULFING", "SHOOTING_STAR", "EVENING_STAR"]:
-        score += 0.5
-        reasons.append(f"🕯 SELL 반전 패턴 감지 ({pattern}) (+0.5)")
-
-    # ==================================================
-    # 6️⃣ 점수 안전 클램프 (과도 방지)
-    # ==================================================
-    score = max(-2.0, min(2.0, score))
-
     return score, reasons
+
 
 # === pip/거리 헬퍼 ===
 def pip_value_for(pair: str) -> float:
@@ -618,9 +500,9 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     NEAR_PIPS = thr["near_pips"]    # 지지/저항 근접 금지 임계(pips)
 
     # RSI 중립 구간 (45~55) → 추세 애매로 감점
-    if 45 <= rsi <= 55:
+    if 45 <= rsi <= 55 and trend == "NEUTRAL":
         score -= 1
-        reasons.append("⚠️ RSI 중립 구간 ➔ 추세 애매 → 진입 신호 약화 (감점-1)")
+        reasons.append("⚠️ RSI 중립(45~55) + 트렌드 NEUTRAL → 진입 신호 약화 (-1)")
 
     if rsi > 40 and stoch_rsi > 0.4 and macd < macd_signal and trend != "UPTREND":
         score -= 1.0
@@ -829,7 +711,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     if signal == "BUY" and rsi > 80 and stoch_rsi > 0.85:
         if macd < macd_signal:
             signal_score -= 3
-            reasons.append("⛔ RSI/Stoch RSI 극단 과열 + MACD 약세 → BUY 진입 차단 (감점 -3)")
+            reasons.append("⛔ RSI/Stoch RSI 극단 과열 + MACD 약세 → BUY (감점 -3)")
         else:
             signal_score -= 2
             reasons.append("⚠️ RSI/Stoch 과열 → BUY 피로 구간 (감점 -2)")
@@ -939,9 +821,9 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     # ==================================================
     # 9️⃣ RSI 중립 BUY 보정 (과도 방지)
     # ==================================================
-    if signal == "BUY" and 45 <= rsi <= 60:
+    if signal == "BUY" and trend == "UPTREND" and 50 <= rsi <= 60:
         signal_score += 0.5
-        reasons.append("RSI 중립 구간 → 완만한 반등 기대 (+0.5)")
+        reasons.append("RSI 중립(50~60) + 상승추세 → 눌림목 반등 기대 (+0.5)")
     
     
     # ==================================================
@@ -1021,10 +903,6 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
         signal_score += 1
         reasons.append("MACD 히스토그램 증가 → 상승 초기 흐름 가점 +1")
 
-
-    if stoch_rsi == 0.0:
-        signal_score -= 1.5
-        reasons.append("🟢 Stoch RSI 0.0 → 극단적 과매도 → 감점 -1.5")
    
     if stoch_rsi == 1.0:
         if trend == "UPTREND" and macd > 0:
@@ -1047,26 +925,34 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
             reasons.append("Stoch RSI 과열 + neutral 매도 조건 → 피로 누적 매도 가능성 가점+1")
         else:
             reasons.append("Stoch RSI 과열 → 고점 피로, 관망")
-    elif stoch_rsi < 0.2:
-        if trend == "DOWNTREND" and rsi > 30:
-            signal_score += 2
-            reasons.append("Stoch RSI 과매도 + 하락추세 일치 가점+2")
-        elif trend == "NEUTRAL" and signal == "SELL" and rsi > 50:
-            signal_score += 1
-            reasons.append("Stoch RSI 과매도 + neutral 매도 전환 조건 가점+1")
-        elif trend == "DOWNTREND":
-            signal_score += 2
-            reasons.append("Stoch RSI 과매도 + 하락추세 일치 가점+2 (보완조건 포함)")
-        elif trend == "NEUTRAL" and rsi < 50:
-            signal_score += 1
-            reasons.append("Stoch RSI 과매도 + RSI 50 이하 → 약세 유지 SELL 가능 가점+1")
-        
-        if stoch_rsi < 0.1:
-            signal_score += 0
-            reasons.append("Stoch RSI 0.1 이하 → 극단적 과매도 가점 +0")
-        
+    
+    if stoch_rsi > 0.8:
+        # BUY일 때만 '상승 모멘텀' 가점
+        if signal == "BUY" and trend == "UPTREND" and rsi < 70:
+            if pair == "USD_JPY":
+                signal_score += 3
+                reasons.append("USDJPY 강화: Stoch RSI 과열 + 상승추세(모멘텀) 가점 +3")
+            else:
+                signal_score += 2
+                reasons.append("Stoch RSI 과열 + 상승추세(모멘텀) 가점 +2")
+    
+        # SELL일 때는 가점 주지 말고 관망/피로만 남김(기존 유지 느낌)
         else:
-            reasons.append("Stoch RSI 과매도 → 저점 피로, 관망")
+            reasons.append("Stoch RSI 과열 → 고점 피로, 관망")
+    
+    elif stoch_rsi < 0.2:
+        # BUY일 때만 과매도 가점(반등 기대)
+        if signal == "BUY":
+            if trend == "DOWNTREND":
+                signal_score += 0.5
+                reasons.append("Stoch RSI 과매도 + 하락추세 → 반등은 제한적(+0.5)")
+            else:
+                signal_score += 1
+                reasons.append("Stoch RSI 과매도 → BUY 반등 기대(+1)")
+    
+        # SELL일 때는 과매도는 위험이므로 가점 금지 (문구만 남기거나 감점)
+        else:
+            reasons.append("Stoch RSI 과매도 → SELL은 추격 위험, 관망")
     else:
         reasons.append("Stoch RSI 중립")
 
