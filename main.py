@@ -198,6 +198,8 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     if is_sell and opportunity_score < 0:
         opportunity_score -= 1.5
         reasons.append("⚠️ SELL 기대 방향 대비 opportunity_score 역행 → 신호 약화 (-1.5)")
+
+    return opportunity_score, reasons
     
 def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window=20, min_touch_count=2):
     # 단타(3h/10pip) 최적화된 창 길이
@@ -912,19 +914,6 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
             signal_score -= 1
             reasons.append("🔴 Stoch RSI 1.0 → 극단적 과매수 → 피로감 주의 감점 -1")
     
-    if stoch_rsi > 0.8:
-        if trend == "UPTREND" and rsi < 70:
-            if pair == "USD_JPY":
-                signal_score += 3  # USDJPY만 강화
-                reasons.append("USDJPY 강화: Stoch RSI 과열 + 상승추세 일치 가점+3")
-            else:
-                signal_score += 2
-                reasons.append("Stoch RSI 과열 + 상승추세 일치 가점+2")
-        elif trend == "NEUTRAL" and signal == "SELL" and rsi > 60:
-            signal_score += 1
-            reasons.append("Stoch RSI 과열 + neutral 매도 조건 → 피로 누적 매도 가능성 가점+1")
-        else:
-            reasons.append("Stoch RSI 과열 → 고점 피로, 관망")
     
     if stoch_rsi > 0.8:
         # BUY일 때만 '상승 모멘텀' 가점
@@ -2147,8 +2136,8 @@ def analyze_with_gpt(payload, current_price, pair, candles):
                 "- SL과 TP는 ATR 기준 가급적 최소 50% 이상 거리로 설정하되, 시간이 너무 오래 걸릴 것 같으면 무시해도 좋다.\\n"
                 "- 하지만 반드시 **현재가 기준으로 TP는 ±12 pip 이내**, SL은 반드시 꼭 최근 ATR의 최소 1.2배 이상으로 설정하라 어떻게 계산했는지도 보여줘. 예외는 없다 그렇지 않으면 시장 변동성 대비 손실 확률이 급격히 높아진다.\\n"
                 "- 최근 5개 캔들의 고점/저점을 참고해서 너가 설정한 TP/SL이 **REASONABLE한지 꼭 검토**해.\\n"
-                "- RSI가 60 이상이고 Stoch RSI가 0.8 이상이며, 가격이 볼린저밴드 상단에 근접한 경우에는 'BUY 피로감'으로 간주해 'WAIT'을 좀 더 고려해라.\\n"
-                "- RSI가 40 이하이고 Stoch RSI가 0.1 이하이며, 가격이 볼린저밴드 하단에 근접한 경우에는 'SELL 피로감'으로 간주해'WAIT'을 좀 더 고려해라.\\n"
+                "- RSI가 60 이상이고 Stoch RSI가 0.8 이상이며, 가격이 볼린저밴드 상단에 근접한 경우에는 'BUY 피로감'으로 간주해 'SELL'을 좀 더 고려해라.\\n"
+                "- RSI가 40 이하이고 Stoch RSI가 0.1 이하이며, 가격이 볼린저밴드 하단에 근접한 경우에는 'SELL 피로감'으로 간주해'BUY'을 좀 더 고려해라.\\n"
                 "- TP:SL 비율은 1.4:1 이상이 이상적이며, 2:1을 이상적이지만 1.4:1 이상이면 진입 가능하다.\\n\\n"
                 "(3) 지지선(support), 저항선(resistance)은 최근 1시간봉 기준 마지막 6개 캔들의 고점/저점에서 계산되었고 이미 JSON에 포함되어 있다.\\n"
                 "  • 현재가: {current_price}, 지지선: {support}, 저항선: {resistance}\\n"
