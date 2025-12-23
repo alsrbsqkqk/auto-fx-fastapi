@@ -702,9 +702,13 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     # 1️⃣ 완전 중립 횡보장 방어
     # ==================================================
     if trend == "NEUTRAL":
-        if 45 <= rsi <= 55 and -0.05 < macd < 0.05 and 0.3 < stoch_rsi < 0.7:
+        if (
+            48 <= rsi <= 52
+            and abs(macd) < 0.02
+            and 0.4 < stoch_rsi < 0.6
+            and atr < atr_ma * 0.8   # ← 변동성까지 확인
+        ):
             signal_score -= 1
-            reasons.append("⚠️ 트렌드 NEUTRAL + RSI/MACD/Stoch 중립 → 횡보장 진입 방어 (감점 -1)")
     
     
     # ==================================================
@@ -722,10 +726,10 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     # ==================================================
     # 3️⃣ SELL 과매도 방어 (V3 유지 + 단순화)
     # ==================================================
-    if signal == "SELL" and rsi < 40:
+    if signal == "SELL" and rsi < 40 and trend != "DOWNTREND":
         if macd > macd_signal and stoch_rsi > 0.5:
-            signal_score += 1
-            reasons.append("✅ 과매도 SELL이나 MACD/Stoch 반등 → 예외적 진입 허용 (+1)")
+            signal_score += 2
+            reasons.append("✅ 과매도 SELL이나 MACD/Stoch 반등 → 예외적 진입 허용 (+2)")
         elif stoch_rsi > 0.3:
             signal_score -= 2
             reasons.append("⚠️ 과매도 SELL + 반등 가능성 → 신중 (감점 -2)")
