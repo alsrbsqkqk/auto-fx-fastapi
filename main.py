@@ -702,13 +702,9 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     # 1️⃣ 완전 중립 횡보장 방어
     # ==================================================
     if trend == "NEUTRAL":
-        if (
-            48 <= rsi <= 52
-            and abs(macd) < 0.02
-            and 0.4 < stoch_rsi < 0.6
-            and atr < atr_ma * 0.8   # ← 변동성까지 확인
-        ):
-            signal_score -= 1
+        if 45 <= rsi <= 55 and -0.05 < macd < 0.05 and 0.3 < stoch_rsi < 0.7:
+            if abs(macd) < 0.02:
+                signal_score -= 1
     
     
     # ==================================================
@@ -723,19 +719,32 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
             reasons.append("⚠️ RSI/Stoch 과열 → BUY 피로 구간 (감점 -2)")
     
     
+        # ③ SELL 과매도 방어 (하락추세 예외 허용)
     # ==================================================
-    # 3️⃣ SELL 과매도 방어 (V3 유지 + 단순화)
-    # ==================================================
-    if signal == "SELL" and rsi < 40 and trend != "DOWNTREND":
-        if macd > macd_signal and stoch_rsi > 0.5:
-            signal_score += 2
-            reasons.append("✅ 과매도 SELL이나 MACD/Stoch 반등 → 예외적 진입 허용 (+2)")
-        elif stoch_rsi > 0.3:
-            signal_score -= 2
-            reasons.append("⚠️ 과매도 SELL + 반등 가능성 → 신중 (감점 -2)")
+    if signal == "SELL" and rsi < 40:
+    
+        # ✅ [수정3 핵심] 강한 하락추세(DOWNTREND)에서는 '과매도'라도
+        # 추세 지속 SELL이 자주 먹히므로, 과도한 차단을 완화한다.
+        if trend == "DOWNTREND":
+            # (선택) 너무 극단 과매도면 그래도 조심: rsi<30이면 가볍게만 패널티
+            if rsi < 30:
+                signal_score -= 0.5
+                reasons.append("⚠️ DOWNTREND지만 RSI<30 극단 과매도 → 반등 리스크 경고 (감점 -0.5)")
+            else:
+                signal_score += 0.5
+                reasons.append("📉 하락 추세 지속 + 과매도 → 추세 SELL 허용 (+0.5)")
+    
+        # ✅ NEUTRAL/UPTREND에서는 기존 방어 로직 유지
         else:
-            signal_score -= 1.5
-            reasons.append("❌ 과매도 SELL + 반등 신호 부족 → 진입 위험 (감점 -1.5)")
+            if macd > macd_signal and stoch_rsi > 0.5:
+                signal_score += 1
+                reasons.append("✅ 과매도 SELL이나 MACD/Stoch 반등 → 예외적 진입 허용 (+1)")
+            elif stoch_rsi > 0.3:
+                signal_score -= 2
+                reasons.append("⚠️ 과매도 SELL + 반등 가능성 → 신중 (감점 -2)")
+            else:
+                signal_score -= 1.5
+                reasons.append("❌ 과매도 SELL + 반등 신호 부족 → 진입 위험 (감점 -1.5)")
     
     
     # ==================================================
@@ -769,7 +778,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
             signal_score += 0.5
             reasons.append("📈 RSI > 70이나 MACD/UPTREND 유지 → 조건부 BUY 허용 (+0.5)")
         else:
-            signal_score -= 2
+            signal_score -= 1
             reasons.append("⚠️ RSI > 70 + 반전 패턴 없음 → 진입 위험 (감점 -2)")
     
     
