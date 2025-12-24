@@ -733,6 +733,8 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
             else:
                 signal_score += 0.5
                 reasons.append("📉 하락 추세 지속 + 과매도 → 추세 SELL 허용 (+0.5)")
+
+        
     
         # ✅ NEUTRAL/UPTREND에서는 기존 방어 로직 유지
         else:
@@ -745,7 +747,6 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
             else:
                 signal_score -= 1.5
                 reasons.append("❌ 과매도 SELL + 반등 신호 부족 → 진입 위험 (감점 -1.5)")
-    
     
     # ==================================================
     # 4️⃣ Stoch RSI 바닥 + 패턴 없음 방어
@@ -1029,6 +1030,32 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     if op_score > 0:
         signal_score += op_score
         reasons += op_reasons
+
+    try:
+        # 하락 추세 말기: 과매도 + 지지선 근접에서 SELL은 숏스퀴즈 위험 → 감점
+        if trend == "DOWNTREND" and signal == "SELL":
+            near_support = (support is not None) and (price is not None) and (price <= support + 5 * pv)  # 5pip 이내
+            if (rsi is not None) and (rsi < 32) and near_support:
+                signal_score -= 2.0
+                reasons.append("⚠️ 하락 추세 말기(과매도+지지선 근접) SELL → 숏스퀴즈 위험 감점 -2.0")
+            elif (rsi is not None) and (rsi < 32):
+                signal_score -= 1.0
+                reasons.append("⚠️ 과매도 구간 SELL → 반등 리스크 감점 -1.0")
+
+        # 상승 추세 말기: 과매수 + 저항선 근접에서 BUY는 고점 물림 위험 → 감점
+        if trend == "UPTREND" and signal == "BUY":
+            near_resistance = (resistance is not None) and (price is not None) and (price >= resistance - 5 * pv)  # 5pip 이내
+            if (rsi is not None) and (rsi > 68) and near_resistance:
+                signal_score -= 2.0
+                reasons.append("⚠️ 상승 추세 말기(과매수+저항선 근접) BUY → 고점 물림 위험 감점 -2.0")
+            elif (rsi is not None) and (rsi > 68):
+                signal_score -= 1.0
+                reasons.append("⚠️ 과매수 구간 BUY → 조정 리스크 감점 -1.0")
+
+    except Exception as e:
+        # 배포 중 예외로 전략이 멈추는 걸 방지 (안전장치)
+        reasons.append(f"⚠️ 추세 말기 감점 필터 예외 발생(무시): {e}")
+    
 
     return signal_score, reasons
 
