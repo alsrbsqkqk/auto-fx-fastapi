@@ -1163,7 +1163,7 @@ async def webhook(request: Request):
 
     pattern = detect_candle_pattern(candles)
     trend = detect_trend(candles, rsi, boll_mid)
-    prev_trend = detect_trend(candles[:-1], rsi[:-1], boll_mid)
+    prev_trend = detect_trend(candles.iloc[:-1], rsi.iloc[:-1], boll_mid.iloc[:-1])
     stoch_rsi_clean = stoch_rsi_series.dropna()
     prev_stoch_rsi = stoch_rsi_clean.iloc[-2] if len(stoch_rsi_clean) >= 2 else 0
     liquidity = estimate_liquidity(candles)
@@ -1675,8 +1675,14 @@ def detect_box_breakout(candles, pair, box_window=10, box_threshold_pips=None):
 
 def detect_trend(candles, rsi, mid_band):
     close = candles["close"]
-    ema20 = close.ewm(span=20).mean()
-    ema50 = close.ewm(span=50).mean()
+    ema20 = close.ewm(span=20, adjust=False).mean()
+    ema50 = close.ewm(span=50, adjust=False).mean()
+
+    # 추세 힘이 약하면 NEUTRAL (JPY 기준 튜닝값)
+    gap = abs(ema20.iloc[-1] - ema50.iloc[-1])
+    if gap < 0.05:   # 필요시 0.03~0.08로 조정
+        return "NEUTRAL"
+
     if ema20.iloc[-1] > ema50.iloc[-1] and close.iloc[-1] > mid_band.iloc[-1]:
         return "UPTREND"
     elif ema20.iloc[-1] < ema50.iloc[-1] and close.iloc[-1] < mid_band.iloc[-1]:
