@@ -1245,9 +1245,9 @@ async def webhook(request: Request):
     allow_conditional_trade = time_since_last > timedelta(hours=2)
 
     strategy_thresholds = {
-    "Balance breakout": 4.5,
-    "SELL_ONLY_BREAKOUT_ENGULFING_11252025": 2.5,
-    "BUY_ONLY_BREAKOUT_ENGULFING_11252025": 2.5,
+    "Balance breakout": 2.0,
+    "SELL_ONLY_BREAKOUT_ENGULFING_11252025": 2.0,
+    "BUY_ONLY_BREAKOUT_ENGULFING_11252025": 2.0,
     }
 
     alert_data = payload.get("alert_data", {})
@@ -1459,7 +1459,7 @@ async def webhook(request: Request):
         f"execute={should_execute}"
     )
     if should_execute:
-        units = 150000 if final_decision == "BUY" else -150000
+        units = 50000 if final_decision == "BUY" else 50000
         digits = 3 if pair.endswith("JPY") else 5
 
         
