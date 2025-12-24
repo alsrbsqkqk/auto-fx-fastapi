@@ -1854,17 +1854,35 @@ def place_order(pair, units, tp, sl, digits):
     }
 
     try:
-        response = requests.post(url, headers=headers, json=data)
-        response.raise_for_status()
-        j = response.json() 
-        return {
-            "status": "order_placed",
-            "raw": j
-        }
-    except requests.exceptions.RequestException as e:
-        return {"status": "error", "message": str(e)}
+        response = requests.post(url, headers=headers, json=data, timeout=15)
 
-import re, json
+        # ✅ 성공/실패와 무관하게 바디를 먼저 읽는다 (취소/거절 사유가 여기 들어있음)
+        try:
+            j = response.json()
+        except Exception:
+            j = {"raw_text": response.text}
+
+        print(f"[OANDA] status_code={response.status_code}")
+        print(f"[OANDA] body={j}")
+
+        # ✅ 성공 판단은 status_code로
+        if 200 <= response.status_code < 300:
+            return {
+                "status": "order_placed",
+                "status_code": response.status_code,
+                "raw": j
+            }
+        else:
+            # 실패여도 raw를 남겨야 reason 확인 가능
+            return {
+                "status": "error",
+                "status_code": response.status_code,
+                "raw": j
+            }
+
+    except requests.exceptions.RequestException as e:
+        # 네트워크/타임아웃 등 진짜 요청 실패
+        return {"status": "error", "message": str(e)}
 
 
 def extract_json_block(text: str):
