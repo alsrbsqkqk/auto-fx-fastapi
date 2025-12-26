@@ -678,15 +678,15 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
         confirmed_breakout_up = over1 or (over1 and over2)
 
         if not confirmed_breakout_up and dist_to_res_pips <= 10:
-            signal_score -= 1.5
-            reasons.append("⛔ 저항선 돌파 미확인 + 10pip 이내 → 감점-1.5")
+            signal_score -= 1.0
+            reasons.append("⛔ 저항선 돌파 미확인 + 10pip 이내 → 감점-1.0")
 
     # SELL: 지지 3pip 이내면 금지. 이탈(확정) 없고 10pip 이내도 금지
     if signal == "SELL":
         dist_to_sup_pips = pips_between(price, support, pair)
         if dist_to_sup_pips < 3:
-            signal_score -= 2
-            reasons.append(f"📉 지지선 {dist_to_sup_pips:.1f} pip 이내 → 신중 진입 필요 (감점-2)")
+            signal_score -= 1.5
+            reasons.append(f"📉 지지선 {dist_to_sup_pips:.1f} pip 이내 → 신중 진입 필요 (감점-1.5)")
 
         last2 = candles.tail(2)
         under1 = (last2.iloc[-1]['close'] < support - 2 * pip_value_for(pair)) if not last2.empty else False
@@ -694,8 +694,8 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
         confirmed_breakdown = under1 or (under1 and under2)
 
         if not confirmed_breakdown and dist_to_sup_pips <= 5:
-            signal_score -= 2
-            reasons.append("⛔ 지지선 이탈 미확인 + 5pip 이내 → 추격 매도 위험 (감점-2)")
+            signal_score -= 1.5
+            reasons.append("⛔ 지지선 이탈 미확인 + 5pip 이내 → 추격 매도 위험 (감점-1.5)")
 
         # ✅ RSI, MACD, Stoch RSI 모두 중립 + Trend도 NEUTRAL → 횡보장 진입 방어
     # ==================================================
