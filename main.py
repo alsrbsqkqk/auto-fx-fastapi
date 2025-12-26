@@ -638,16 +638,6 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     dist_to_sup_pips = abs(price - sup_raw) / pv
     
 
-    # ✅ 점수 감점 방식으로 변경
-    digits_pip = 1 if pair.endswith("JPY") else 2
-    if signal == "BUY" and dist_to_res_pips <= NEAR_PIPS:
-        signal_score -= 1
-        reasons.append(f"📉 저항까지 {dist_to_res_pips:.{digits_pip}f} pip → 거리 너무 가까움 → 감점 -1")
-        
-    if signal == "SELL" and dist_to_sup_pips <= NEAR_PIPS:
-        signal_score -= 1
-        reasons.append(f"📉 지지까지 {dist_to_sup_pips:.{digits_pip}f} pip → 거리 너무 가까움 → 감점 -1")
-        
     conflict_flag = conflict_check(rsi, pattern, trend, signal)
 
     # 보완 조건 정의: 극단적 RSI + Stoch RSI or MACD 반전 조짐
