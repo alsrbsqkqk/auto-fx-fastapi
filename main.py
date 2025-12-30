@@ -150,6 +150,7 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     opportunity_score = 0
     reasons = []
 
+    
     is_buy = expected_direction == "BUY"
     is_sell = expected_direction == "SELL"
 
@@ -187,20 +188,22 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
         reasons.append("❌ 상승 추세 + SELL 역방향 (-2)")
 
     # BUY mirror penalty: overbought + no higher-high recently
-    if signal == "BUY" and trend == "UPTREND":
+    if is_buy and trend == "UPTREND":
         if rsi > 65:
-            if not recent_high_break(last_n=2):  # 최근 2봉 내 고점 갱신 여부
-                score -= 1.5
-                reason.append("⚠️ 과매수 이후 고점 갱신 실패 → 되밀림 위험 BUY 감점 (-1.5)")
-
-    if signal == "SELL":
-        if trend == "DOWNTREND":
-            if rsi < 35:
-                if not recent_low_break(last_n=2):
-                    score -= 1.5
-                    reason.append(
-                      "⚠️ 과매도 이후 저점 갱신 실패 → 반등 위험 SELL 감점 (-1.5)"
-                    )
+            if not recent_high_break(last_n=2):
+                opportunity_score -= 1.5
+                reasons.append(
+                    "⚠️ 과매수 이후 고점 갱신 실패 → 되밀림 위험 BUY 감점 (-1.5)"
+                )
+    
+    # SELL mirror penalty: oversold + no lower-low recently
+    if is_sell and trend == "DOWNTREND":
+        if rsi < 35:
+            if not recent_low_break(last_n=2):
+                opportunity_score -= 1.5
+                reasons.append(
+                    "⚠️ 과매도 이후 저점 갱신 실패 → 반등 위험 SELL 감점 (-1.5)"
+                )
     # ==================================================
     # 6️⃣ 캔들 패턴
     # ==================================================
