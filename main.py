@@ -1037,15 +1037,26 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     ):
         signal_score += 1
         reasons.append("🟢 최근 3봉 연속 양봉 + 상승추세 + 약세 미발견 → BUY 강화 가점+1")
-    if pattern in ["BULLISH_ENGULFING", "HAMMER", "MORNING_STAR"]:
-        signal_score += 2
-        reasons.append(f"🟢 강한 매수형 패턴 ({pattern}) → 진입 근거 강화 가점+2")
-    elif pattern in ["LONG_BODY_BULL"]:
-        signal_score += 1
-        reasons.append(f"🟢 양봉 확장 캔들 ({pattern}) → 상승 흐름 가정")
-    elif pattern in ["SHOOTING_STAR", "BEARISH_ENGULFING", "HANGING_MAN", "EVENING_STAR 가점"]:
-        signal_score -= 2
-        reasons.append(f"🔴 반전형 패턴 ({pattern}) → 매도 고려 필요 감점-2")
+
+        # 1) 패턴 그룹 먼저 정의
+    bullish_patterns = ["BULLISH_ENGULFING", "HAMMER", "MORNING_STAR"]
+    bearish_patterns = ["SHOOTING_STAR", "BEARISH_ENGULFING", "HANGING_MAN", "EVENING_STAR"]
+        # 2) 방향에 따라 가점/감점 다르게 적용
+    if pattern in bullish_patterns:
+        if is_buy:
+            signal_score += 2
+            reasons.append(f"🟢 강한 매수형 패턴 ({pattern}) ➜ BUY 근거 강화 (+2)")
+        elif is_sell:
+            signal_score -= 1.5
+            reasons.append(f"⚠️ 매수 반전 패턴 ({pattern}) ➜ SELL 신뢰도 하락 (-1.5)")
+    
+    elif pattern in bearish_patterns:
+        if is_sell:
+            signal_score += 2
+            reasons.append(f"🔴 강한 매도형 패턴 ({pattern}) ➜ SELL 근거 강화 (+2)")
+        elif is_buy:
+            signal_score -= 1.5
+            reasons.append(f"⚠️ 매도 반전 패턴 ({pattern}) ➜ BUY 신뢰도 하락 (-1.5)")
     # 교과서적 기회 포착 보조 점수
     op_score, op_reasons = must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles, trend, atr, price, bollinger_upper, bollinger_lower, support, resistance, support_distance, resistance_distance, pip_size, expected_direction=None)
     if op_score > 0:
