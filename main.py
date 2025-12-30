@@ -535,17 +535,41 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     pv = thr["pip_value"]           # pip 크기 (JPY=0.01, 그 외=0.0001)
     NEAR_PIPS = thr["near_pips"]    # 지지/저항 근접 금지 임계(pips)
 
-    # RSI 중립 구간 (45~55) → 추세 애매로 감점
+
+    # RSI 중립 구간 (45~55) + 추세 중립 → 공통 감점
     if 45 <= rsi <= 55 and trend == "NEUTRAL":
         score -= 1
         reasons.append("⚠️ RSI 중립(45~55) + 트렌드 NEUTRAL → 진입 신호 약화 (-1)")
-
-    if rsi > 40 and stoch_rsi > 0.4 and macd < macd_signal and trend != "UPTREND":
-        score -= 1.0
-        reasons.append("📉 RSI & Stoch RSI 반등 중이나 MACD 약세 + 추세 불확실 (BUY측 감점 -1.0)")
-    if rsi < 60 and stoch_rsi < 0.6 and macd > macd_signal and trend != "DOWNTREND":
-        score -= 1.0
-        reasons.append("📈 RSI & Stoch RSI 하락 중이나 MACD 강세 + 추세 불확실 (SELL측 감점 -1.0)")
+    
+    # =========================
+    # BUY 전용 감점 로직
+    # =========================
+    if is_buy:
+        if (
+            rsi > 40
+            and stoch_rsi > 0.4
+            and macd < macd_signal
+            and trend != "UPTREND"
+        ):
+            score -= 1.0
+            reasons.append(
+                "📉 RSI & Stoch RSI 반등 중이나 MACD 약세 + 추세 불확실 → BUY 감점 (-1.0)"
+            )
+    
+    # =========================
+    # SELL 전용 감점 로직
+    # =========================
+    elif is_sell:
+        if (
+            rsi < 60
+            and stoch_rsi < 0.6
+            and macd > macd_signal
+            and trend != "DOWNTREND"
+        ):
+            score -= 1.0
+            reasons.append(
+                "📈 RSI & Stoch RSI 하락 중이나 MACD 강세 + 추세 불확실 → SELL 감점 (-1.0)"
+            )
     
     # === SL/TP 계산 및 손익비 조건 필터 ===
     entry_price = price
