@@ -127,7 +127,24 @@ def gpt_rate_gate():
     wait = slot - now
     if wait > 0:
         _t.sleep(wait) 
+def recent_high_break(highs, last_n=2):
+    if not highs or last_n <= 0:
+        return False
+    if len(highs) < last_n + 1:
+        return False
+    prev_high = max(highs[:-last_n])
+    recent_high = max(highs[-last_n:])
+    return recent_high > prev_high
 
+    
+def recent_low_break(lows, last_n=2):
+    if not lows or last_n <= 0:
+        return False
+    if len(lows) < last_n + 1:
+        return False
+    prev_low = min(lows[:-last_n])
+    recent_low = min(lows[-last_n:])
+    return recent_low < prev_low
 
 def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles, trend, atr, price, bollinger_upper, bollinger_lower, support, resistance, support_distance, resistance_distance, pip_size, expected_direction=None):
     opportunity_score = 0
@@ -169,7 +186,21 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
         opportunity_score -= 2
         reasons.append("❌ 상승 추세 + SELL 역방향 (-2)")
 
+    # BUY mirror penalty: overbought + no higher-high recently
+    if signal == "BUY" and trend == "UPTREND":
+        if rsi > 65:
+            if not recent_high_break(last_n=2):  # 최근 2봉 내 고점 갱신 여부
+                score -= 1.5
+                reason.append("⚠️ 과매수 이후 고점 갱신 실패 → 되밀림 위험 BUY 감점 (-1.5)")
 
+    if signal == "SELL":
+    if trend == "DOWNTREND":
+        if rsi < 35:
+            if not recent_low_break(last_n=2):
+                score -= 1.5
+                reason.append(
+                  "⚠️ 과매도 이후 저점 갱신 실패 → 반등 위험 SELL 감점 (-1.5)"
+                )
     # ==================================================
     # 6️⃣ 캔들 패턴
     # ==================================================
