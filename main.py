@@ -194,13 +194,13 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
                 reason.append("⚠️ 과매수 이후 고점 갱신 실패 → 되밀림 위험 BUY 감점 (-1.5)")
 
     if signal == "SELL":
-    if trend == "DOWNTREND":
-        if rsi < 35:
-            if not recent_low_break(last_n=2):
-                score -= 1.5
-                reason.append(
-                  "⚠️ 과매도 이후 저점 갱신 실패 → 반등 위험 SELL 감점 (-1.5)"
-                )
+        if trend == "DOWNTREND":
+            if rsi < 35:
+                if not recent_low_break(last_n=2):
+                    score -= 1.5
+                    reason.append(
+                      "⚠️ 과매도 이후 저점 갱신 실패 → 반등 위험 SELL 감점 (-1.5)"
+                    )
     # ==================================================
     # 6️⃣ 캔들 패턴
     # ==================================================
