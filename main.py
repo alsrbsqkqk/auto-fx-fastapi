@@ -527,6 +527,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     opportunity_score = 0  
     reasons = []
 
+    
     score, base_reasons = must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles, trend, atr, price, bollinger_upper, bollinger_lower, support, resistance, support_distance, resistance_distance, pip_size, expected_direction=signal)
     extra_score, extra_reasons = additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, trend, signal)
 
@@ -534,7 +535,9 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     thr = dynamic_thresholds(pair, atr)
     pv = thr["pip_value"]           # pip 크기 (JPY=0.01, 그 외=0.0001)
     NEAR_PIPS = thr["near_pips"]    # 지지/저항 근접 금지 임계(pips)
-
+    
+    is_buy = expected_direction == "BUY"
+    is_sell = expected_direction == "SELL"
 
     # RSI 중립 구간 (45~55) + 추세 중립 → 공통 감점
     if 45 <= rsi <= 55 and trend == "NEUTRAL":
