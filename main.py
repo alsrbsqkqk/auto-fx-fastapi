@@ -175,7 +175,29 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
         reasons.append("🔻 Stoch RSI 과열 + RSI 약세 + MACD 하락 → 강한 SELL (+2)")
 
 
-
+    # ==============================
+    # 🔥 2순위 방어: 극단 영역 + 패턴 없음 (칼날/천장 방어)
+    # 위치: '강한 기회 포착' 끝나고, '추세 필터' 시작 바로 위
+    # ==============================
+    
+    # BUY 방어: 극단 과매도 + 반등 패턴 없음 (+ MACD 약화) = 하락 가속(칼날) 위험
+    if is_buy and stoch_rsi < 0.1:
+        if (pattern is None or pattern == "NEUTRAL") and macd < macd_signal:
+            opportunity_score -= 2.0
+            reasons.append("🔴 (방어) Stoch RSI 극단 과매도(<0.1) + 반등 패턴 없음 + MACD 약화 → 하락 가속 위험 (opportunity -2)")
+        elif (pattern is None or pattern == "NEUTRAL"):
+            opportunity_score -= 1.0
+            reasons.append("⚠️ (방어) Stoch RSI 극단 과매도(<0.1) + 반등 패턴 없음 → 반등 신뢰도 낮음 (opportunity -1)")
+    
+    # SELL 방어(미러): 극단 과매수 + 반전 패턴 없음 (+ MACD 강세 유지) = 상승 추세 속 역방향 SELL 말림 위험
+    if is_sell and stoch_rsi > 0.9:
+        # 여기서는 BUY와 반대로, MACD가 "여전히 강세"일 때가 더 위험
+        if (pattern is None or pattern == "NEUTRAL") and macd > macd_signal:
+            opportunity_score -= 2.0
+            reasons.append("🔴 (방어) Stoch RSI 극단 과매수(>0.9) + 반전 패턴 없음 + MACD 강세 → 상승 지속 위험(SELL 말림) (opportunity -2)")
+        elif (pattern is None or pattern == "NEUTRAL"):
+            opportunity_score -= 1.0
+            reasons.append("⚠️ (방어) Stoch RSI 극단 과매수(>0.9) + 반전 패턴 없음 → 반전 신뢰도 낮음 (opportunity -1)")
     # ==================================================
     # 4️⃣ 추세 필터 (가장 중요)
     # ==================================================
@@ -995,24 +1017,47 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
             reasons.append("Stoch RSI 과열 → 고점 피로, 관망")
     
     elif stoch_rsi < 0.2:
-        # BUY일 때만 과매도 가점(반등 기대)
+        # BUY일 때만 과매도 처리
         if signal == "BUY":
-            if trend == "DOWNTREND":
-                signal_score += 0.5
-                reasons.append("Stoch RSI 과매도 + 하락추세 → 반등은 제한적(+0.5)")
-            else:
-                signal_score += 1
-                reasons.append("Stoch RSI 과매도 → BUY 반등 기대(+1)")
     
-        # SELL일 때는 과매도는 위험이므로 가점 금지 (문구만 남기거나 감점)
+            # 🔥 1순위 핵심 수정:
+            # 극단 과매도 + MACD 약화(macd < macd_signal)이면
+            # 반등 가점(+1) 주지 말고 "칼날"로 보고 감점
+            if stoch_rsi < 0.05 and macd < macd_signal:
+                signal_score -= 1.5
+                reasons.append("🔴 Stoch RSI 극단 과매도(<0.05) + MACD<Signal → 하락 가속/전환 위험 (감점 -1.5)")
+    
+            else:
+                # 기존 로직 유지
+                if trend == "DOWNTREND":
+                    signal_score += 0.5
+                    reasons.append("Stoch RSI 과매도 + 하락추세 → 반등은 제한적(+0.5)")
+                else:
+                    signal_score += 1
+                    reasons.append("Stoch RSI 과매도 → BUY 반등 기대(+1)")
+    
         else:
+            # SELL은 기존대로 관망 (원하면 여기서 감점으로 바꿔도 됨)
             reasons.append("Stoch RSI 과매도 → SELL은 추격 위험, 관망")
+    
     else:
         reasons.append("Stoch RSI 중립")
 
     if trend == "UPTREND" and signal == "BUY":
+        # 🔥 칼날 조건이면 추세 일치 가점 제외
+        if stoch_rsi < 0.05 and macd < macd_signal:
+            reasons.append(
+                "⚠️ 표기상 UPTREND지만 Stoch 극단 과매도 + MACD 약화 → 추세 전환 의심(추세일치 가점 제외)"
+            )
+            # 필요 시 더 강하게:
+            # signal_score -= 0.5
+        else:
+            signal_score += 1
+            reasons.append("추세 상승 + 매수 일치 가점+1")
+    
+    elif trend == "DOWNTREND" and signal == "SELL":
         signal_score += 1
-        reasons.append("추세 상승 + 매수 일치 가점+1")
+        reasons.append("추세 하락 + 매도 일치 가점+1")
 
     if trend == "DOWNTREND" and signal == "SELL":
         signal_score += 1
