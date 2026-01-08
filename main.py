@@ -386,6 +386,13 @@ def additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, tre
             score += 1.0
             reasons.append("✅ NEUTRAL이지만 되돌림 후 하락 재개(continuation) → SELL 가점 +1.0")
 
+        # ✅ NEUTRAL continuation BUY 가점 (미러링)
+    # - trend는 NEUTRAL이어도 "되돌림 후 상승 재개"면 롱 기회로 봄
+    if is_buy and (trend == "NEUTRAL"):
+        if (macd > 0) and (macd > macd_signal) and (rsi <= 50) and (stoch_rsi <= 0.45):
+            score += 1.0
+            reasons.append("✅ NEUTRAL이지만 되돌림 후 상승 재개(continuation) → BUY 가점 +1.0")
+
     return score, reasons
 
 
