@@ -366,14 +366,25 @@ def additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, tre
         macd_signal = macd
         reasons.append("⚠️ macd_signal 없음 → macd 사용")
 
-    # MACD 약화/반등 조짐만 유지
-    if is_buy and macd < macd_signal and macd > 0:
-        score -= 0.5
-        reasons.append("⚠️ BUY 중 MACD 약화 조짐 (-0.5)")
+    # BUY 측 (미러링)
+    if is_buy and (macd > 0) and (macd < macd_signal):
+        if (stoch_rsi >= 0.80) or (rsi >= 65):
+            score -= 0.5
+            reasons.append("⚠️ BUY 중 MACD 약화 + 과열 구간 → 되돌림 위험 (감점 -0.5)")
+    
+    # SELL 측 (미러링)
+    if is_sell and (macd < 0) and (macd > macd_signal):
+        if (stoch_rsi <= 0.25) or (rsi <= 45):
+            score -= 0.5
+            reasons.append("⚠️ SELL 중 MACD 반등 + 과매도 구간 → 되돌림 위험 (감점 -0.5)")
 
-    if is_sell and macd > macd_signal and macd < 0:
-        score -= 0.5
-        reasons.append("⚠️ SELL 중 MACD 반등 조짐 (-0.5)")
+        # ✅ NEUTRAL 구간 하락 재개(continuation) SELL 가점
+    # - trend는 NEUTRAL이라도 "되돌림 후 재하락"이면 숏 기회로 봄
+    # - 조건: MACD 약세 유지 + RSI 되돌림(50+) + Stoch 중립~상단(되돌림 완료 구간)
+    if is_sell and (trend == "NEUTRAL"):
+        if (macd < 0) and (macd < macd_signal) and (rsi >= 50) and (stoch_rsi >= 0.55):
+            score += 1.0
+            reasons.append("✅ NEUTRAL이지만 되돌림 후 하락 재개(continuation) → SELL 가점 +1.0")
 
     return score, reasons
 
@@ -616,7 +627,13 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     if signal == "SELL" and rsi > 70 and stoch_rsi > 0.85:
         score -= 1.5
         reasons.append("🔻 RSI + Stoch RSI 과매수 → SELL 진입 위험 (감점 -1.5)")
-
+    # (추세 일치 가점 바로 아래에 추가 추천)
+    # ✅ NEUTRAL인데도 하락 전환/초기 하락 지속이면 SELL 기회 가점
+    if signal == "SELL" and trend == "NEUTRAL":
+        # 전환/지속의 “증거”를 지표로 강제: MACD 약세 + Stoch 상단권 + RSI 50+ (되돌림 후 하락 재개 자리)
+        if (macd < 0) and (macd < macd_signal) and (stoch_rsi >= 0.6) and (rsi >= 50):
+            signal_score += 1.5
+            reasons.append("✅ NEUTRAL 구간이지만 MACD 약세 + 되돌림(고Stoch) → 하락 재개 SELL 가점 +1.5")
         
     # ⚠️ RSI + Stoch RSI 과매도 + 패턴 없음 or 애매한 추세 → 바닥 예측 위험
     if rsi < 30 and stoch_rsi < 0.15 and (pattern is None or trend == "NEUTRAL"):
@@ -1059,9 +1076,6 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
         signal_score += 1
         reasons.append("추세 하락 + 매도 일치 가점+1")
 
-    if trend == "DOWNTREND" and signal == "SELL":
-        signal_score += 1
-        reasons.append("추세 하락 + 매도 일치 가점+1")
 
     if liquidity == "좋음":
         signal_score += 1
