@@ -577,6 +577,18 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     thr = dynamic_thresholds(pair, atr)
     pv = thr["pip_value"]           # pip 크기 (JPY=0.01, 그 외=0.0001)
     NEAR_PIPS = thr["near_pips"]    # 지지/저항 근접 금지 임계(pips)
+    close = None
+    try:
+        if candles is not None and not candles.empty and "close" in candles.columns:
+            close = float(candles["close"].iloc[-1])
+    except Exception:
+        close = None
+    
+    # price가 없으면 close로 대체, close가 없으면 price로 대체
+    if price is None:
+        price = close
+    if close is None:
+        close = price
     
     is_buy = expected_direction == "BUY"
     is_sell = expected_direction == "SELL"
