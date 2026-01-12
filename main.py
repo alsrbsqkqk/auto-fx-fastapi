@@ -1016,21 +1016,8 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
         signal_score += 1
         reasons.append("MACD 히스토그램 증가 → 상승 초기 흐름 가점 +1")
 
-        # =========================
-    # 개선1: MACD 방향(약화/반등) + Stoch 과열/과매도 추격 방지 (BUY/SELL 공통)
-    if stoch_rsi is not None and macd is not None and macd_signal is not None:
-    
-        # BUY 추격 방지: 과열인데 MACD가 약화(=signal 아래로)면 되돌림 위험
-        if signal == "BUY" and stoch_rsi > 0.8 and macd < macd_signal:
-            signal_score -= 2.0
-            reasons.append("⛔ BUY 차단: Stoch RSI 과열 + MACD 약화(macd<signal) → 추격 매수 위험 감점 -2")
-    
-        # SELL 추격 방지: 과매도인데 MACD가 반등(=signal 위로)면 되돌림 위험
-    if signal == "SELL" and stoch_rsi < 0.2 and macd < macd_signal:
-        signal_score -= 2.0
-        reasons.append("⛔ SELL 차단: Stoch RSI 과매도 + MACD 약화(macd<signal) → 추격 매도 위험 감점 -2")
    
-    if stoch_rsi >= 0.95:
+    if stoch_rsi == 1.0:
         if trend == "UPTREND" and macd > 0:
             signal_score -= 0.5
             reasons.append("🟡 Stoch RSI 과열이지만 상승추세 + MACD 양수 → 조건부 감점 -0.5")
@@ -1038,41 +1025,18 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
             signal_score -= 1
             reasons.append("🔴 Stoch RSI 1.0 → 극단적 과매수 → 피로감 주의 감점 -1")
     
-    pip = 0.01  # USDJPY pip size
     
-    # 안전 처리
-    if price is None:
-        price = close
-    if close is None:
-        close = price
-    
-    atr_val = atr if atr is not None else 0.0
-    res_val = resistance if resistance is not None else None
-    
-    near_resistance = False
-    if res_val is not None and price is not None:
-        near_resistance = (res_val - price) <= max(10 * pip, atr_val * 0.6)
-    
-    buffer = max(2 * pip, atr_val * 0.10)
-    breakout_confirmed = False
-    if res_val is not None and close is not None:
-        breakout_confirmed = close >= (res_val + buffer)
-    
-    if stoch_rsi is not None and stoch_rsi > 0.8:
-    
-        if signal == "BUY" and trend == "UPTREND" and rsi < 70 and macd is not None and macd_signal is not None and macd >= macd_signal:
-    
-            if breakout_confirmed and not near_resistance:
-                if pair == "USD_JPY":
-                    signal_score += 2
-                    reasons.append("USDJPY: Stoch RSI 과열 + 돌파확정 → 모멘텀 가점 +2")
-                else:
-                    signal_score += 1.5
-                    reasons.append("Stoch RSI 과열 + 돌파확정 → 모멘텀 가점 +1.5")
+    if stoch_rsi > 0.8:
+        # BUY일 때만 '상승 모멘텀' 가점
+        if signal == "BUY" and trend == "UPTREND" and rsi < 70:
+            if pair == "USD_JPY":
+                signal_score += 3
+                reasons.append("USDJPY 강화: Stoch RSI 과열 + 상승추세(모멘텀) 가점 +3")
             else:
-                signal_score -= 2
-                reasons.append("Stoch RSI 과열 + 저항 근접/돌파미확정 → 추격 BUY 위험 감점 -2")
+                signal_score += 2
+                reasons.append("Stoch RSI 과열 + 상승추세(모멘텀) 가점 +2")
     
+        # SELL일 때는 가점 주지 말고 관망/피로만 남김(기존 유지 느낌)
         else:
             reasons.append("Stoch RSI 과열 → 고점 피로, 관망")
     
