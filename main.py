@@ -265,7 +265,7 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window
     window = max(window_map.get(timeframe, window), 32)  # 최소 32봉 보장
     
     if price is None:
-        raise ValueError("get_enhanced_support_resistance: price 인자가 None입니다. current_price가 제대로 전달되지 않았습니다.")
+        return None, None
     highs = candles["high"].tail(window).astype(float)
     lows = candles["low"].tail(window).astype(float)
     df = candles.tail(window).copy()
