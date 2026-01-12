@@ -2314,7 +2314,7 @@ def analyze_with_gpt(payload, current_price, pair, candles):
     atlanta_hour = now_atlanta.hour
 
     is_restricted = (
-        (2 <= atlanta_hour < 8) or
+        (1 <= atlanta_hour < 8) or
         (atlanta_hour == 11) or
         (atlanta_hour == 12) or
         (13 <= atlanta_hour < 14) 
