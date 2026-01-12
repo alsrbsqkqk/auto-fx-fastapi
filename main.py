@@ -201,6 +201,8 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     # ==================================================
     # 4️⃣ 추세 필터 (가장 중요)
     # ==================================================
+    highs = list(candles["high"].tail(20).astype(float).values)
+    lows  = list(candles["low"].tail(20).astype(float).values)
     if is_buy and trend == "DOWNTREND":
         opportunity_score -= 2
         reasons.append("❌ 하락 추세 + BUY 역방향 (-2)")
@@ -212,7 +214,7 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     # BUY mirror penalty: overbought + no higher-high recently
     if is_buy and trend == "UPTREND":
         if rsi > 65:
-            if not recent_high_break(last_n=2):
+            if not recent_high_break(highs, last_n=2):
                 opportunity_score -= 1.5
                 reasons.append(
                     "⚠️ 과매수 이후 고점 갱신 실패 → 되밀림 위험 BUY 감점 (-1.5)"
@@ -221,7 +223,7 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     # SELL mirror penalty: oversold + no lower-low recently
     if is_sell and trend == "DOWNTREND":
         if rsi < 35:
-            if not recent_low_break(last_n=2):
+            if not recent_low_break(lows, last_n=2):
                 opportunity_score -= 1.5
                 reasons.append(
                     "⚠️ 과매도 이후 저점 갱신 실패 → 반등 위험 SELL 감점 (-1.5)"
@@ -1264,7 +1266,14 @@ def summarize_recent_candle_flow(candles, window=20):
 @app.post("/webhook")
 async def webhook(request: Request):
     print("✅ STEP 1: 웹훅 진입")
-    data = json.loads((await request.body()) or b"{}")  # 빈 바디면 {}로 대체
+    raw = (await request.body()) or b""
+    try:
+        data = json.loads(raw.decode("utf-8") or "{}")
+    except Exception:
+        return JSONResponse(
+            content={"error": "invalid json body", "raw": raw[:200].decode("utf-8", "ignore")},
+            status_code=400
+        )
     pair = data.get("pair")
     signal = data.get("signal")
     print(f"✅ STEP 2: 데이터 수신 완료 | pair: {pair}")
@@ -1308,13 +1317,16 @@ async def webhook(request: Request):
 
     # ✅ 방어 로직 추가 (607줄 기준)
     if current_price is None:
-        raise ValueError("current_price가 None입니다. 데이터 로드 로직을 점검하세요.")
+        return JSONResponse(
+            content={"error": "current_price가 None (candles close missing)"},
+            status_code=400
+        )
     # ✅ ATR 먼저 계산 (Series)
     atr_series = calculate_atr(candles)
-
+    last_atr = float(atr_series.dropna().iloc[-1]) if not atr_series.dropna().empty else None
     # ✅ 지지/저항 계산 - timeframe 키 "H1" 로, atr에는 Series 전달
     support, resistance = get_enhanced_support_resistance(
-        candles, price=current_price, atr=atr_series, timeframe="M30", pair=pair
+        candles, price=current_price, atr=last_atr, timeframe="M30", pair=pair
     )
 
     support_resistance = {"support": support, "resistance": resistance}
