@@ -1018,19 +1018,19 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
 
         # =========================
     # 개선1: MACD 방향(약화/반등) + Stoch 과열/과매도 추격 방지 (BUY/SELL 공통)
-    # =========================
+    if stoch_rsi is not None and macd is not None and macd_signal is not None:
     
-    # BUY 추격 방지: 과열인데 MACD가 약화(=signal 아래로)면 되돌림 위험
-    if signal == "BUY" and stoch_rsi > 0.8 and macd < macd_signal:
-        signal_score -= 2.0
-        reasons.append("⛔ BUY 차단: Stoch RSI 과열 + MACD 약화(macd<signal) → 추격 매수 위험 감점 -2")
+        # BUY 추격 방지: 과열인데 MACD가 약화(=signal 아래로)면 되돌림 위험
+        if signal == "BUY" and stoch_rsi > 0.8 and macd < macd_signal:
+            signal_score -= 2.0
+            reasons.append("⛔ BUY 차단: Stoch RSI 과열 + MACD 약화(macd<signal) → 추격 매수 위험 감점 -2")
     
-    # SELL 추격 방지: 과매도인데 MACD가 반등(=signal 위로)면 되돌림 위험
-    if signal == "SELL" and stoch_rsi < 0.2 and macd > macd_signal:
+        # SELL 추격 방지: 과매도인데 MACD가 반등(=signal 위로)면 되돌림 위험
+    if signal == "SELL" and stoch_rsi < 0.2 and macd < macd_signal:
         signal_score -= 2.0
-        reasons.append("⛔ SELL 차단: Stoch RSI 과매도 + MACD 반등(macd>signal) → 추격 매도 위험 감점 -2")
+        reasons.append("⛔ SELL 차단: Stoch RSI 과매도 + MACD 약화(macd<signal) → 추격 매도 위험 감점 -2")
    
-    if stoch_rsi == 1.0:
+    if stoch_rsi >= 0.95:
         if trend == "UPTREND" and macd > 0:
             signal_score -= 0.5
             reasons.append("🟡 Stoch RSI 과열이지만 상승추세 + MACD 양수 → 조건부 감점 -0.5")
@@ -1060,7 +1060,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     
     if stoch_rsi is not None and stoch_rsi > 0.8:
     
-        if signal == "BUY" and trend == "UPTREND" and rsi < 70 and macd >= macd_signal:
+        if signal == "BUY" and trend == "UPTREND" and rsi < 70 and macd is not None and macd_signal is not None and macd >= macd_signal:
     
             if breakout_confirmed and not near_resistance:
                 if pair == "USD_JPY":
