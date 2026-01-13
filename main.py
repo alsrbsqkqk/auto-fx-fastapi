@@ -232,12 +232,12 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     # 6️⃣ 캔들 패턴
     # ==================================================
     if is_buy and pattern in ["HAMMER", "BULLISH_ENGULFING", "PIERCING_LINE"]:
-        opportunity_score += 1
-        reasons.append(f"🕯 BUY 패턴 {pattern} (+1)")
+        opportunity_score += 0.5
+        reasons.append(f"🕯 BUY 패턴 {pattern} (0.5)")
 
     if is_sell and pattern in ["SHOOTING_STAR", "BEARISH_ENGULFING", "DARK_CLOUD_COVER"]:
-        opportunity_score += 1
-        reasons.append(f"🕯 SELL 패턴 {pattern} (+1)")
+        opportunity_score += 0.5
+        reasons.append(f"🕯 SELL 패턴 {pattern} (0.5)")
 
     # ==================================================
     # 7️⃣ ATR 필터
