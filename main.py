@@ -957,8 +957,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     # 🔟 볼린저 밴드 위치
     # ==================================================
     if price >= bollinger_upper:
-        signal_score -= 1
-        reasons.append("🔴 볼린저 상단 → 과매수 경계 (감점 -1)")
+        reasons.append("🔴 볼린저 상단 → 과매수 경계 (참고)")
     elif price <= bollinger_lower:
         reasons.append("🟢 볼린저 하단 → 반등 관찰 구간 (가점 없음)")
     
