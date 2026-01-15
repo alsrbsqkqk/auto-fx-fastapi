@@ -1121,17 +1121,16 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
                 if trend == "DOWNTREND":
                     signal_score += 0.5
                     reasons.append("Stoch RSI 과매도 + 하락추세 → 반등은 제한적(+0.5)")
-            else:
-                # ✅ 방법1: Balance breakout에서는 과매도 반등 BUY 가점 제거
-                if strategy_name == "Balance breakout":
-                    reasons.append("ℹ️ Balance breakout: Stoch RSI 과매도 반등 BUY 가점 미적용")
-                    # 점수는 주지 않음
                 else:
-                    signal_score += 1
-                    reasons.append("Stoch RSI 과매도 → BUY 반등 기대(+1)")
+                    # ✅ 방법1: Balance breakout에서는 과매도 반등 BUY(+1) 가점 제거
+                    if (strategy_name or "").strip().lower() == "balance breakout":
+                        reasons.append("ℹ Balance breakout: Stoch RSI 과매도 반등 BUY 가점 미적용")
+                    else:
+                        signal_score += 1
+                        reasons.append("Stoch RSI 과매도 → BUY 반등 기대(+1)")
     
         else:
-            # SELL은 기존대로 관망 (원하면 여기서 감점으로 바꿔도 됨)
+            # SELL은 기존대로 관망
             reasons.append("Stoch RSI 과매도 → SELL은 추격 위험, 관망")
     
     else:
