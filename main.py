@@ -813,9 +813,12 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     # 1️⃣ 완전 중립 횡보장 방어
     # ==================================================
     if trend == "NEUTRAL":
-        if 45 <= rsi <= 55 and -0.05 < macd < 0.05 and 0.3 < stoch_rsi < 0.7:
-            if abs(macd) < 0.02:
-                signal_score -= 1
+        # 완전 횡보 정의: RSI 중립 + MACD 거의 0 + Stoch 중립대
+        if (45 <= rsi <= 55) and (-0.03 < macd < 0.03) and (0.35 <= stoch_rsi <= 0.65):
+            score -= 1.0
+            reasons.append("⚠️ 완전 횡보(NEUTRAL + RSI/MACD/Stoch 중립) → 진입 신호 약화 (-1)")
+        else:
+            reasons.append("🟡 NEUTRAL: 전환/되돌림 가능 구간 → 추가 확인 필요(감점 없음)")
     
     
     # ==================================================
@@ -1033,15 +1036,28 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     # 개선1: MACD 방향(약화/반등) + Stoch 과열/과매도 추격 방지 (BUY/SELL 공통)
     if stoch_rsi is not None and macd is not None and macd_signal is not None:
     
-        # BUY 추격 방지: 과열인데 MACD가 약화(=signal 아래로)면 되돌림 위험
+        # 1) BUY 추격 방지 (과열 + MACD 약화)
         if signal == "BUY" and stoch_rsi > 0.8 and macd < macd_signal:
             signal_score -= 2.0
             reasons.append("⛔ BUY 차단: Stoch RSI 과열 + MACD 약화(macd<signal) → 추격 매수 위험 감점 -2")
     
-        # SELL 추격 방지: 과매도인데 MACD가 반등(=signal 위로)면 되돌림 위험
-    if signal == "SELL" and stoch_rsi < 0.2 and macd < macd_signal:
-        signal_score -= 2.0
-        reasons.append("⛔ SELL 차단: Stoch RSI 과매도 + MACD 약화(macd<signal) → 추격 매도 위험 감점 -2")
+        # 2) SELL 추격 방지 (과매도 + MACD 약화)  ✅ 여기서부터 보완이 핵심
+        if signal == "SELL" and stoch_rsi < 0.2 and macd < macd_signal:
+    
+            # (A) 하락 추세면: 과매도라도 '추세형 하락'이 계속될 수 있으니 강차단 금지
+            if trend == "DOWNTREND":
+                signal_score -= 0.5
+                reasons.append("🟡 DOWNTREND + 과매도(Stoch<0.2) + MACD 약화 → 추세형 하락 지속 가능(경고 -0.5)")
+    
+            # (B) NEUTRAL(전환/분배) 구간: RSI가 50 아래면 하락쪽 우세 가능 → 강차단 금지(중립 처리)
+            elif trend == "NEUTRAL" and rsi is not None and rsi < 50:
+                # 점수는 건드리지 않고 '중립 경고'만 남김
+                reasons.append("🟡 NEUTRAL 전환 구간 + RSI<50 + 과매도(Stoch<0.2) → 추격 숏 단정 금지(중립)")
+    
+            # (C) 나머지(상승/횡보 성격): 과매도 숏은 반등에 말릴 확률 높음 → 기존처럼 강차단
+            else:
+                signal_score -= 2.0
+                reasons.append("⛔ SELL 차단: 과매도(Stoch<0.2) + MACD 약화 + 추세 불리 → 추격 매도 위험 감점 -2")
    
     if stoch_rsi >= 0.95:
         if trend == "UPTREND" and macd > 0:
