@@ -1149,8 +1149,12 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
             reasons.append("추세 상승 + 매수 일치 가점+1")
     
     elif trend == "DOWNTREND" and signal == "SELL":
-        signal_score += 1
-        reasons.append("추세 하락 + 매도 일치 가점+1")
+        # ✅ 과열(되돌림/숏말림) 구간에서는 추세 SELL 가점 주지 않음
+        if stoch_rsi is not None and stoch_rsi >= 0.95:
+            reasons.append("⛔ Stoch RSI 과열(≥0.95) → 숏 말림 위험, 추세 매도 가점 미적용")
+        else:
+            signal_score += 1
+            reasons.append("추세 하락 + 매도 일치 가점+1")
 
 
     if liquidity == "좋음":
