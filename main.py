@@ -564,7 +564,7 @@ def get_buffer_by_symbol(symbol):
     else:
         return 10 * 0.0001
 
-def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi, trend, prev_trend, signal, liquidity, pattern, pair, candles, atr, price, bollinger_upper, bollinger_lower, support, resistance, support_distance, resistance_distance, pip_size, expected_direction=None):
+def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi, trend, prev_trend, signal, liquidity, pattern, pair, candles, atr, price, bollinger_upper, bollinger_lower, support, resistance, support_distance, resistance_distance, pip_size, expected_direction=None, strategy_name=None):
     signal_score = 0
     opportunity_score = 0  
     reasons = []
@@ -1121,6 +1121,11 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
                 if trend == "DOWNTREND":
                     signal_score += 0.5
                     reasons.append("Stoch RSI 과매도 + 하락추세 → 반등은 제한적(+0.5)")
+            else:
+                # ✅ 방법1: Balance breakout에서는 과매도 반등 BUY 가점 제거
+                if strategy_name == "Balance breakout":
+                    reasons.append("ℹ️ Balance breakout: Stoch RSI 과매도 반등 BUY 가점 미적용")
+                    # 점수는 주지 않음
                 else:
                     signal_score += 1
                     reasons.append("Stoch RSI 과매도 → BUY 반등 기대(+1)")
