@@ -1483,7 +1483,7 @@ async def webhook(request: Request):
     allow_conditional_trade = time_since_last > timedelta(hours=2)
 
     strategy_thresholds = {
-    "Balance breakout": 3.5,
+    "Balance breakout": 4.5,
     "SELL_ONLY_BREAKOUT_ENGULFING_11252025": 2.0,
     "BUY_ONLY_BREAKOUT_ENGULFING_11252025": 2.0,
     }
