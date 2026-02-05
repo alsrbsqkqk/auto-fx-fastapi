@@ -2338,10 +2338,9 @@ def analyze_with_gpt(payload, current_price, pair, candles):
 
     is_restricted = (
         (1 <= atlanta_hour < 8) or
-        (atlanta_hour == 11) or
-        (atlanta_hour == 12) or
-        (13 <= atlanta_hour < 14) 
+        (atlanta_hour == 12)  
     )
+
 
     if is_restricted:
         print("🚫 현재 시간은 거래 제한 시간대입니다. GPT 호출을 건너뜁니다.")
