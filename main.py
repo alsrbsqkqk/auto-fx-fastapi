@@ -1697,17 +1697,24 @@ async def webhook(request: Request):
         f"execute={should_execute}"
     )
     if should_execute:
+        pair_for_order = pair.replace("/", "_")
+    
+        # ✅ (추가) 이미 열린 트레이드가 있으면 신규 진입 스킵 (FIFO 방지)
+        opened, cnt = has_open_trade(pair_for_order)
+        if opened:
+            print(f"[SKIP] {pair_for_order} openTrades={cnt} → FIFO 방지로 신규진입 스킵")
+            should_execute = False
+    
+    if should_execute:
         units = 50000 if final_decision == "BUY" else -50000
         digits = 3 if pair.endswith("JPY") else 5
-
-        
+    
         print(f"[DEBUG] WILL PLACE ORDER → pair={pair}, side={final_decision}, units={units}, "
-            f"price={price}, tp={final_tp}, sl={final_sl}, digits={digits}, score={signal_score}")
-        pair_for_order = pair.replace("/", "_")
+              f"price={price}, tp={final_tp}, sl={final_sl}, digits={digits}, score={signal_score}")
+    
         result = place_order(pair_for_order, units, final_tp, final_sl, digits)
     else:
-        print(f"[DEBUG] SKIP ORDER → should_execute={should_execute}, "
-                f"decision={final_decision}, score={signal_score}")
+        print(f"[DEBUG] SKIP ORDER → should_execute={should_execute}, decision={final_decision}, score={signal_score}")
         result = {"status": "skipped"}
     
     executed_time = datetime.utcnow()
@@ -2067,6 +2074,34 @@ def fetch_and_score_forex_news(pair):
         message = "❓ 뉴스 확인 실패"
 
     return score, message
+
+def has_open_trade(pair_for_order: str) -> tuple[bool, int]:
+    """
+    pair_for_order: 'USD_JPY' 형태
+    return: (열려있음 여부, 해당 종목 openTrades 개수)
+    """
+    url = f"https://api-fxtrade.oanda.com/v3/accounts/{ACCOUNT_ID}/openTrades"
+    headers = {
+        "Authorization": f"Bearer {OANDA_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        j = r.json() if r.ok else {}
+        trades = j.get("trades", []) if isinstance(j, dict) else []
+
+        cnt = 0
+        for t in trades:
+            if t.get("instrument") == pair_for_order:
+                cnt += 1
+
+        return (cnt > 0), cnt
+
+    except Exception as e:
+        # 조회 실패 시엔 보수적으로 "진입 막기"가 안전
+        print("[OANDA] openTrades check failed:", e)
+        return True, -1
 
 
 def place_order(pair, units, tp, sl, digits):
