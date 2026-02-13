@@ -1697,7 +1697,7 @@ async def webhook(request: Request):
         f"execute={should_execute}"
     )
     if should_execute:
-        units = 50000 if final_decision == "BUY" else 50000
+        units = 50000 if final_decision == "BUY" else -50000
         digits = 3 if pair.endswith("JPY") else 5
 
         
@@ -2102,6 +2102,36 @@ def place_order(pair, units, tp, sl, digits):
 
         print(f"[OANDA] status_code={response.status_code}")
         print(f"[OANDA] body={j}")
+    
+        # ✅ (추가) 캔슬/리젝트 이유 요약 출력
+        if isinstance(j, dict):
+            cancel_tx = j.get("orderCancelTransaction") or {}
+            reject_tx = j.get("orderRejectTransaction") or {}
+            create_tx = j.get("orderCreateTransaction") or {}
+        else:
+            cancel_tx, reject_tx, create_tx = {}, {}, {}
+    
+        if cancel_tx:
+            print(
+                "[OANDA] cancel_reason =", cancel_tx.get("reason"),
+                "| canceled_order_id =", cancel_tx.get("orderID"),
+                "| cancel_id =", cancel_tx.get("id"),
+            )
+    
+        if reject_tx:
+            print(
+                "[OANDA] reject_reason =", reject_tx.get("rejectReason"),
+                "| rejected_order_id =", reject_tx.get("orderID"),
+                "| reject_id =", reject_tx.get("id"),
+            )
+    
+        if create_tx:
+            print(
+                "[OANDA] created_order_id =", create_tx.get("id"),
+                "| instrument =", create_tx.get("instrument"),
+                "| units =", create_tx.get("units"),
+                "| timeInForce =", create_tx.get("timeInForce"),
+            )
 
         # ✅ 성공 판단은 status_code로
         if 200 <= response.status_code < 300:
