@@ -1484,8 +1484,8 @@ async def webhook(request: Request):
 
     strategy_thresholds = {
     "Balance breakout": 4.5,
-    "SELL_ONLY_BREAKOUT_ENGULFING_11252025": 1.5,
-    "BUY_ONLY_BREAKOUT_ENGULFING_11252025": 1.5,
+    "SELL_ONLY_BREAKOUT_ENGULFING_11252025": -0.5,
+    "BUY_ONLY_BREAKOUT_ENGULFING_11252025": -0.5,
     }
 
     alert_data = payload.get("alert_data", {})
@@ -2402,7 +2402,7 @@ def analyze_with_gpt(payload, current_price, pair, candles):
     atlanta_hour = now_atlanta.hour
 
     is_restricted = (
-        (1 <= atlanta_hour < 8) or
+        (2 <= atlanta_hour < 5) or
         (atlanta_hour == 12)  
     )
 
