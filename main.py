@@ -20,6 +20,7 @@ _gpt_last_ts = 0.0
 _gpt_cooldown_until = 0.0
 _gpt_rate_lock = threading.Lock()
 _gpt_next_slot = 0.0
+_last_execution_time = 0.0  # 마지막 실행 시간을 저장할 변수
 GPT_RPM = 20                     
 _SLOT = 60.0 / GPT_RPM
 from oauth2client.service_account import ServiceAccountCredentials
@@ -1301,6 +1302,12 @@ def summarize_recent_candle_flow(candles, window=20):
 @app.post("/webhook")
 async def webhook(request: Request):
     print("✅ STEP 1: 웹훅 진입")
+    # 🚀 바로 여기에 다음 6줄을 삽입하세요
+    global _last_execution_time
+    current_time = _t.time()
+    if current_time - _last_execution_time < 600:  # 600초 = 10분
+        print(f"⚠️ [차단] 10분 쿨다운 중입니다. (경과: {int(current_time - _last_execution_time)}초)")
+        return JSONResponse(content={"status": "ignored", "reason": "cooldown_active"})
     raw = (await request.body()) or b""
     try:
         data = json.loads(raw.decode("utf-8") or "{}")
@@ -1534,6 +1541,10 @@ async def webhook(request: Request):
                 final_decision = parsed_decision
                 final_tp = parsed_tp
                 final_sl = parsed_sl
+                
+                # 🚀 여기에 아래 두 줄을 추가하세요! (실제 진입 결정 시 시간 기록)
+                global _last_execution_time
+                _last_execution_time = _t.time()
                 print(f"[✔️UPDATE] GPT 피드백으로 최종 결정 업데이트: {final_decision}, tp={final_tp}, sl={final_sl}")
             else:
                 print(f"[⚠️SKIP] GPT 피드백 무시됨 - 불충분한 조건: {parsed_decision}, tp={parsed_tp}, sl={parsed_sl}")
