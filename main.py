@@ -1543,7 +1543,6 @@ async def webhook(request: Request):
                 final_sl = parsed_sl
                 
                 # 🚀 여기에 아래 두 줄을 추가하세요! (실제 진입 결정 시 시간 기록)
-                global _last_execution_time
                 _last_execution_time = _t.time()
                 print(f"[✔️UPDATE] GPT 피드백으로 최종 결정 업데이트: {final_decision}, tp={final_tp}, sl={final_sl}")
             else:
