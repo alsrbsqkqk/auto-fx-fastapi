@@ -2413,6 +2413,7 @@ def analyze_with_gpt(payload, current_price, pair, candles):
 
     is_restricted = (
         (2 <= atlanta_hour < 5) or
+        (atlanta_hour == 17) or             # 17:00~17:59 전체 차단 (보수적)
         (atlanta_hour == 12)  
     )
 
