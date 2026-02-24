@@ -1492,7 +1492,7 @@ async def webhook(request: Request):
     strategy_thresholds = {
     "Balance breakout": 4.5,
     "BUY_ENTRY_BAR_CLOSE": -1.0,
-    "SELL_ENTRY_BAR_CLOSE": -1.0,
+    "SELL_ENTRY_BAR_CLOSE": -3.0,
     }
 
     alert_data = payload.get("alert_data", {})
