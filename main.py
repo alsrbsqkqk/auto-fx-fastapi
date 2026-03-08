@@ -1413,6 +1413,7 @@ async def webhook(request: Request):
     fibo_levels = calculate_fibonacci_levels(candles["high"].max(), candles["low"].min())
     # 📌 현재가 계산
     price = current_price
+    price_digits = int(abs(np.log10(pip_value_for(pair))))  # EURUSD=4, JPY계열=2
     signal_score, reasons = score_signal_with_filters(
         rsi.iloc[-1],
         macd.iloc[-1],
@@ -1436,8 +1437,84 @@ async def webhook(request: Request):
         resistance_distance,
         pip_size
     )
+    # ===== GPT 입력 업그레이드용 안전한 추가 정보 =====
+    try:
+        recent_ohlc = []
+        for _, row in candles.tail(5).iterrows():
+            recent_ohlc.append({
+                "open": round(float(row["open"]), price_digits),
+                "high": round(float(row["high"]), price_digits),
+                "low": round(float(row["low"]), price_digits),
+                "close": round(float(row["close"]), price_digits),
+            })
+    except Exception as e:
+        print("❌ recent_ohlc 생성 실패:", e)
+        recent_ohlc = []
 
-    price_digits = int(abs(np.log10(pip_value_for(pair))))  # EURUSD=4, JPY계열=2
+    try:
+        last_bar = candles.iloc[-1]
+        last_open = float(last_bar["open"])
+        last_high = float(last_bar["high"])
+        last_low = float(last_bar["low"])
+        last_close = float(last_bar["close"])
+
+        last_range = max(last_high - last_low, pip_size)
+        last_body = abs(last_close - last_open)
+        upper_wick = last_high - max(last_open, last_close)
+        lower_wick = min(last_open, last_close) - last_low
+
+        candle_micro = {
+            "last_body": round(last_body, price_digits),
+            "last_range": round(last_range, price_digits),
+            "last_body_ratio": round(last_body / last_range, 3),
+            "upper_wick": round(max(upper_wick, 0.0), price_digits),
+            "lower_wick": round(max(lower_wick, 0.0), price_digits),
+        }
+    except Exception as e:
+        print("❌ candle_micro 생성 실패:", e)
+        candle_micro = {}
+
+    try:
+        distance_to_support_pips = round(pips_between(price, support, pair), 1) if support is not None else None
+        distance_to_resistance_pips = round(pips_between(price, resistance, pair), 1) if resistance is not None else None
+    except Exception as e:
+        print("❌ support/resistance 거리 계산 실패:", e)
+        distance_to_support_pips = None
+        distance_to_resistance_pips = None
+
+    try:
+        if len(candles) >= 4:
+            recent_high_3 = float(candles["high"].iloc[-4:-1].max())
+            recent_low_3 = float(candles["low"].iloc[-4:-1].min())
+        else:
+            recent_high_3 = float(candles["high"].tail(3).max())
+            recent_low_3 = float(candles["low"].tail(3).min())
+
+        breakout_context = {
+            "above_recent_high_3": bool(price > recent_high_3),
+            "below_recent_low_3": bool(price < recent_low_3),
+            "breakout_margin_pips_up": round((price - recent_high_3) / pip_size, 1),
+            "breakout_margin_pips_down": round((recent_low_3 - price) / pip_size, 1),
+        }
+    except Exception as e:
+        print("❌ breakout_context 생성 실패:", e)
+        breakout_context = {}
+
+    try:
+        recent10 = candles.tail(10)
+        box_high = float(recent10["high"].max())
+        box_low = float(recent10["low"].min())
+        box_width = max(box_high - box_low, pip_size)
+
+        structure_context = {
+            "box_high": round(box_high, price_digits),
+            "box_low": round(box_low, price_digits),
+            "box_width_pips": round(box_width / pip_size, 1),
+            "price_position_in_box": round((price - box_low) / box_width, 2),
+        }
+    except Exception as e:
+        print("❌ structure_context 생성 실패:", e)
+        structure_context = {}
     # 📦 Payload 구성
     payload = {
         "pair": pair,
@@ -1454,6 +1531,12 @@ async def webhook(request: Request):
         "liquidity": liquidity,   
         "support": round(support, price_digits),
         "resistance": round(resistance, price_digits),
+        "recent_ohlc": recent_ohlc,
+        "candle_micro": candle_micro,
+        "distance_to_support_pips": distance_to_support_pips,
+        "distance_to_resistance_pips": distance_to_resistance_pips,
+        "breakout_context": breakout_context,
+        "structure_context": structure_context,
         "news": f"{news} | {news_msg}",
         "new_high": bool(high_low_analysis["new_high"]),
         "new_low": bool(high_low_analysis["new_low"]),
@@ -2476,6 +2559,9 @@ def analyze_with_gpt(payload, current_price, pair, candles):
                 "  • MDA = Σ(Di × Wi × Ii): 시간, 공간, 인과 등 다양한 차원에서 통찰과 영향을 조합하라.\\n"
                 "  • IL = (S × E × T) / (L × R): 직관도 논리/경험과 파악하고 전략과 경험 기반 도약도 반영하라.\\n\\n"
                 "(2) 거래는 기본적으로 1~2시간 내 청산을 목표로 하는 단타 스캘핑 트레이딩이다.\\n"
+                "- 이 전략은 reversal 전략이 아니라 breakout/continuation scalp 전략이다.\n"
+                "- resistance 근접, RSI 45~60, stoch 과열은 단독으로 WAIT 근거가 아니다.\n"
+                "- recent_ohlc, candle_micro, breakout_context, structure_context를 우선 해석하라.\n"
                 "- SL과 TP는 ATR 기준 가급적 최소 50% 이상 거리로 설정하되, 시간이 너무 오래 걸릴 것 같으면 무시해도 좋다.\\n"
                 "- 하지만 반드시 **현재가 기준으로 TP는 ATR기반으로 계산하되 과도한 목표 설정을 방지하기 위해, 계산식 TP distance는 max(ATRx1.2, 0.11) 이 공식을 항상 따라라**, SL distance는 max(ATRx1.1, 0.11)이 공식을 항상 따르되 SL은 항상 16pip을 초과하지 않도록 한다. 이내로 설정하게 해줘 어떻게 계산했는지도 보여줘. 예외는 없다 그렇지 않으면 시장 변동성 대비 손실 확률이 급격히 높아진다.\\n"
                 "- 최근 5개 캔들의 고점/저점을 참고해서 너가 설정한 TP/SL이 **REASONABLE한지 꼭 검토**해.\\n"
