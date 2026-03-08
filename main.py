@@ -596,8 +596,8 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
 
     # RSI 중립 구간 (45~55) + 추세 중립 → 공통 감점
     if 45 <= rsi <= 55 and trend == "NEUTRAL":
-        score -= 1
-        reasons.append("⚠️ RSI 중립(45~55) + 트렌드 NEUTRAL → 진입 신호 약화 (-1)")
+        score -= 0.3
+        reasons.append("⚠️ RSI 중립(45~55) + 트렌드 NEUTRAL → 진입 신호 약화 (-0.3)")
     
     # =========================
     # BUY 전용 감점 로직
@@ -636,7 +636,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
 
     sl, tp, r_ratio = calculate_structured_sl_tp(entry_price, direction, symbol, support, resistance, pv)
 
-    if r_ratio < 1.4:
+    if r_ratio < 1.1:
         signal_score -= 2.0
         reasons.append("📉 손익비 낮음 (%.2f) → -2.0점 감점" % r_ratio)
         
@@ -789,9 +789,6 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
         over2 = (len(last2) > 1 and last2.iloc[-2]['close'] > resistance + 2 * pip_value_for(pair)) if not last2.empty else False
         confirmed_breakout_up = over1 or (over1 and over2)
 
-        if not confirmed_breakout_up and dist_to_res_pips <= 10:
-            signal_score -= 1.0
-            reasons.append("⛔ 저항선 돌파 미확인 + 10pip 이내 → 감점-1.0")
 
     # SELL: 지지 3pip 이내면 금지. 이탈(확정) 없고 10pip 이내도 금지
     if signal == "SELL":
@@ -805,9 +802,6 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
         under2 = (len(last2) > 1 and last2.iloc[-2]['close'] < support - 2 * pip_value_for(pair)) if not last2.empty else False
         confirmed_breakdown = under1 or (under1 and under2)
 
-        if not confirmed_breakdown and dist_to_sup_pips <= 5:
-            signal_score -= 1.5
-            reasons.append("⛔ 지지선 이탈 미확인 + 5pip 이내 → 추격 매도 위험 (감점-1.5)")
 
         # ✅ RSI, MACD, Stoch RSI 모두 중립 + Trend도 NEUTRAL → 횡보장 진입 방어
     # ==================================================
@@ -816,8 +810,8 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     if trend == "NEUTRAL":
         # 완전 횡보 정의: RSI 중립 + MACD 거의 0 + Stoch 중립대
         if (45 <= rsi <= 55) and (-0.03 < macd < 0.03) and (0.35 <= stoch_rsi <= 0.65):
-            score -= 1.0
-            reasons.append("⚠️ 완전 횡보(NEUTRAL + RSI/MACD/Stoch 중립) → 진입 신호 약화 (-1)")
+            score -= 0.5
+            reasons.append("⚠️ 완전 횡보(NEUTRAL + RSI/MACD/Stoch 중립) → 진입 신호 약화 (-0.5)")
         else:
             reasons.append("🟡 NEUTRAL: 전환/되돌림 가능 구간 → 추가 확인 필요(감점 없음)")
     
@@ -825,13 +819,13 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     # ==================================================
     # 2️⃣ BUY 과열 진입 방어 (강력)
     # ==================================================
-    if signal == "BUY" and rsi > 80 and stoch_rsi > 0.85:
+    if signal == "BUY" and rsi > 85 and stoch_rsi > 0.9:
         if macd < macd_signal:
-            signal_score -= 3
-            reasons.append("⛔ RSI/Stoch RSI 극단 과열 + MACD 약세 → BUY (감점 -3)")
+            signal_score -= 1.5
+            reasons.append("⛔ RSI/Stoch RSI 극단 과열 + MACD 약세 → BUY (감점 -1.5)")
         else:
-            signal_score -= 2
-            reasons.append("⚠️ RSI/Stoch 과열 → BUY 피로 구간 (감점 -2)")
+            signal_score -= 0.5
+            reasons.append("⚠️ RSI/Stoch 과열 → BUY 피로 구간 (감점 -0.5)")
     
     
         # ③ SELL 과매도 방어 (하락추세 예외 허용)
