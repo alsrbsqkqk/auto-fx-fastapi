@@ -209,9 +209,9 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
         opportunity_score += 0.5
         reasons.append("⚠️ 약한 SELL 조건 충족 (+0.5)")
 
-    if stoch_rsi > 0.95 and rsi < 50 and macd < macd_signal and is_sell:
-        opportunity_score += 2
-        reasons.append("🔻 Stoch RSI 과열 + RSI 약세 + MACD 하락 → 강한 SELL (+2)")
+    if stoch_rsi > 0.9:
+        opportunity_score -= 2
+        reasons.append("❌ 과열 구간 진입 금지 (추격 SELL 방지)")
 
 
     # ==============================
@@ -243,12 +243,12 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     highs = list(candles["high"].tail(20).astype(float).values)
     lows  = list(candles["low"].tail(20).astype(float).values)
     if is_buy and trend == "DOWNTREND":
-        opportunity_score -= 2
-        reasons.append("❌ 하락 추세 + BUY 역방향 (-2)")
+        opportunity_score -= 4
+        reasons.append("❌ 하락 추세 + BUY 역방향 (-4)")
 
     if is_sell and trend == "UPTREND":
-        opportunity_score -= 2
-        reasons.append("❌ 상승 추세 + SELL 역방향 (-2)")
+        opportunity_score -= 4
+        reasons.append("❌ 상승 추세 + SELL 역방향 (-4)")
 
     # BUY mirror penalty: overbought + no higher-high recently
     if is_buy and trend == "UPTREND":
@@ -697,9 +697,9 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
 
     sl, tp, r_ratio = calculate_structured_sl_tp(entry_price, direction, symbol, support, resistance, pv)
 
-    if r_ratio < 1.1:
-        signal_score -= 2.0
-        reasons.append("📉 손익비 낮음 (%.2f) → -2.0점 감점" % r_ratio)
+    if r_ratio < 1.4:
+        signal_score -= 4.0
+        reasons.append("📉 손익비 낮음 (%.2f) → -4.0점 감점" % r_ratio)
         
     # ====================================
     if macd < -0.02 and trend != "DOWNTREND":
@@ -908,7 +908,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     
         # ✅ NEUTRAL/UPTREND에서는 기존 방어 로직 유지
         else:
-            if macd > macd_signal and stoch_rsi > 0.5:
+            if macd > macd_signal and 0.3 < stoch_rsi < 0.7:
                 signal_score += 1
                 reasons.append("✅ 과매도 SELL이나 MACD/Stoch 반등 → 예외적 진입 허용 (+1)")
             elif stoch_rsi > 0.3:
@@ -2559,8 +2559,9 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
 
     is_restricted = (
         (2 <= atlanta_hour < 5) or
-        (atlanta_hour == 17) or             # 17:00~17:59 전체 차단 (보수적)
-        (atlanta_hour == 12)  
+        (atlanta_hour == 12) or
+        (atlanta_hour == 17) or
+        (8 <= atlanta_hour < 11)
     )
 
 
