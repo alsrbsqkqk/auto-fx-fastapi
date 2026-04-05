@@ -1649,16 +1649,16 @@ async def webhook(request: Request):
     gpt_raw = None
     raw_text = ""  # ✅ 조건문 전에 미리 초기화
     if signal_score >= threshold:
-            # 📸 [추가] 1. 사진 찍기
-            chart_path = capture_tradingview_chart(pair)
-            # 📸 [추가] 2. 이미지를 GPT가 읽을 수 있는 문자열로 변환
-            base64_image = encode_image(chart_path) if chart_path else None
+        # 📸 [추가] 1. 사진 찍기
+        chart_path = capture_tradingview_chart(pair)
+        # 📸 [추가] 2. 이미지를 GPT가 읽을 수 있는 문자열로 변환
+        base64_image = encode_image(chart_path) if chart_path else None
     
-            # 🤖 [수정] 3. GPT 분석 함수 호출 (base64_image 인자 추가)
-            # ※ 주의: analyze_with_gpt 함수 정의 부분에도 image 인자를 받도록 수정해야 합니다.
-            gpt_raw = analyze_with_gpt(payload, price, pair, candles, base64_image) 
+        # 🤖 [수정] 3. GPT 분석 함수 호출 (base64_image 인자 추가)
+        # ※ 주의: analyze_with_gpt 함수 정의 부분에도 image 인자를 받도록 수정해야 합니다.
+        gpt_raw = analyze_with_gpt(payload, price, pair, candles, base64_image) 
             
-            print("✅ STEP 6: GPT 응답 수신 완료 (이미지 분석 포함)")
+        print("✅ STEP 6: GPT 응답 수신 완료 (이미지 분석 포함)")
         # ✅ 추가: 파싱 결과 강제 정규화 (대/소문자/공백/이상값 방지)
         raw_text = (
             gpt_raw if isinstance(gpt_raw, str)
