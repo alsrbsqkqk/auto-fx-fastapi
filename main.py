@@ -700,6 +700,16 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     if r_ratio < 1.4:
         signal_score -= 4.0
         reasons.append("📉 손익비 낮음 (%.2f) → -4.0점 감점" % r_ratio)
+
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    
+    now_atlanta = datetime.now(ZoneInfo("America/New_York"))
+    atlanta_hour = now_atlanta.hour
+    
+    if 19 <= atlanta_hour < 23:
+        signal_score -= 3
+        reasons.append("🌙 애틀랜타 19~23시 거래 감점 (-3)")
         
     # ====================================
     if macd < -0.02 and trend != "DOWNTREND":
@@ -2499,7 +2509,11 @@ def parse_gpt_feedback(text):
 
     return final_decision, tp, sl
     print(f"[DEBUG] 최종 결정 리턴: final_decision={final_decision}, tp={tp}, sl={sl}")
-    
+
+
+
+
+
  # === TP/SL 구조·ATR 보정 ===
 def adjust_tp_sl_for_structure(pair, entry, tp, sl, support, resistance, atr):
     if entry is None or tp is None or sl is None:
@@ -2561,7 +2575,7 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
         (2 <= atlanta_hour < 5) or
         (atlanta_hour == 12) or
         (atlanta_hour == 17) or
-        (8 <= atlanta_hour < 11)
+        (8 <= atlanta_hour < 9)
     )
 
 
