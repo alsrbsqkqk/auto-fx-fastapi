@@ -2599,7 +2599,26 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
     mtf_context = get_multi_timeframe_context(pair)
     print("✅ 테스트 출력: ", mtf_summary)
         
-    messages = [
+    # 1. GPT에게 보낼 콘텐츠 리스트 생성 (텍스트와 이미지를 분리해서 담기)
+        user_content = [
+            {
+                "type": "text", 
+                "text": f"데이터 분석 보고: {json.dumps(payload, ensure_ascii=False)}"
+            }
+        ]
+    
+        # 2. 사진(base64_image)이 있다면 리스트에 추가
+        if base64_image:
+            user_content.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{base64_image}",
+                    "detail": "high"
+                }
+            })
+    
+        # 3. 전체 메시지 구조 구성
+        messages = [
             {
                 "role": "system",
                 "content": (
@@ -2692,25 +2711,27 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
             },
             {
                 "role": "user",
-                "content": json.dumps(payload, ensure_ascii=False)
+                "content": user_content # 텍스트 데이터 + 이미지 데이터가 포함된 리스트 전달
             }
         ]
-    
-    # 2-c) 요청 바이트 수 로깅 (선택)
-    body = {
-        "model": "gpt-4o-2024-11-20",
-        "input": messages,    
-        "temperature": 0.3,
-        "max_output_tokens": 800,
-    
-    }
-    need_tokens = _approx_tokens(messages)
-    _preflight_gate(need_tokens)   # 요청 직전 선대기
-    try:
-        _bytes = len(json.dumps(payload, ensure_ascii=False))
-    except Exception:
-        _bytes = -1
-    dbg("gpt.body", bytes=_bytes, max_tokens=body.get("max_output_tokens"))
+        
+        # 2-c) 요청 바이트 수 로깅 (선택)
+        body = {
+            "model": "gpt-4o-2024-11-20",
+            "messages": messages,    
+            "temperature": 0.3,
+            "max_output_tokens": 1000,
+        
+        }
+        need_tokens = _approx_tokens(messages)
+            _preflight_gate(need_tokens)   # 요청 직전 선대기
+        
+            try:
+                _bytes = len(json.dumps(payload, ensure_ascii=False))
+            except Exception:
+                _bytes = -1
+            
+            dbg("gpt.body", bytes=_bytes, max_tokens=body.get("max_tokens"))
     print("🔍 FULL BODY DEBUG:", json.dumps(body, indent=2, ensure_ascii=False))
 
 
