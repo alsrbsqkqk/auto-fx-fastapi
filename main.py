@@ -2715,24 +2715,24 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
         }
     ]
         
-        # 2-c) 요청 바이트 수 로깅 (선택)
-        body = {
-            "model": "gpt-4o-2024-11-20",
-            "messages": messages,    
-            "temperature": 0.3,
-            "max_output_tokens": 1000,
+    # 2-c) 요청 바이트 수 로깅 (선택)
+    body = {
+        "model": "gpt-4o-2024-11-20",
+        "messages": messages,    
+        "temperature": 0.3,
+        "max_output_tokens": 1000,
+    
+    }
+    need_tokens = _approx_tokens(messages)
+        _preflight_gate(need_tokens)   # 요청 직전 선대기
+    
+        try:
+            _bytes = len(json.dumps(payload, ensure_ascii=False))
+        except Exception:
+            _bytes = -1
         
-        }
-        need_tokens = _approx_tokens(messages)
-            _preflight_gate(need_tokens)   # 요청 직전 선대기
-        
-            try:
-                _bytes = len(json.dumps(payload, ensure_ascii=False))
-            except Exception:
-                _bytes = -1
-            
-            dbg("gpt.body", bytes=_bytes, max_tokens=body.get("max_tokens"))
-    print("🔍 FULL BODY DEBUG:", json.dumps(body, indent=2, ensure_ascii=False))
+        dbg("gpt.body", bytes=_bytes, max_tokens=body.get("max_tokens"))
+        print("🔍 FULL BODY DEBUG:", json.dumps(body, indent=2, ensure_ascii=False))
 
 
     # 2-d) 최소 스로틀: 같은 프로세스에서 1.2초(또는 네가 정한 값) 간격 보장
