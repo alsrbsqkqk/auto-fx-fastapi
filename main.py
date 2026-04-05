@@ -14,6 +14,10 @@ import threading
 import ta
 import time as _t
 import math
+import base64
+import os
+from playwright.sync_api import sync_playwright
+import time as _t
 print("🔥 CURRENT OPENAI KEY:", os.getenv("OPENAI_API_KEY"))
 _gpt_lock = threading.Lock()
 _gpt_last_ts = 0.0
@@ -51,6 +55,40 @@ def _preflight_gate(need_tokens: int):
         wait_until = max(wait_until, _rpm_reset_ts)
     if wait_until > now:
         _t.sleep((wait_until - now) + random.uniform(0.05, 0.2))
+# 1. 트레이딩뷰 차트를 캡처하는 함수
+def capture_tradingview_chart(pair):
+    print(f"📸 {pair} 차트 캡처 프로세스 시작...")
+    with sync_playwright() as p:
+        try:
+            # 브라우저 실행
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(viewport={'width': 1920, 'height': 1080})
+            page = context.new_page()
+
+            # ✅ 중요: 아래 URL을 사용자님의 실제 차트 레이아웃 주소로 바꾸세요!
+            # 주소 끝에 ?symbol=FX:USDJPY 처럼 종목을 붙여주면 해당 종목 차트가 열립니다.
+            target_url = f"https://www.tradingview.com/chart/iHBYFrNs/?symbol=FX:{pair.replace('/', '')}"
+            
+            page.goto(target_url, wait_until="networkidle")
+            print("⏳ 지표와 신호가 차트에 나타날 때까지 10초 대기...")
+            _t.sleep(10) # 지표가 많을수록 로딩 시간이 필요하므로 넉넉히 줍니다.
+
+            # 파일명 설정 및 저장
+            filename = f"chart_{pair.replace('/', '_')}.png"
+            page.screenshot(path=filename)
+            browser.close()
+            
+            return filename
+        except Exception as e:
+            print(f"❌ 캡처 실패: {e}")
+            return None
+
+def encode_image(image_path):
+    """이미지를 GPT가 읽을 수 있는 문자열로 변환"""
+    with open(image_path, "rb") as image_file:
+        return base64.b64encode(image_file.read()).decode('utf-8')
+
+
 def _save_rate_headers(h: dict) -> None:
     """
     OpenAI 응답 헤더에서 남은 요청/토큰 수와 리셋까지 남은 초를 읽어
@@ -1611,8 +1649,16 @@ async def webhook(request: Request):
     gpt_raw = None
     raw_text = ""  # ✅ 조건문 전에 미리 초기화
     if signal_score >= threshold:
-        gpt_raw = analyze_with_gpt(payload, price, pair, candles)
-        print("✅ STEP 6: GPT 응답 수신 완료")
+            # 📸 [추가] 1. 사진 찍기
+            chart_path = capture_tradingview_chart(pair)
+            # 📸 [추가] 2. 이미지를 GPT가 읽을 수 있는 문자열로 변환
+            base64_image = encode_image(chart_path) if chart_path else None
+    
+            # 🤖 [수정] 3. GPT 분석 함수 호출 (base64_image 인자 추가)
+            # ※ 주의: analyze_with_gpt 함수 정의 부분에도 image 인자를 받도록 수정해야 합니다.
+            gpt_raw = analyze_with_gpt(payload, price, pair, candles, base64_image) 
+            
+            print("✅ STEP 6: GPT 응답 수신 완료 (이미지 분석 포함)")
         # ✅ 추가: 파싱 결과 강제 정규화 (대/소문자/공백/이상값 방지)
         raw_text = (
             gpt_raw if isinstance(gpt_raw, str)
@@ -2503,7 +2549,7 @@ def adjust_tp_sl_for_structure(pair, entry, tp, sl, support, resistance, atr):
 
     digits = 3 if pair.endswith("JPY") else 5
     return round(tp, digits), round(sl, digits)   
-def analyze_with_gpt(payload, current_price, pair, candles):
+def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
     global _gpt_cooldown_until, _gpt_last_ts
     dbg("gpt.enter", t=int(_t.time()*1000))
     #✅ 거래 시간대 필터 추가
