@@ -16,6 +16,7 @@ import time as _t
 import math
 import base64
 import os
+import asyncio
 from playwright.sync_api import sync_playwright
 import time as _t
 print("🔥 CURRENT OPENAI KEY:", os.getenv("OPENAI_API_KEY"))
@@ -1660,8 +1661,13 @@ async def webhook(request: Request):
     raw_text = ""  # ✅ 조건문 전에 미리 초기화
     if signal_score >= threshold:
         # 📸 [추가] 1. 사진 찍기
-        chart_path = capture_tradingview_chart(pair)
-        # 📸 [추가] 2. 이미지를 GPT가 읽을 수 있는 문자열로 변환
+        try:
+            chart_path = await asyncio.to_thread(capture_tradingview_chart, pair)
+        except Exception as e:
+            print(f"❌ 차트 캡처 실패, 이미지 없이 계속 진행: {e}")
+            chart_path = None
+    
+        # 🖼 [추가] 2. 이미지를 GPT가 읽을 수 있는 문자열로 변환
         base64_image = encode_image(chart_path) if chart_path else None
     
         # 🤖 [수정] 3. GPT 분석 함수 호출 (base64_image 인자 추가)
