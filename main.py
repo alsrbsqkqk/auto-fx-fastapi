@@ -2026,6 +2026,27 @@ def get_candles(pair, granularity, count):
         for c in candles
     ])
 
+def get_ohlcv(pair, interval="30m", limit=100):
+    """
+    get_multi_timeframe_context() 등에서 쓰기 위한 호환 래퍼.
+    interval 문자열(예: 5m, 30m, 4h)을 OANDA granularity로 변환해서
+    기존 get_candles()를 호출한다.
+    """
+    interval_map = {
+        "5m": "M5",
+        "15m": "M15",
+        "30m": "M30",
+        "1h": "H1",
+        "4h": "H4",
+        "1d": "D",
+    }
+
+    granularity = interval_map.get(str(interval).lower())
+    if not granularity:
+        raise ValueError(f"지원하지 않는 interval: {interval}")
+
+    return get_candles(pair, granularity, limit)
+
 def calculate_rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0).rolling(window=period).mean()
