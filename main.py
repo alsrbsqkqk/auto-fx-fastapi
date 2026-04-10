@@ -1642,6 +1642,7 @@ async def webhook(request: Request):
     "Balance breakout": 4.5,
     "BUY_ENTRY_BAR_CLOSE": 1.0,
     "SELL_ENTRY_BAR_CLOSE": -1.5,
+    "UHF Scalper - Final Formula Fix": 1.0
     }
 
     alert_data = payload.get("alert_data", {})
@@ -2591,6 +2592,11 @@ def adjust_tp_sl_for_structure(pair, entry, tp, sl, support, resistance, atr):
     digits = 3 if pair.endswith("JPY") else 5
     return round(tp, digits), round(sl, digits)   
 def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
+    try:
+        mtf_info = get_multi_timeframe_context(pair)
+    except Exception as e:
+        print(f"❌ MTF 정보 생성 실패: {e}")
+        mtf_info = "MTF 정보 없음"
     global _gpt_cooldown_until, _gpt_last_ts
     dbg("gpt.enter", t=int(_t.time()*1000))
     #✅ 거래 시간대 필터 추가
