@@ -1652,10 +1652,12 @@ async def webhook(request: Request):
         or alert_data.get("alert_name")
         or payload.get("strategy_name")
         or payload.get("alert_name")
+        or payload.get("strategy")
+        or "기본알림" 
         or ""
     ).strip()
     threshold = strategy_thresholds.get(strategy_name, 999)
-    print(f"[DEBUG] strategy_name='{strategy_name}', threshold={threshold}, score={signal_score}")
+    print(f"[DEBUG] strategy_name={strategy_name}, threshold={threshold}, score={signal_score}")
     gpt_feedback = "GPT 분석 생략: 점수 미달"
     decision, tp, sl = None, None, None  
     final_decision, final_tp, final_sl = None, None, None
@@ -2766,11 +2768,10 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
         
     # 2-c) 요청 바이트 수 로깅 (선택)
     body = {
-        "model": "gpt-4o-2024-11-20",
-        "messages": messages,    
+        "model": "gpt-4.1-mini",  # 또는 "gpt-4o-2024-11-20"
+        "input": messages,
         "temperature": 0.3,
         "max_output_tokens": 1000,
-    
     }
     need_tokens = _approx_tokens(messages)
     _preflight_gate(need_tokens)   # 요청 직전 선대기
