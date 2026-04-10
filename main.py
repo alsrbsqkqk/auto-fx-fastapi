@@ -1642,7 +1642,8 @@ async def webhook(request: Request):
     "Balance breakout": 4.5,
     "BUY_ENTRY_BAR_CLOSE": 1.0,
     "SELL_ENTRY_BAR_CLOSE": -1.5,
-    "UHF Scalper Visualized": 1.0
+    "UHF Scalper Visualized": 1.0,
+    "Test Alarm": 0.0
     }
 
     alert_data = payload.get("alert_data", {})
