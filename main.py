@@ -2653,7 +2653,7 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
     # 1. GPT에게 보낼 콘텐츠 리스트 생성 (텍스트와 이미지를 분리해서 담기)
     user_content = [
         {
-            "type": "text", 
+            "type": "input_text", 
             "text": f"데이터 분석 보고: {json.dumps(payload, ensure_ascii=False)}"
         }
     ]
@@ -2661,7 +2661,7 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
     # 2. 사진(base64_image)이 있다면 리스트에 추가
     if base64_image:
         user_content.append({
-            "type": "image_url",
+            "type": "input_image",
             "image_url": {
                 "url": f"data:image/png;base64,{base64_image}",
                 "detail": "high"
