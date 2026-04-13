@@ -2768,7 +2768,7 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
         
     # 2-c) 요청 바이트 수 로깅 (선택)
     body = {
-        "model": "gpt-4.1-mini",  # 또는 "gpt-4o-2024-11-20"
+        "model": "gpt-4o-mini",  # 또는 "gpt-4o-2024-11-20"
         "input": messages,
         "temperature": 0.3,
         "max_output_tokens": 1000,
