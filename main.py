@@ -2611,7 +2611,8 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
         (2 <= atlanta_hour < 5) or
         (atlanta_hour == 12) or
         (atlanta_hour == 17) or
-        (8 <= atlanta_hour < 9)
+        (7 <= atlanta_hour < 9) or
+        (15 <= atlanta_hour < 16)
     )
 
 
