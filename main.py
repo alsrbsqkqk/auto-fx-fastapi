@@ -880,12 +880,26 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     # 1️⃣ 완전 중립 횡보장 방어
     # ==================================================
     if trend == "NEUTRAL":
-        # 완전 횡보 정의: RSI 중립 + MACD 거의 0 + Stoch 중립대
-        if (45 <= rsi <= 55) and (-0.03 < macd < 0.03) and (0.35 <= stoch_rsi <= 0.65):
-            score -= 0.5
-            reasons.append("⚠️ 완전 횡보(NEUTRAL + RSI/MACD/Stoch 중립) → 진입 신호 약화 (-0.5)")
+    
+        # 🔥 완전 방향성 부재 (진짜 chop)
+        if (
+            (45 <= rsi <= 55) and
+            (-0.03 < macd < 0.03) and
+            (0.35 <= stoch_rsi <= 0.65)
+        ):
+    
+            score -= 1.5
+            reasons.append(
+                "⚠️ 완전 횡보(NEUTRAL + RSI/MACD/Stoch 중립) → 방향성 부족 (-1.5)"
+            )
+    
+        # 🔥 애매한 전환/되돌림 구간
         else:
-            reasons.append("🟡 NEUTRAL: 전환/되돌림 가능 구간 → 추가 확인 필요(감점 없음)")
+    
+            score -= 0.7
+            reasons.append(
+                "🟡 NEUTRAL 추세 → continuation 신뢰도 낮음 (-0.7)"
+            )
     
     
     # ==================================================
@@ -968,28 +982,45 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     # 7️⃣ 눌림목 BUY 강화 (페어 공통)
     # ==================================================
     BOOST_BUY_PAIRS = {"EUR_USD", "GBP_USD", "USD_JPY"}
-        
+    
     if pair in BOOST_BUY_PAIRS and signal == "BUY":
     
-        # ❌ 하락추세에서는 눌림목 BUY 보너스 금지
+        # ❌ 하락/횡보 추세에서는 눌림목 BUY 보너스 금지
         if trend != "UPTREND":
             reasons.append(f"{pair}: 하락/중립 추세 → 눌림목 BUY 보너스 제외")
+    
+        # ❌ 과열 late-entry 방지
+        elif (
+            rsi is not None and
+            stoch_rsi is not None and
+            rsi > 75 and
+            stoch_rsi > 0.9
+        ):
+            reasons.append(
+                f"{pair}: RSI/Stoch 과열 → late BUY 위험, 눌림목 BUY 보너스 제한"
+            )
+    
         else:
+    
+            # ✅ RSI 눌림목
             if 40 <= rsi <= 50:
-                signal_score += 1
-                reasons.append(f"{pair}: RSI 40~50 눌림목 영역 (+1)")
+                signal_score += 0.7
+                reasons.append(f"{pair}: RSI 40~50 눌림목 영역 (+0.7)")
     
+            # ✅ 초기 반등
             if 0.1 <= stoch_rsi <= 0.3:
-                signal_score += 1
-                reasons.append(f"{pair}: Stoch RSI 바닥 반등 초기 (+1)")
+                signal_score += 0.5
+                reasons.append(f"{pair}: Stoch RSI 바닥 반등 초기 (+0.5)")
     
+            # ✅ 캔들 패턴
             if pattern in ["HAMMER", "LONG_BODY_BULL"]:
-                signal_score += 1
-                reasons.append(f"{pair}: 매수 캔들 패턴 확인 (+1)")
+                signal_score += 0.5
+                reasons.append(f"{pair}: 매수 캔들 패턴 확인 (+0.5)")
     
+            # ✅ MACD 확인 (보조 역할만)
             if macd > 0:
-                signal_score += 1
-                reasons.append(f"{pair}: MACD 양수 유지 (+1)")
+                signal_score += 0.3
+                reasons.append(f"{pair}: MACD 양수 유지 (+0.3)")
 
 
         # 7️⃣-2 과매도 반등 BUY (DOWNTREND 허용, 단 조건 엄격)
@@ -1095,10 +1126,6 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
 
     # (선택) 히스토그램 보조 판단은 유지하되 임계도 pip화
     macd_hist = macd_diff
-    if macd_hist > 0 and abs(macd_diff) >= micro:
-        signal_score += 1
-        reasons.append("MACD 히스토그램 증가 → 상승 초기 흐름 가점 +1")
-
         # =========================
     # 개선1: MACD 방향(약화/반등) + Stoch 과열/과매도 추격 방지 (BUY/SELL 공통)
     if stoch_rsi is not None and macd is not None and macd_signal is not None:
@@ -1204,37 +1231,78 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
         reasons.append("Stoch RSI 중립")
 
     if trend == "UPTREND" and signal == "BUY":
-        # 🔥 칼날 조건이면 추세 일치 가점 제외
-        if stoch_rsi < 0.05 and macd < macd_signal:
+    
+        # 🔥 과열 late-entry 방지
+        if (
+            stoch_rsi is not None and
+            rsi is not None and
+            stoch_rsi > 0.9 and
+            rsi > 75
+        ):
+            reasons.append(
+                "⚠️ RSI/Stoch 과열 → late BUY 위험, 추세 가점 제외"
+            )
+    
+        # 🔥 칼날 방지
+        elif stoch_rsi < 0.05 and macd < macd_signal:
             reasons.append(
                 "⚠️ 표기상 UPTREND지만 Stoch 극단 과매도 + MACD 약화 → 추세 전환 의심(추세일치 가점 제외)"
             )
-            # 필요 시 더 강하게:
-            # signal_score -= 0.5
+    
         else:
-            signal_score += 1
-            reasons.append("추세 상승 + 매수 일치 가점+1")
+            signal_score += 0.5
+            reasons.append("추세 상승 + 매수 일치 가점+0.5")
+    
     
     elif trend == "DOWNTREND" and signal == "SELL":
-        # ✅ 과열(되돌림/숏말림) 구간에서는 추세 SELL 가점 주지 않음
-        if stoch_rsi is not None and stoch_rsi >= 0.95:
-            reasons.append("⛔ Stoch RSI 과열(≥0.95) → 숏 말림 위험, 추세 매도 가점 미적용")
+    
+        # 🔥 과매도 추격 SELL 방지
+        if (
+            stoch_rsi is not None and
+            rsi is not None and
+            stoch_rsi < 0.1 and
+            rsi < 25
+        ):
+            reasons.append(
+                "⚠️ RSI/Stoch 과매도 → late SELL 위험, 추세 가점 제외"
+            )
+    
+        # 🔥 숏말림 방지
+        elif stoch_rsi is not None and stoch_rsi >= 0.95:
+            reasons.append(
+                "⛔ Stoch RSI 과열(≥0.95) → 숏 말림 위험, 추세 매도 가점 미적용"
+            )
+    
         else:
-            signal_score += 1
-            reasons.append("추세 하락 + 매도 일치 가점+1")
+            signal_score += 0.5
+            reasons.append("추세 하락 + 매도 일치 가점+0.5")
 
 
     if liquidity == "좋음":
-        signal_score += 1
-        reasons.append("유동성 좋음 가점+1")
+        reasons.append("🟡 유동성 양호 (참고)")
     last_3 = candles.tail(3)
     if (
         all(last_3["close"] < last_3["open"]) 
         and trend == "DOWNTREND" 
         and pattern in ["NEUTRAL", "SHOOTING_STAR", "LONG_BODY_BEAR"]
     ):
-        signal_score += 1
-        reasons.append("🔻최근 3봉 연속 음봉 + 하락추세 + 약세형 패턴 포함 → SELL 강화 가점+1")
+    
+        # 🔥 과매도 추격 SELL 방지
+        if (
+            rsi is not None and
+            stoch_rsi is not None and
+            rsi < 25 and
+            stoch_rsi < 0.1
+        ):
+            reasons.append(
+                "⚠️ 3봉 연속 음봉이지만 RSI/Stoch 과매도 → late SELL 위험, 추가 가점 제외"
+            )
+    
+        else:
+            signal_score += 0.5
+            reasons.append(
+                "🔻 최근 3봉 연속 음봉 + 하락추세 → SELL continuation 가점+0.5"
+            )
 
         # === 박스권 상단/하단 근접 진입 제한 ===
     recent = candles.tail(10)
@@ -1271,8 +1339,23 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
         and trend == "UPTREND" 
         and pattern in ["NEUTRAL", "LONG_BODY_BULL", "INVERTED_HAMMER"]
     ):
-        signal_score += 1
-        reasons.append("🟢 최근 3봉 연속 양봉 + 상승추세 + 약세 미발견 → BUY 강화 가점+1")
+    
+        # 🔥 과열 late-entry 방지
+        if (
+            rsi is not None and
+            stoch_rsi is not None and
+            rsi > 75 and
+            stoch_rsi > 0.9
+        ):
+            reasons.append(
+                "⚠️ 3봉 연속 양봉이지만 RSI/Stoch 과열 → late BUY 위험, 추가 가점 제외"
+            )
+    
+        else:
+            signal_score += 0.5
+            reasons.append(
+                "🟢 최근 3봉 연속 양봉 + 상승추세 → BUY continuation 가점+0.5"
+            )
 
         # 1) 패턴 그룹 먼저 정의
     bullish_patterns = ["BULLISH_ENGULFING", "HAMMER", "MORNING_STAR"]
@@ -1302,23 +1385,51 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     try:
         # 하락 추세 말기: 과매도 + 지지선 근접에서 SELL은 숏스퀴즈 위험 → 감점
         if trend == "DOWNTREND" and signal == "SELL":
-            near_support = (support is not None) and (price is not None) and (price <= support + 5 * pv)  # 5pip 이내
+        
+            near_support = (
+                support is not None and
+                price is not None and
+                atr is not None and
+                abs(price - support) <= atr * 0.25
+            )
+        
             if (rsi is not None) and (rsi < 32) and near_support:
-                signal_score -= 2.0
-                reasons.append("⚠️ 하락 추세 말기(과매도+지지선 근접) SELL → 숏스퀴즈 위험 감점 -2.0")
+        
+                signal_score -= 3.0
+                reasons.append(
+                    "🔴 과매도 + 지지선 매우 근접(ATR 기준) → late SELL / 숏스퀴즈 위험 (-3.0)"
+                )
+        
             elif (rsi is not None) and (rsi < 32):
+        
                 signal_score -= 1.0
-                reasons.append("⚠️ 과매도 구간 SELL → 반등 리스크 감점 -1.0")
+                reasons.append(
+                    "🟠 과매도 구간 SELL → 반등 위험 (-1.0)"
+                )
 
         # 상승 추세 말기: 과매수 + 저항선 근접에서 BUY는 고점 물림 위험 → 감점
         if trend == "UPTREND" and signal == "BUY":
-            near_resistance = (resistance is not None) and (price is not None) and (price >= resistance - 5 * pv)  # 5pip 이내
+        
+            near_resistance = (
+                resistance is not None and
+                price is not None and
+                atr is not None and
+                abs(resistance - price) <= atr * 0.25
+            )
+        
             if (rsi is not None) and (rsi > 68) and near_resistance:
-                signal_score -= 2.0
-                reasons.append("⚠️ 상승 추세 말기(과매수+저항선 근접) BUY → 고점 물림 위험 감점 -2.0")
+        
+                signal_score -= 3.0
+                reasons.append(
+                    "🔴 과매수 + 저항선 매우 근접(ATR 기준) → late BUY / 돌파 실패 위험 (-3.0)"
+                )
+        
             elif (rsi is not None) and (rsi > 68):
+        
                 signal_score -= 1.0
-                reasons.append("⚠️ 과매수 구간 BUY → 조정 리스크 감점 -1.0")
+                reasons.append(
+                    "🟠 과매수 구간 BUY → 조정 위험 (-1.0)"
+                )
 
     except Exception as e:
         # 배포 중 예외로 전략이 멈추는 걸 방지 (안전장치)
@@ -1640,8 +1751,8 @@ async def webhook(request: Request):
 
     strategy_thresholds = {
     "Balance breakout": 4.5,
-    "BUY_ENTRY_BAR_CLOSE": -1.0,
-    "SELL_ENTRY_BAR_CLOSE": -2.5,
+    "BUY_ENTRY_BAR_CLOSE": 1.0,
+    "SELL_ENTRY_BAR_CLOSE": 1.5,
     "기본알림": 3.0,
     "Test Alarm": 0.0
     }
@@ -2606,20 +2717,184 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
     from datetime import datetime, timedelta
     now_atlanta = datetime.now(ZoneInfo("America/New_York"))
     atlanta_hour = now_atlanta.hour
+    weekday = now_atlanta.weekday() 
 
-    is_restricted = (
-        (2 <= atlanta_hour < 5) or
-        (atlanta_hour == 12) or
-        (atlanta_hour == 17) or
-        (7 <= atlanta_hour < 9) or
-        (15 <= atlanta_hour < 16)
-    )
-
-
+    is_restricted = False
+    restriction_reason = ""
+    
+    # ==========================================
+    # 🔴 공통 위험 시간대
+    # ==========================================
+    
+    # 롤오버 / 스프레드 확대
+    if not is_restricted and atlanta_hour == 17:
+    
+        is_restricted = True
+        restriction_reason = (
+            "🔴 롤오버 시간대(17시) → 스프레드/유동성 위험"
+        )
+    
+    # 뉴욕 후반
+    elif not is_restricted and 15 <= atlanta_hour < 17:
+    
+        is_restricted = True
+        restriction_reason = (
+            "🔴 뉴욕 후반 → fake move / 유동성 감소 위험"
+        )
+    
+    # 아시아 후반 (USDJPY chop 위험)
+    elif not is_restricted and 2 <= atlanta_hour < 5:
+    
+        is_restricted = True
+        restriction_reason = (
+            "🔴 아시아 후반 → chop / fake breakout 위험"
+        )
+    
+    
+    # =========================================================
+    # 🔵 월요일 (가장 보수적)
+    # =========================================================
+    
+    if weekday == 0:
+    
+        # 월요일 오전 = 방향성 부족 / 갭 정리
+        if atlanta_hour < 10:
+    
+            is_restricted = True
+            restriction_reason = (
+                "🔵 월요일 오전 → 방향성 부족 / 주말 갭 정리 / fake move 위험"
+            )
+    
+        # 월요일 오후도 continuation 품질 낮음
+        elif atlanta_hour >= 12:
+    
+            is_restricted = True
+            restriction_reason = (
+                "🔵 월요일 오후 → liquidity thin / continuation 신뢰도 낮음"
+            )
+    
+    
+    # =========================================================
+    # 🟢 화요일 / 수요일
+    # 가장 trend-friendly
+    # =========================================================
+    
+    elif weekday in [1, 2]:
+    
+        # 런던~뉴욕 overlap은 기본 허용
+        # 단, extreme/chop 상태만 제한
+        if 7 <= atlanta_hour < 9:
+    
+            if (
+                trend == "NEUTRAL" or
+                abs(macd) < 0.02 or
+                (
+                    rsi is not None and
+                    (rsi > 80 or rsi < 20)
+                )
+            ):
+    
+                is_restricted = True
+                restriction_reason = (
+                    "🟡 화/수 런던~뉴욕 overlap이지만 "
+                    "chop/extreme 상태 → 제한"
+                )
+    
+    
+    # =========================================================
+    # 🟠 목요일
+    # exhaustion / reversal day
+    # =========================================================
+    
+    elif weekday == 3:
+    
+        # late continuation 방지
+        if (
+            trend in ["UPTREND", "DOWNTREND"] and
+            (
+                (rsi is not None and rsi > 72) or
+                (rsi is not None and rsi < 28)
+            )
+        ):
+    
+            is_restricted = True
+            restriction_reason = (
+                "🟠 목요일 → 추세 exhaustion 가능성 높음 "
+                "(late continuation 제한)"
+            )
+    
+        # 뉴욕 후반은 특히 위험
+        elif atlanta_hour >= 14:
+    
+            is_restricted = True
+            restriction_reason = (
+                "🟠 목요일 뉴욕 후반 → reversal/fake continuation 위험"
+            )
+    
+    
+    # =========================================================
+    # 🔴 금요일
+    # 가장 위험한 continuation day
+    # =========================================================
+    
+    elif weekday == 4:
+    
+        # 금요일 오후 = 강한 제한
+        if atlanta_hour >= 11:
+    
+            is_restricted = True
+            restriction_reason = (
+                "🔴 금요일 오후 → profit taking / fake breakout 위험"
+            )
+    
+        # 금요일 오전도 extreme + chop 제한
+        elif (
+            trend == "NEUTRAL" and
+            rsi is not None and
+            (rsi > 75 or rsi < 25)
+        ):
+    
+            is_restricted = True
+            restriction_reason = (
+                "🔴 금요일 → extreme + NEUTRAL 조합 "
+                "(whipsaw 위험)"
+            )
+    
+    
+    # =========================================================
+    # 🟣 일요일 오픈
+    # FX 가장 위험한 시간대 중 하나
+    # =========================================================
+    
+    elif weekday == 6:
+    
+        # FX 오픈 직후
+        if atlanta_hour >= 17:
+    
+            is_restricted = True
+            restriction_reason = (
+                "🟣 일요일 FX 오픈 직후 → gap noise / liquidity thin 위험"
+            )
+    
+    
+    # =========================================================
+    # 📌 제한 로그 출력
+    # =========================================================
+    
     if is_restricted:
-        print("🚫 현재 시간은 거래 제한 시간대입니다. GPT 호출을 건너뜁니다.")
-        return "🚫 GPT 호출 스킵됨 (거래 제한 시간대)"
-
+    
+        print(
+            f"[TIME FILTER] "
+            f"{pair} | "
+            f"weekday={weekday} | "
+            f"hour={atlanta_hour} | "
+            f"{restriction_reason}"
+        )
+    
+        return (
+            f"⛔ GPT 호출 스킵 "
+            f"(거래 제한: {restriction_reason})"
+        )
 
     
     # ── 전역 쿨다운: 429 맞은 뒤 일정 시간은 호출 자체 스킵 ──
