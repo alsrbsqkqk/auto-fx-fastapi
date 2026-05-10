@@ -244,29 +244,37 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     highs = list(candles["high"].tail(20).astype(float).values)
     lows  = list(candles["low"].tail(20).astype(float).values)
     if is_buy and trend == "DOWNTREND":
-        opportunity_score -= 4
-        reasons.append("❌ 하락 추세 + BUY 역방향 (-4)")
+    
+        opportunity_score -= 1.5
+    
+        reasons.append(
+            "🟠 하락 추세 + BUY 역방향 → continuation 신뢰도 낮음 (-1.5)"
+        )
 
     if is_sell and trend == "UPTREND":
-        opportunity_score -= 4
-        reasons.append("❌ 상승 추세 + SELL 역방향 (-4)")
+    
+        opportunity_score -= 1.5
+    
+        reasons.append(
+            "🟠 상승 추세 + SELL 역방향 → continuation 신뢰도 낮음 (-1.5)"
+        )
 
     # BUY mirror penalty: overbought + no higher-high recently
     if is_buy and trend == "UPTREND":
         if rsi > 65:
             if not recent_high_break(highs, last_n=2):
-                opportunity_score -= 1.5
+                opportunity_score -= 0.5
                 reasons.append(
-                    "⚠️ 과매수 이후 고점 갱신 실패 → 되밀림 위험 BUY 감점 (-1.5)"
+                    "⚠️ 과매수 이후 고점 갱신 실패 → 되밀림 위험 BUY 감점 (-0.5)"
                 )
     
     # SELL mirror penalty: oversold + no lower-low recently
     if is_sell and trend == "DOWNTREND":
         if rsi < 35:
             if not recent_low_break(lows, last_n=2):
-                opportunity_score -= 1.5
+                opportunity_score -= 0.5
                 reasons.append(
-                    "⚠️ 과매도 이후 저점 갱신 실패 → 반등 위험 SELL 감점 (-1.5)"
+                    "⚠️ 과매도 이후 저점 갱신 실패 → 반등 위험 SELL 감점 (-0.5)"
                 )
     # ==================================================
     # 6️⃣ 캔들 패턴
@@ -753,14 +761,34 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
 
     # 🔻 최근 캔들 흐름이 진입 방향과 반대인 경우 경고 감점
     if signal == "BUY" and trend != "UPTREND":
-        if candles["close"].iloc[-1] < candles["open"].iloc[-1] and candles["close"].iloc[-2] < candles["open"].iloc[-2]:
-            score -= 1.0
-            reasons.append("📉 최근 연속 음봉 + 추세 미약 ➝ BUY 타이밍 부적절 (감점 -1.0)")
+    
+        # 완전 약세 흐름만 제한
+        if (
+            candles["close"].iloc[-1] < candles["open"].iloc[-1] and
+            candles["close"].iloc[-2] < candles["open"].iloc[-2] and
+            rsi < 40
+        ):
+    
+            score -= 0.5
+    
+            reasons.append(
+                "⚠ 최근 약세 흐름 지속 → BUY continuation 약화 (-0.5)"
+            )
 
     if signal == "SELL" and trend != "DOWNTREND":
-        if candles["close"].iloc[-1] > candles["open"].iloc[-1] and candles["close"].iloc[-2] > candles["open"].iloc[-2]:
-            score -= 1.0
-            reasons.append("📈 최근 연속 양봉 + 추세 미약 ➝ SELL 타이밍 부적절 (감점 -1.0)")
+    
+        # 완전 강세 흐름만 제한
+        if (
+            candles["close"].iloc[-1] > candles["open"].iloc[-1] and
+            candles["close"].iloc[-2] > candles["open"].iloc[-2] and
+            rsi > 60
+        ):
+    
+            score -= 0.5
+    
+            reasons.append(
+                "⚠ 최근 강세 흐름 지속 → SELL continuation 약화 (-0.5)"
+            )
 
     # 트렌드 전환 직후 경계 구간 감점
     if trend == "UPTREND" and prev_trend == "DOWNTREND" and signal == "BUY":
@@ -881,22 +909,22 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     # ==================================================
     if trend == "NEUTRAL":
     
-        # 🔥 완전 방향성 부재 (진짜 chop)
+        # 진짜 chop만 약하게 제한
         if (
-            (45 <= rsi <= 55) and
-            (-0.03 < macd < 0.03) and
-            (0.35 <= stoch_rsi <= 0.65)
+            47 <= rsi <= 53 and
+            abs(macd) < 0.015 and
+            0.4 <= stoch_rsi <= 0.6
         ):
     
-            score -= 1.5
+            signal_score -= 0.5
             reasons.append(
-                "⚠️ 완전 횡보(NEUTRAL + RSI/MACD/Stoch 중립) → 방향성 부족 (-1.5)"
+                "⚠️ 완전 횡보(chop) 상태 → 약한 감점 (-0.5)"
             )
     
         # 🔥 애매한 전환/되돌림 구간
         else:
     
-            score -= 0.7
+            signal_score -= 0.3
             reasons.append(
                 "🟡 NEUTRAL 추세 → continuation 신뢰도 낮음 (-0.7)"
             )
@@ -907,8 +935,8 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     # ==================================================
     if signal == "BUY" and rsi > 85 and stoch_rsi > 0.9:
         if macd < macd_signal:
-            signal_score -= 1.5
-            reasons.append("⛔ RSI/Stoch RSI 극단 과열 + MACD 약세 → BUY (감점 -1.5)")
+            signal_score -= 1.0
+            reasons.append("⛔ RSI/Stoch RSI 극단 과열 + MACD 약세 → BUY (감점 -1.0)")
         else:
             signal_score -= 0.5
             reasons.append("⚠️ RSI/Stoch 과열 → BUY 피로 구간 (감점 -0.5)")
@@ -959,11 +987,11 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
             signal_score += 2
             reasons.append("🟢 RSI < 30 + 반등 캔들 패턴 → 진입 강화 (+2)")
         elif macd < macd_signal and trend == "DOWNTREND":
-            signal_score -= 2
-            reasons.append("🔴 RSI < 30 + MACD/추세 약세 지속 → 반등 기대 낮음 (감점 -2)")
-        else:
             signal_score -= 1.5
-            reasons.append("⚠️ RSI < 30 but 반등 근거 부족 → 진입 위험 (감점 -1.5)")
+            reasons.append("🔴 RSI < 30 + MACD/추세 약세 지속 → 반등 기대 낮음 (감점 -1.5)")
+        else:
+            signal_score -= 1.0
+            reasons.append("⚠️ RSI < 30 but 반등 근거 부족 → 진입 위험 (감점 -1.0)")
     
     
     # ==================================================
