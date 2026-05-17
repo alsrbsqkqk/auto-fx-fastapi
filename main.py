@@ -1779,8 +1779,8 @@ async def webhook(request: Request):
 
     strategy_thresholds = {
     "Balance breakout": 4.5,
-    "BUY_ENTRY_BAR_CLOSE": 1.0,
-    "SELL_ENTRY_BAR_CLOSE": 1.5,
+    "BUY_ENTRY_BAR_CLOSE": -5.0,
+    "SELL_ENTRY_BAR_CLOSE": -1.5,
     "기본알림": 3.0,
     "Test Alarm": 0.0
     }
