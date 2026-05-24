@@ -3106,7 +3106,7 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
             json=body,
             timeout=90,
         )
-        print("❌ OpenAI error body:", r.text)
+        print("✅ OpenAI response body:", body)
         r.raise_for_status()  # HTTP 에러 체크
         data = r.json()
         
