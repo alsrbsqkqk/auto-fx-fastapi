@@ -2745,185 +2745,150 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
     from datetime import datetime, timedelta
     now_atlanta = datetime.now(ZoneInfo("America/New_York"))
     atlanta_hour = now_atlanta.hour
-    weekday = now_atlanta.weekday() 
-
+    weekday = now_atlanta.weekday()
+    
+    # ==========================================
+    # 기본값
+    # ==========================================
+    
     is_restricted = False
     restriction_reason = ""
     
+    time_risk_score = 0
+    time_risk_reasons = []
+    
     # ==========================================
-    # 🔴 공통 위험 시간대
+    # 🔴 강제 제한 (실제 위험 시간만)
     # ==========================================
     
-    # 롤오버 / 스프레드 확대
-    if not is_restricted and atlanta_hour == 17:
+    # 롤오버 시간
+    if atlanta_hour == 17:
     
         is_restricted = True
+    
         restriction_reason = (
-            "🔴 롤오버 시간대(17시) → 스프레드/유동성 위험"
+            "🔴 롤오버 시간대 → 스프레드/유동성 위험"
         )
     
-    # 뉴욕 후반
-    elif not is_restricted and 15 <= atlanta_hour < 17:
+    # 일요일 FX 오픈 직후
+    elif weekday == 6 and atlanta_hour >= 17:
     
         is_restricted = True
+    
         restriction_reason = (
-            "🔴 뉴욕 후반 → fake move / 유동성 감소 위험"
+            "🔴 일요일 FX 오픈 직후 → gap/liquidity 위험"
         )
     
-    # 아시아 후반 (USDJPY chop 위험)
-    elif not is_restricted and 2 <= atlanta_hour < 5:
+    # ==========================================
+    # 나머지는 hard block 대신 score modifier
+    # ==========================================
     
-        is_restricted = True
-        restriction_reason = (
-            "🔴 아시아 후반 → chop / fake breakout 위험"
-        )
+    else:
     
+        # ==========================================
+        # 🔵 월요일
+        # ==========================================
     
-    # =========================================================
-    # 🔵 월요일 (가장 보수적)
-    # =========================================================
+        if weekday == 0:
     
-    if weekday == 0:
+            # 월요일 초반만 약한 감점
+            if atlanta_hour < 8:
     
-        # 월요일 오전 = 방향성 부족 / 갭 정리
-        if atlanta_hour < 10:
+                time_risk_score -= 0.7
     
-            is_restricted = True
-            restriction_reason = (
-                "🔵 월요일 오전 → 방향성 부족 / 주말 갭 정리 / fake move 위험"
-            )
+                time_risk_reasons.append(
+                    "🔵 월요일 오전 → 방향성 형성 전"
+                )
     
-        # 월요일 오후도 continuation 품질 낮음
-        elif atlanta_hour >= 12:
+            # 월요일 NEUTRAL continuation
+            elif trend == "NEUTRAL":
     
-            is_restricted = True
-            restriction_reason = (
-                "🔵 월요일 오후 → liquidity thin / continuation 신뢰도 낮음"
-            )
+                time_risk_score -= 0.3
     
+                time_risk_reasons.append(
+                    "🔵 월요일 NEUTRAL → continuation 품질 약간 낮음"
+                )
     
-    # =========================================================
-    # 🟢 화요일 / 수요일
-    # 가장 trend-friendly
-    # =========================================================
+        # ==========================================
+        # 🟢 화요일 / 수요일
+        # continuation 가장 좋은 구간
+        # ==========================================
     
-    elif weekday in [1, 2]:
+        elif weekday in [1, 2]:
     
-        # 런던~뉴욕 overlap은 기본 허용
-        # 단, extreme/chop 상태만 제한
-        if 7 <= atlanta_hour < 9:
+            if trend in ["UPTREND", "DOWNTREND"]:
+    
+                time_risk_score += 0.5
+    
+                time_risk_reasons.append(
+                    "🟢 화/수 trend continuation favorable"
+                )
+    
+        # ==========================================
+        # 🟠 목요일
+        # exhaustion 가능성만 체크
+        # ==========================================
+    
+        elif weekday == 3:
     
             if (
-                trend == "NEUTRAL" or
-                abs(macd) < 0.02 or
-                (
-                    rsi is not None and
-                    (rsi > 80 or rsi < 20)
+                trend in ["UPTREND", "DOWNTREND"]
+                and rsi is not None
+                and (
+                    rsi > 78 or
+                    rsi < 22
                 )
             ):
     
-                is_restricted = True
-                restriction_reason = (
-                    "🟡 화/수 런던~뉴욕 overlap이지만 "
-                    "chop/extreme 상태 → 제한"
+                time_risk_score -= 0.7
+    
+                time_risk_reasons.append(
+                    "🟠 목요일 extreme trend → exhaustion 가능성"
                 )
     
+        # ==========================================
+        # 🔴 금요일
+        # 오후만 위험
+        # ==========================================
     
-    # =========================================================
-    # 🟠 목요일
-    # exhaustion / reversal day
-    # =========================================================
+        elif weekday == 4:
     
-    elif weekday == 3:
+            # 금요일 오후
+            if atlanta_hour >= 13:
     
-        # late continuation 방지
-        if (
-            trend in ["UPTREND", "DOWNTREND"] and
-            (
-                (rsi is not None and rsi > 72) or
-                (rsi is not None and rsi < 28)
-            )
-        ):
+                time_risk_score -= 1.0
     
-            is_restricted = True
-            restriction_reason = (
-                "🟠 목요일 → 추세 exhaustion 가능성 높음 "
-                "(late continuation 제한)"
-            )
+                time_risk_reasons.append(
+                    "🔴 금요일 오후 → profit taking 위험"
+                )
     
-        # 뉴욕 후반은 특히 위험
-        elif atlanta_hour >= 14:
+            # 금요일 오전 continuation 허용
+            elif trend in ["UPTREND", "DOWNTREND"]:
     
-            is_restricted = True
-            restriction_reason = (
-                "🟠 목요일 뉴욕 후반 → reversal/fake continuation 위험"
-            )
+                time_risk_score += 0.3
     
+                time_risk_reasons.append(
+                    "🟢 금요일 오전 continuation 가능"
+                )
     
-    # =========================================================
-    # 🔴 금요일
-    # 가장 위험한 continuation day
-    # =========================================================
+    # ==========================================
+    # 최종 score 반영
+    # ==========================================
     
-    elif weekday == 4:
+    signal_score += time_risk_score
+    reasons.extend(time_risk_reasons)
     
-        # 금요일 오후 = 강한 제한
-        if atlanta_hour >= 11:
-    
-            is_restricted = True
-            restriction_reason = (
-                "🔴 금요일 오후 → profit taking / fake breakout 위험"
-            )
-    
-        # 금요일 오전도 extreme + chop 제한
-        elif (
-            trend == "NEUTRAL" and
-            rsi is not None and
-            (rsi > 75 or rsi < 25)
-        ):
-    
-            is_restricted = True
-            restriction_reason = (
-                "🔴 금요일 → extreme + NEUTRAL 조합 "
-                "(whipsaw 위험)"
-            )
-    
-    
-    # =========================================================
-    # 🟣 일요일 오픈
-    # FX 가장 위험한 시간대 중 하나
-    # =========================================================
-    
-    elif weekday == 6:
-    
-        # FX 오픈 직후
-        if atlanta_hour >= 17:
-    
-            is_restricted = True
-            restriction_reason = (
-                "🟣 일요일 FX 오픈 직후 → gap noise / liquidity thin 위험"
-            )
-    
-    
-    # =========================================================
-    # 📌 제한 로그 출력
-    # =========================================================
+    # ==========================================
+    # 최종 hard restriction
+    # ==========================================
     
     if is_restricted:
     
-        print(
-            f"[TIME FILTER] "
-            f"{pair} | "
-            f"weekday={weekday} | "
-            f"hour={atlanta_hour} | "
-            f"{restriction_reason}"
-        )
+        print(f"⛔ 거래 제한: {restriction_reason}")
     
-        return (
-            f"⛔ GPT 호출 스킵 "
-            f"(거래 제한: {restriction_reason})"
-        )
-
+        return 0, [
+            f"⛔ 거래 제한: {restriction_reason}"
+        ]
     
     # ── 전역 쿨다운: 429 맞은 뒤 일정 시간은 호출 자체 스킵 ──
     global _gpt_cooldown_until
