@@ -211,8 +211,23 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
         reasons.append("⚠️ 약한 SELL 조건 충족 (+0.5)")
 
     if stoch_rsi > 0.9:
-        opportunity_score -= 2
-        reasons.append("❌ 과열 구간 진입 금지 (추격 SELL 방지)")
+    
+        if (
+            resistance_distance < atr * 0.3
+            and not breakout_confirmed
+        ):
+    
+            opportunity_score -= 2
+            reasons.append(
+                "🔴 과열 + 저항 근접 + breakout 실패 위험"
+            )
+    
+        elif trend == "UPTREND" and macd > macd_signal:
+    
+            opportunity_score -= 0.3
+            reasons.append(
+                "⚠️ 과열이지만 continuation 유지"
+            )
 
 
     # ==============================
@@ -2946,7 +2961,7 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
                 "⚠️ [역할 정의 - 매우 중요]\n"
                 "- 이미 이 신호는 사전 score / signal_score 필터를 통과했다.\n"
                 "- 너의 역할은 '추가로 진입을 차단하는 것'이 아니라,\n"
-                "  명백한 반대 시그널이 있는 경우에만 WAIT을 선택하는 것이다.\n"
+                "  명백한 반대 시그널이 있는 경우에만 WAIT을 선택하는 것이다 너가볼때 승률이 55%이상이라면 거래 들어가자.\n"
                 "- 애매함, 가능성, 추측만으로 WAIT을 선택해서는 안 된다.\n\n"
                 
                 "📌 [M30 알림 전용: 멀티 타임프레임 분석 지침 - 추가됨]\n"
@@ -2955,17 +2970,9 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
                 "- H4 추세가 진입 방향과 일치하면 강력한 가점 요소입니다.\n"
                 "- M5 RSI가 극단적(80 이상/20 이하)일 때만 진입 타이밍 조절을 위해 WAIT을 검토하세요.\n\n"
 
-                "📌 [WAIT 선택이 허용되는 경우 - 반드시 엄격히 제한]\n"
-                "아래 조건 중 **2개 이상이 동시에 충족될 때만** WAIT을 선택할 수 있다.\n\n"
-                "1) 현재 추세(trend)와 진입 방향(BUY/SELL)이 명확히 반대일 것 (H4 맥락 포함)\n"
-                "2) TP:SL 비율이 1.4 미만일 것\n"
-                "3) 진입 직전 캔들이 강한 반대 추세 전환형 패턴일 것\n"
-                "   (예: 반대 엔골핑, 강한 장대음봉/양봉)\n"
-                "4) ATR 기준 SL 거리가 10 pip 미만으로 비정상적으로 짧을 것\n\n"
-                "※ 위 조건 중 1개만 해당될 경우 WAIT은 금지된다.\n\n"
 
                 "📌 [판단 원칙]\n"
-                "- 추세와 진입 방향이 일치하면 기본적으로 BUY 또는 SELL을 유지한다.\n"
+                "- 추세와 진입 방향이 일치하면 기본적으로 BUY 또는 SELL을 유지한다 추세와 진입 방향이 정확히 일치하지 않더라도 다른것들을 분석했을때 승률이 55%이상인것으로 보이면 거래 들어가라.\n"
                 "- 실제로 가격이 SL을 먼저 터치할 명확한 근거가 없는 한 진입을 유지한다.\n"
                 "- 결과 예측(사후적 반등/되돌림 가정)을 근거로 WAIT을 선택하지 마라.\n\n"
                 
