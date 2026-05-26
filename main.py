@@ -2815,13 +2815,13 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
                     "🔵 월요일 오전 → 방향성 형성 전"
                 )
     
-            # 월요일 NEUTRAL continuation
-            elif trend == "NEUTRAL":
+            # 월요일 오후는 약한 감점만
+            else:
     
                 time_risk_score -= 0.3
     
                 time_risk_reasons.append(
-                    "🔵 월요일 NEUTRAL → continuation 품질 약간 낮음"
+                    "🔵 월요일 → continuation 품질 약간 낮음"
                 )
     
         # ==========================================
@@ -2831,13 +2831,11 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
     
         elif weekday in [1, 2]:
     
-            if trend in ["UPTREND", "DOWNTREND"]:
+            time_risk_score += 0.5
     
-                time_risk_score += 0.5
-    
-                time_risk_reasons.append(
-                    "🟢 화/수 trend continuation favorable"
-                )
+            time_risk_reasons.append(
+                "🟢 화/수 → continuation favorable"
+            )
     
         # ==========================================
         # 🟠 목요일
@@ -2847,8 +2845,7 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
         elif weekday == 3:
     
             if (
-                trend in ["UPTREND", "DOWNTREND"]
-                and rsi is not None
+                rsi is not None
                 and (
                     rsi > 78 or
                     rsi < 22
@@ -2858,7 +2855,7 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
                 time_risk_score -= 0.7
     
                 time_risk_reasons.append(
-                    "🟠 목요일 extreme trend → exhaustion 가능성"
+                    "🟠 목요일 extreme RSI → exhaustion 가능성"
                 )
     
         # ==========================================
@@ -2878,13 +2875,25 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
                 )
     
             # 금요일 오전 continuation 허용
-            elif trend in ["UPTREND", "DOWNTREND"]:
+            else:
     
                 time_risk_score += 0.3
     
                 time_risk_reasons.append(
-                    "🟢 금요일 오전 continuation 가능"
+                    "🟢 금요일 오전 → continuation 가능"
                 )
+    
+    # ==========================================
+    # 제한 시간 감점
+    # ==========================================
+    
+    if is_restricted:
+    
+        time_risk_score -= 5
+    
+        time_risk_reasons.append(
+            f"⛔ 거래 제한: {restriction_reason}"
+        )
     
     # ==========================================
     # 최종 score 반영
