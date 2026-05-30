@@ -2757,163 +2757,69 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
     global _gpt_cooldown_until, _gpt_last_ts
     dbg("gpt.enter", t=int(_t.time()*1000))
     #✅ 거래 시간대 필터 추가
-    from datetime import datetime, timedelta
-    now_atlanta = datetime.now(ZoneInfo("America/New_York"))
-    atlanta_hour = now_atlanta.hour
-    weekday = now_atlanta.weekday()
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
     
     # ==========================================
-    # 기본값
+    # 거래 제한 시간 필터 (Atlanta 기준)
     # ==========================================
+    
+    now_atlanta = datetime.now(ZoneInfo("America/New_York"))
+    
+    atlanta_hour = now_atlanta.hour
+    weekday = now_atlanta.weekday()
     
     is_restricted = False
     restriction_reason = ""
     
-    time_risk_score = 0
-    time_risk_reasons = []
-    
     # ==========================================
-    # 🔴 강제 제한 (실제 위험 시간만)
+    # 🔴 롤오버 시간
     # ==========================================
     
-    # 롤오버 시간
-    if atlanta_hour == 17:
+    if 17 <= atlanta_hour < 18:
     
         is_restricted = True
     
         restriction_reason = (
-            "🔴 롤오버 시간대 → 스프레드/유동성 위험"
+            "🔴 롤오버 시간 → 스프레드 확대 위험"
         )
     
-    # 일요일 FX 오픈 직후
+    # ==========================================
+    # 🔴 일요일 FX 오픈 직후
+    # ==========================================
+    
     elif weekday == 6 and atlanta_hour >= 17:
     
         is_restricted = True
     
         restriction_reason = (
-            "🔴 일요일 FX 오픈 직후 → gap/liquidity 위험"
+            "🔴 일요일 FX 오픈 직후 → 갭 및 유동성 위험"
         )
     
     # ==========================================
-    # 나머지는 hard block 대신 score modifier
+    # 🔴 금요일 오후 (선택)
     # ==========================================
     
-    else:
+    elif weekday == 4 and atlanta_hour >= 15:
     
-        # ==========================================
-        # 🔵 월요일
-        # ==========================================
+        is_restricted = True
     
-        if weekday == 0:
-    
-            # 월요일 초반만 약한 감점
-            if atlanta_hour < 8:
-    
-                time_risk_score -= 0.7
-    
-                time_risk_reasons.append(
-                    "🔵 월요일 오전 → 방향성 형성 전"
-                )
-    
-            # 월요일 오후는 약한 감점만
-            else:
-    
-                time_risk_score -= 0.3
-    
-                time_risk_reasons.append(
-                    "🔵 월요일 → continuation 품질 약간 낮음"
-                )
-    
-        # ==========================================
-        # 🟢 화요일 / 수요일
-        # continuation 가장 좋은 구간
-        # ==========================================
-    
-        elif weekday in [1, 2]:
-    
-            time_risk_score += 0.5
-    
-            time_risk_reasons.append(
-                "🟢 화/수 → continuation favorable"
-            )
-    
-        # ==========================================
-        # 🟠 목요일
-        # exhaustion 가능성만 체크
-        # ==========================================
-    
-        elif weekday == 3:
-    
-            if (
-                rsi is not None
-                and (
-                    rsi > 78 or
-                    rsi < 22
-                )
-            ):
-    
-                time_risk_score -= 0.7
-    
-                time_risk_reasons.append(
-                    "🟠 목요일 extreme RSI → exhaustion 가능성"
-                )
-    
-        # ==========================================
-        # 🔴 금요일
-        # 오후만 위험
-        # ==========================================
-    
-        elif weekday == 4:
-    
-            # 금요일 오후
-            if atlanta_hour >= 13:
-    
-                time_risk_score -= 1.0
-    
-                time_risk_reasons.append(
-                    "🔴 금요일 오후 → profit taking 위험"
-                )
-    
-            # 금요일 오전 continuation 허용
-            else:
-    
-                time_risk_score += 0.3
-    
-                time_risk_reasons.append(
-                    "🟢 금요일 오전 → continuation 가능"
-                )
-    
-    # ==========================================
-    # 제한 시간 감점
-    # ==========================================
-    
-    if is_restricted:
-    
-        time_risk_score -= 5
-    
-        time_risk_reasons.append(
-            f"⛔ 거래 제한: {restriction_reason}"
+        restriction_reason = (
+            "🔴 금요일 오후 → 청산 및 변동성 위험"
         )
     
     # ==========================================
-    # 최종 score 반영
-    # ==========================================
-    
-    signal_score += time_risk_score
-    reasons.extend(time_risk_reasons)
-    
-    # ==========================================
-    # 최종 hard restriction
+    # 거래 제한
     # ==========================================
     
     if is_restricted:
     
         print(f"⛔ 거래 제한: {restriction_reason}")
     
-        return 0, [
+        return (
             f"⛔ 거래 제한: {restriction_reason}"
-        ]
-    
+        )
+        
     # ── 전역 쿨다운: 429 맞은 뒤 일정 시간은 호출 자체 스킵 ──
     global _gpt_cooldown_until
     now = _t.time()
