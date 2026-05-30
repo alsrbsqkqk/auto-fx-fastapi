@@ -2036,7 +2036,7 @@ async def webhook(request: Request):
             should_execute = False
     
     if should_execute:
-        units = 50000 if final_decision == "BUY" else -50000
+        units = 100000 if final_decision == "BUY" else -100000
         digits = 3 if pair.endswith("JPY") else 5
     
         print(f"[DEBUG] WILL PLACE ORDER → pair={pair}, side={final_decision}, units={units}, "
