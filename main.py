@@ -1785,10 +1785,10 @@ async def webhook(request: Request):
         "atr": atr,
         "signal_score": signal_score,
         "score_components": reasons,
-        "rsi_trend": rsi_trend[-8:],      # ✅ 최근 5개로 압축
-        "macd_trend": macd_trend[-8:],
-        "macd_signal_trend": macd_signal_trend[-8:],
-        "stoch_rsi_trend": stoch_rsi_trend[-8:],
+        "rsi_trend": rsi_trend[-3:],      # ✅ 최근 5개로 압축
+        "macd_trend": macd_trend[-3:],
+        "macd_signal_trend": macd_signal_trend[-3:],
+        "stoch_rsi_trend": stoch_rsi_trend[-3:],
         "strategy_name": (
             data.get("strategy_name", "").strip()
             or data.get("alert_name", "").strip()
