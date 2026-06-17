@@ -628,27 +628,43 @@ def get_buffer_by_symbol(symbol):
         return 10 * 0.0001
 
 def get_multi_timeframe_context(pair):
-    """
-    30분봉 알림 시, 상위(4시간)와 하위(5분)의 맥락을 요약합니다.
-    """
     try:
-        # 1. 상위 타임프레임 (H4) - 큰 흐름 파악
-        df_h4 = get_ohlcv(pair, interval='4h', limit=10) # 기존 캔들 함수 활용
-        h4_last = df_h4['close'].iloc[-1]
-        h4_ema = ta.trend.ema_indicator(df_h4['close'], window=20).iloc[-1]
-        h4_trend = "상승세(Bullish)" if h4_last > h4_ema else "하락세(Bearish)"
 
-        # 2. 하위 타임프레임 (M5) - 현재 실시간 힘 파악
-        df_m5 = get_ohlcv(pair, interval='5m', limit=10)
-        m5_rsi = ta.momentum.rsi(df_m5['close'], window=14).iloc[-1]
-        
-        context = (
-            f"[H4 추세]: {h4_trend} (EMA20 대비)\n"
-            f"[M5 실시간]: RSI {m5_rsi:.2f}"
+        df_h4 = get_ohlcv(pair, interval='4h', limit=50)
+
+        h4_last = df_h4['close'].iloc[-1]
+
+        h4_ema = ta.trend.ema_indicator(
+            df_h4['close'],
+            window=20
+        ).iloc[-1]
+
+        h4_trend = (
+            "상승세(Bullish)"
+            if pd.notna(h4_ema) and h4_last > h4_ema
+            else "하락세(Bearish)"
         )
-        return context
-    except:
-        return "타임프레임 데이터 요약 실패"
+
+        df_m5 = get_ohlcv(pair, interval='5m', limit=30)
+
+        m5_rsi = ta.momentum.rsi(
+            df_m5['close'],
+            window=14
+        ).iloc[-1]
+
+        m5_rsi_text = (
+            "N/A"
+            if pd.isna(m5_rsi)
+            else f"{m5_rsi:.2f}"
+        )
+
+        return (
+            f"[H4 추세]: {h4_trend} (EMA20 대비)\n"
+            f"[M5 실시간]: RSI {m5_rsi_text}"
+        )
+
+    except Exception as e:
+        return f"타임프레임 데이터 요약 실패: {e}"
 
 def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi, trend, prev_trend, signal, liquidity, pattern, pair, candles, atr, price, bollinger_upper, bollinger_lower, support, resistance, support_distance, resistance_distance, pip_size, expected_direction=None, strategy_name=None):
     signal_score = 0
@@ -3021,7 +3037,13 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
         return "GPT 응답 없음"
     
     except Exception as e:
-        dbg("gpt.error", msg=str(e))
+        print("GPT ERROR:", e)
+    
+        try:
+            print("Response:", r.text)
+        except:
+            pass
+    
         return "GPT 응답 없음"
     
 def safe_float(val):
