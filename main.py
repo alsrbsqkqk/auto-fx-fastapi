@@ -3009,7 +3009,7 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
             json=body,
             timeout=90,
         )
-        print("✅ OpenAI response body:", body)
+        print("GPT STATUS:", r.status_code)
         r.raise_for_status()  # HTTP 에러 체크
         data = r.json()
         
@@ -3034,17 +3034,28 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
 
     except requests.exceptions.Timeout:
         print("❌ GPT 응답 시간 초과")
-        return "GPT 응답 없음"
+        return "GPT_TIMEOUT"
     
     except Exception as e:
-        print("GPT ERROR:", e)
+    
+        print("\n========== GPT ERROR ==========")
+    
+        print("ERROR:", str(e))
     
         try:
-            print("Response:", r.text)
+            print("STATUS:", r.status_code)
         except:
-            pass
+            print("STATUS: UNKNOWN")
     
-        return "GPT 응답 없음"
+        try:
+            print("BODY:")
+            print(r.text)
+        except:
+            print("BODY: NONE")
+    
+        print("================================\n")
+    
+        return f"GPT_ERROR: {str(e)}"
     
 def safe_float(val):
     try:
