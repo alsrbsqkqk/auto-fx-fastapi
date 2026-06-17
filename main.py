@@ -1729,7 +1729,7 @@ async def webhook(request: Request):
         support_distance,
         resistance_distance,
         pip_size,
-        recent_macd_values
+        macd_trend
     )
     # ===== GPT 입력 업그레이드용 안전한 추가 정보 =====
     try:
