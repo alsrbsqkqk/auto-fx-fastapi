@@ -639,11 +639,12 @@ def get_multi_timeframe_context(pair):
             window=20
         ).iloc[-1]
 
-        h4_trend = (
-            "상승세(Bullish)"
-            if pd.notna(h4_ema) and h4_last > h4_ema
-            else "하락세(Bearish)"
-        )
+        if pd.isna(h4_ema):
+            h4_trend = "데이터부족"
+        elif h4_last > h4_ema:
+            h4_trend = "상승세(Bullish)"
+        else:
+            h4_trend = "하락세(Bearish)"
 
         df_m5 = get_ohlcv(pair, interval='5m', limit=30)
 
@@ -652,18 +653,27 @@ def get_multi_timeframe_context(pair):
             window=14
         ).iloc[-1]
 
-        m5_rsi_text = (
-            "N/A"
-            if pd.isna(m5_rsi)
-            else f"{m5_rsi:.2f}"
-        )
+        if pd.isna(m5_rsi):
+            print("[WARN] M5 RSI = NaN")
+            m5_rsi_text = "N/A"
+            m5_state = "데이터부족"
+        else:
+            m5_rsi_text = f"{m5_rsi:.2f}"
+
+            if m5_rsi >= 70:
+                m5_state = "과매수"
+            elif m5_rsi <= 30:
+                m5_state = "과매도"
+            else:
+                m5_state = "중립"
 
         return (
             f"[H4 추세]: {h4_trend} (EMA20 대비)\n"
-            f"[M5 실시간]: RSI {m5_rsi_text}"
+            f"[M5 RSI]: {m5_rsi_text} ({m5_state})"
         )
 
     except Exception as e:
+        print(f"[ERROR] get_multi_timeframe_context: {e}")
         return f"타임프레임 데이터 요약 실패: {e}"
 
 def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi, trend, prev_trend, signal, liquidity, pattern, pair, candles, atr, price, bollinger_upper, bollinger_lower, support, resistance, support_distance, resistance_distance, pip_size, expected_direction=None, strategy_name=None):
@@ -1858,31 +1868,26 @@ async def webhook(request: Request):
         print(f"📄 GPT Raw Response: {raw_text!r}")
         gpt_feedback = raw_text
         parsed_decision, tp, sl = parse_gpt_feedback(raw_text) if raw_text else ("WAIT", None, None)
-        if final_decision not in ["BUY", "SELL"]:
+        
+        if parsed_decision in ["BUY", "SELL"]:
             final_decision = parsed_decision
             final_tp = tp
             final_sl = sl
+        
+            print(
+                f"[✔️UPDATE] GPT 결정 적용: "
+                f"{final_decision}, tp={final_tp}, sl={final_sl}"
+            )
         else:
-            print(f"[INFO] 기존 결정 유지: {final_decision}, tp={tp}, sl={sl}")
-        # ✅ 대신 아래처럼 명확히 처리
-        parsed_decision = None
-        parsed_tp = None
-        parsed_sl = None
-        if final_decision in (None, "WAIT") and raw_text and str(raw_text).strip() not in ("", "None"):
-            parsed_decision, parsed_tp, parsed_sl = parse_gpt_feedback(raw_text)
-        else:
-            parsed_decision, parsed_tp, parsed_sl = ("WAIT", None, None)
-            # ✅ 파싱이 제대로 되었을 때만 덮어씌우기
-            if parsed_decision != "WAIT" and parsed_tp is not None and parsed_sl is not None:
-                final_decision = parsed_decision
-                final_tp = parsed_tp
-                final_sl = parsed_sl
-                
-                # 🚀 여기에 아래 두 줄을 추가하세요! (실제 진입 결정 시 시간 기록)
-                _last_execution_time = _t.time()
-                print(f"[✔️UPDATE] GPT 피드백으로 최종 결정 업데이트: {final_decision}, tp={final_tp}, sl={final_sl}")
-            else:
-                print(f"[⚠️SKIP] GPT 피드백 무시됨 - 불충분한 조건: {parsed_decision}, tp={parsed_tp}, sl={parsed_sl}")
+            final_decision = "WAIT"
+            final_tp = None
+            final_sl = None
+        
+            print(
+                f"[⚠️WAIT] GPT 반환값 무효: "
+                f"{parsed_decision}"
+            )
+       
     else:
         print("🚫 GPT 분석 생략: 점수 2.0점 미만")
         print("🔎 GPT 분석 상세 로그")
