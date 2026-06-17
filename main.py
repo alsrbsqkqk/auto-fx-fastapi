@@ -676,7 +676,7 @@ def get_multi_timeframe_context(pair):
         print(f"[ERROR] get_multi_timeframe_context: {e}")
         return f"타임프레임 데이터 요약 실패: {e}"
 
-def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi, trend, prev_trend, signal, liquidity, pattern, pair, candles, atr, price, bollinger_upper, bollinger_lower, support, resistance, support_distance, resistance_distance, pip_size, expected_direction=None, strategy_name=None):
+def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi, trend, prev_trend, signal, liquidity, pattern, pair, candles, atr, price, bollinger_upper, bollinger_lower, support, resistance, support_distance, resistance_distance, pip_size, macd_trend=None, expected_direction=None, strategy_name=None):
     signal_score = 0
     opportunity_score = 0  
     reasons = []
@@ -1728,7 +1728,8 @@ async def webhook(request: Request):
         resistance,
         support_distance,
         resistance_distance,
-        pip_size
+        pip_size,
+        recent_macd_values
     )
     # ===== GPT 입력 업그레이드용 안전한 추가 정보 =====
     try:
