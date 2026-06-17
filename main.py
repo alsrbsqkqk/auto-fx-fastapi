@@ -2943,6 +2943,7 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
                 "- H4 추세가 진입 방향과 일치하면 강력한 가점 요소입니다.\n"
                 "- M5 RSI가 극단적(80 이상/20 이하)일 때만 진입 타이밍 조절을 위해 WAIT을 검토하세요.\n\n"
 
+                
 
                 "📌 [판단 원칙]\n"
                 "- 추세와 진입 방향이 일치하면 진입을 선호한다 그러나 NEUTRAL 추세에서는 모멘텀 증가가 확인되어야 한다 RSI, MACD, Stoch RSI가 모두 중립이면 기본 판단은 WAIT이다..\n"
