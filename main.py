@@ -1193,8 +1193,8 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
         # --- MACD 교차 가점: 모든 페어 공통 (pip/ATR 스케일 적용) ---
     macd_diff = macd - macd_signal
     if pair.endswith("JPY"):
-    strong = 0.015
-    weak = 0.005
+        strong = 0.015
+        weak = 0.005
     else:
         strong = 0.00015
         weak = 0.00005
