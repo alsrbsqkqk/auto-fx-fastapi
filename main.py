@@ -1024,15 +1024,30 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     # 5️⃣ RSI < 30 구간 정리 (중복 제거)
     # ==================================================
     if rsi < 30:
+    
         if pattern in ["HAMMER", "BULLISH_ENGULFING"]:
             signal_score += 2
             reasons.append("🟢 RSI < 30 + 반등 캔들 패턴 → 진입 강화 (+2)")
-        elif macd < macd_signal and trend == "DOWNTREND":
+    
+        elif (
+            macd < macd_signal
+            and trend == "DOWNTREND"
+            and len(macd_trend) >= 3
+            and macd_trend[-1] <= macd_trend[-2]
+        ):
             signal_score -= 1.5
             reasons.append("🔴 RSI < 30 + MACD/추세 약세 지속 → 반등 기대 낮음 (감점 -1.5)")
+    
+        elif (
+            len(macd_trend) >= 3
+            and macd_trend[-1] > macd_trend[-2] > macd_trend[-3]
+        ):
+            signal_score += 1.0
+            reasons.append("🟢 RSI 과매도 + MACD 회복 → 반등 기대 (+1.0)")
+    
         else:
-            signal_score -= 1.0
-            reasons.append("⚠️ RSI < 30 but 반등 근거 부족 → 진입 위험 (감점 -1.0)")
+            signal_score -= 0.5
+            reasons.append("⚠️ RSI < 30 but 반등 근거 부족 → 주의 (-0.5)")
     
     
     # ==================================================
@@ -1192,6 +1207,28 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
         reasons.append("MACD 교차(약) → 초입 가점 +1")
     else:
         reasons.append("MACD 미세변동 → 가점 보류")
+    if signal == "BUY" and len(macd_trend) >= 3:
+
+    if (
+        macd_trend[-1] > macd_trend[-2]
+        and macd_trend[-2] > macd_trend[-3]
+    ):
+
+        if macd_trend[-1] < 0:
+
+            signal_score += 0.7
+
+            reasons.append(
+                "🟢 MACD 음수권 회복중 → 반등 가점 (+0.7)"
+            )
+
+        else:
+
+            signal_score += 0.3
+
+            reasons.append(
+                "🟢 MACD 상승 모멘텀 유지 (+0.3)"
+            )
 
     # (선택) 히스토그램 보조 판단은 유지하되 임계도 pip화
     macd_hist = macd_diff
@@ -2896,8 +2933,8 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
                 "너는 실전 FX 트레이딩 전략 조력자야.\n\n"
                 "⚠️ [역할 정의 - 매우 중요]\n"
                 "- 이미 이 신호는 사전 score / signal_score 필터를 통과했다.\n"
-                "- 너의 역할은 '추가로 진입을 차단하는 것'이 아니라,\n"
-                "  명백한 반대 시그널이 있는 경우에만 WAIT을 선택하는 것이다 너가볼때 승률이 60%이상이라면 거래 들어가자.\n"
+                "- 그러나 GPT는 필터 결과를 맹신하지 말고 현재 차트 구조를 독립적으로 검증해야 한다,\n"
+                "  승률이 55% 미만으로 판단되면 WAIT을 선택할 수 있다.명백한 반대 시그널 뿐 아니라추세 부재, 모멘텀 부재, 박스권 상단/하단 정체도 WAIT 근거가 될 수 있다.\n"
                 "- 애매함, 가능성, 추측만으로 WAIT을 선택해서는 안 된다.\n\n"
                 
                 "📌 [M30 알림 전용: 멀티 타임프레임 분석 지침 - 추가됨]\n"
@@ -2908,7 +2945,7 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
 
 
                 "📌 [판단 원칙]\n"
-                "- 추세와 진입 방향이 일치하면 기본적으로 BUY 또는 SELL을 유지한다 추세와 진입 방향이 정확히 일치하지 않더라도 다른것들을 분석했을때 승률이 55%이상인것으로 보이면 거래 들어가라.\n"
+                "- 추세와 진입 방향이 일치하면 진입을 선호한다 그러나 NEUTRAL 추세에서는 모멘텀 증가가 확인되어야 한다 RSI, MACD, Stoch RSI가 모두 중립이면 기본 판단은 WAIT이다..\n"
                 "- 실제로 가격이 SL을 먼저 터치할 명확한 근거가 없는 한 진입을 유지한다.\n"
                 "- 결과 예측(사후적 반등/되돌림 가정)을 근거로 WAIT을 선택하지 마라.\n\n"
                 
