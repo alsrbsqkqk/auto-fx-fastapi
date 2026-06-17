@@ -2958,7 +2958,7 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
 
                 "(2) 거래는 기본적으로 1~2시간 내 청산을 목표로 하는 단타 스캘핑 트레이딩이다.\n"
                 "- 이 전략은 reversal 전략이 아니라 breakout/continuation scalp 전략이다.\n"
-                "- resistance 근접, RSI 45~60, stoch 과열은 단독으로 WAIT 근거가 아니다.\n"
+                "- resistance 근접, RSI 45~60, stoch 과열은 단독으로 WAIT 근거가 아니다 단, resistance/supply zone까지 3 pip 이하이고 Stoch RSI > 0.9 인 경우는 예외다 이 경우 breakout 확인 전 BUY 추격 진입은 높은 실패 확률로 간주한다.\n"
                 "- recent_ohlc, candle_micro, breakout_context, structure_context를 우선 해석하라.\n"
                 "- SL과 TP는 ATR 기준 가급적 최소 50% 이상 거리로 설정하되, 시간이 너무 오래 걸릴 것 같으면 무시해도 좋다.\n"
                 "- 하지만 반드시 **현재가 기준으로 TP는 ATR기반으로 계산하되 과도한 목표 설정을 방지하기 위해, 계산식 TP distance는 max(ATRx1.2, 0.11) 이 공식을 항상 따라라**, SL distance는 max(ATRx1.1, 0.11)이 공식을 항상 따르되 SL은 항상 16pip을 초과하지 않도록 한다. 이내로 설정하게 해줘 어떻게 계산했는지도 보여줘. 예외는 없다 그렇지 않으면 시장 변동성 대비 손실 확률이 급격히 높아진다.\n"
