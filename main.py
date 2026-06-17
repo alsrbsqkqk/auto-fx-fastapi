@@ -1192,8 +1192,12 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
 
         # --- MACD 교차 가점: 모든 페어 공통 (pip/ATR 스케일 적용) ---
     macd_diff = macd - macd_signal
-    strong = thr["macd_strong"]   # 20 pip에 해당하는 가격 단위
-    weak   = thr["macd_weak"]     # 10 pip에 해당하는 가격 단위
+    if pair.endswith("JPY"):
+    strong = 0.015
+    weak = 0.005
+    else:
+        strong = 0.00015
+        weak = 0.00005
     micro  = 2 * pv               # 미세변동(≈2 pip) 판단용
 
     if (macd_diff > strong) and trend == "UPTREND":
@@ -1209,26 +1213,26 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
         reasons.append("MACD 미세변동 → 가점 보류")
     if signal == "BUY" and len(macd_trend) >= 3:
 
-    if (
-        macd_trend[-1] > macd_trend[-2]
-        and macd_trend[-2] > macd_trend[-3]
-    ):
-
-        if macd_trend[-1] < 0:
-
-            signal_score += 0.7
-
-            reasons.append(
-                "🟢 MACD 음수권 회복중 → 반등 가점 (+0.7)"
-            )
-
-        else:
-
-            signal_score += 0.3
-
-            reasons.append(
-                "🟢 MACD 상승 모멘텀 유지 (+0.3)"
-            )
+        if (
+            macd_trend[-1] > macd_trend[-2]
+            and macd_trend[-2] > macd_trend[-3]
+        ):
+    
+            if macd_trend[-1] < 0:
+    
+                signal_score += 0.7
+    
+                reasons.append(
+                    "🟢 MACD 음수권 회복중 → 반등 가점 (+0.7)"
+                )
+    
+            else:
+    
+                signal_score += 0.3
+    
+                reasons.append(
+                    "🟢 MACD 상승 모멘텀 유지 (+0.3)"
+                )
 
     # (선택) 히스토그램 보조 판단은 유지하되 임계도 pip화
     macd_hist = macd_diff
