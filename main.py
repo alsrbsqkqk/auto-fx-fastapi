@@ -18,6 +18,7 @@ import base64
 import os
 import asyncio
 from playwright.sync_api import sync_playwright
+import time
 import time as _t
 print("🔥 CURRENT OPENAI KEY:", os.getenv("OPENAI_API_KEY"))
 _gpt_lock = threading.Lock()
@@ -1898,7 +1899,47 @@ async def webhook(request: Request):
     
         # 🤖 [수정] 3. GPT 분석 함수 호출 (base64_image 인자 추가)
         # ※ 주의: analyze_with_gpt 함수 정의 부분에도 image 인자를 받도록 수정해야 합니다.
-        gpt_raw = analyze_with_gpt(payload, price, pair, candles, base64_image) 
+        gpt_raw = None
+        
+        for attempt in range(3):
+        
+            try:
+        
+                gpt_raw = analyze_with_gpt(
+                    payload,
+                    price,
+                    pair,
+                    candles,
+                    base64_image
+                )
+        
+                if (
+                    gpt_raw
+                    and "GPT_ERROR" not in str(gpt_raw)
+                ):
+                    break
+        
+                print(
+                    f"⚠ GPT 실패 → 재시도 {attempt+2}/3"
+                )
+        
+                _t.sleep(2)
+        
+            except Exception as e:
+        
+                print(
+                    f"⚠ GPT 호출 실패 {attempt+1}/3: {e}"
+                )
+        
+                _t.sleep(2)
+        
+        if (
+            not gpt_raw
+            or "GPT_ERROR" in str(gpt_raw)
+        ):
+            print(
+                "❌ GPT 3회 재시도 실패"
+            )
             
         print("✅ STEP 6: GPT 응답 수신 완료 (이미지 분석 포함)")
         # ✅ 추가: 파싱 결과 강제 정규화 (대/소문자/공백/이상값 방지)
@@ -1922,26 +1963,14 @@ async def webhook(request: Request):
             )
         else:
         
-            if raw_text and "GPT_ERROR" in str(raw_text):
+            final_decision = "WAIT"
+            final_tp = None
+            final_sl = None
         
-                final_decision = signal
-                final_tp = None
-                final_sl = None
-        
-                print(
-                    f"⚠️ GPT 서버 오류 → 원본 신호 유지: {signal}"
-                )
-        
-            else:
-        
-                final_decision = "WAIT"
-                final_tp = None
-                final_sl = None
-        
-                print(
-                    f"⚠️[WAIT] GPT 반환값 무효: "
-                    f"{parsed_decision}"
-                )
+            print(
+                f"⚠️[WAIT] GPT 반환값 무효: "
+                f"{parsed_decision}"
+            )
        
     else:
         print("🚫 GPT 분석 생략: 점수 2.0점 미만")
