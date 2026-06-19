@@ -1921,14 +1921,27 @@ async def webhook(request: Request):
                 f"{final_decision}, tp={final_tp}, sl={final_sl}"
             )
         else:
-            final_decision = "WAIT"
-            final_tp = None
-            final_sl = None
         
-            print(
-                f"[⚠️WAIT] GPT 반환값 무효: "
-                f"{parsed_decision}"
-            )
+            if raw_text and "GPT_ERROR" in str(raw_text):
+        
+                final_decision = signal
+                final_tp = None
+                final_sl = None
+        
+                print(
+                    f"⚠️ GPT 서버 오류 → 원본 신호 유지: {signal}"
+                )
+        
+            else:
+        
+                final_decision = "WAIT"
+                final_tp = None
+                final_sl = None
+        
+                print(
+                    f"⚠️[WAIT] GPT 반환값 무효: "
+                    f"{parsed_decision}"
+                )
        
     else:
         print("🚫 GPT 분석 생략: 점수 2.0점 미만")
