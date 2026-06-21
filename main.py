@@ -3768,3 +3768,4 @@ def get_last_trade_time():
             return datetime.fromisoformat(f.read().strip())
     except:
         return None
+
