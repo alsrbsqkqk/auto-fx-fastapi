@@ -1651,8 +1651,8 @@ ALPACA_DATA_BASE_URL = "https://data.alpaca.markets"
 # 주문당 고정 매수 금액(달러). sizing_mode="fixed"일 때 또는 risk 계산 실패시 폴백으로 사용.
 ALPACA_FIXED_NOTIONAL_USD = float(os.getenv("ALPACA_FIXED_NOTIONAL_USD", "1000"))
 
-# 🟦 포지션 사이징 모드: "risk"(계좌 리스크 % 기반, 권장) 또는 "fixed"(고정 금액)
-ALPACA_SIZING_MODE = os.getenv("ALPACA_SIZING_MODE", "risk").strip().lower()
+# 🟦 포지션 사이징 모드: "tiered"(가격대별 고정 수량표, 기본값) / "risk"(계좌 리스크 % 기반) / "fixed"(고정 금액)
+ALPACA_SIZING_MODE = os.getenv("ALPACA_SIZING_MODE", "tiered").strip().lower()
 # 1회 거래당 허용 리스크 = 계좌 equity의 이 비율(%). 예: 0.5 → 계좌 5만달러면 250달러 리스크.
 ALPACA_RISK_PCT = float(os.getenv("ALPACA_RISK_PCT", "0.5"))
 # SL이 너무 타이트해서 risk 계산상 수량이 과도하게 커지는 것을 막는 안전 캡(달러, notional 기준).
@@ -2859,10 +2859,30 @@ def get_alpaca_account_equity():
         return None
 
 
+def get_tiered_qty(price: float) -> int:
+    """
+    가격대별 고정 수량표.
+    - $300 이상: 1주   (400불 이상도 동일하게 1주로 처리됨)
+    - $200~300 미만: 2주
+    - $100~200 미만: 3주
+    - $100 미만: 5주
+    필요하면 숫자만 바꿔서 쉽게 조정 가능.
+    """
+    if price >= 300:
+        return 1
+    elif price >= 200:
+        return 2
+    elif price >= 100:
+        return 3
+    else:
+        return 5
+
+
 def calc_alpaca_qty(ref_price: float, sl: float, notional_usd: float) -> int:
     """
-    포지션 수량(qty) 산출.
-    - sizing_mode="risk": 계좌 equity * ALPACA_RISK_PCT(%) 만큼만 손실을 허용한다고 가정,
+    포지션 수량(qty) 산출. ALPACA_SIZING_MODE로 방식 선택:
+    - "tiered": 가격대별 고정 수량표(get_tiered_qty) 사용. 가장 단순하고 예측 가능.
+    - "risk": 계좌 equity * ALPACA_RISK_PCT(%) 만큼만 손실을 허용한다고 가정,
       SL까지의 거리(stop_distance)로 나눠 수량을 역산. (예: 계좌 5만달러, 리스크 0.5% → 250달러,
       SL 거리가 5달러면 qty=50주)
     - SL 거리가 너무 좁아 비정상적으로 큰 수량이 나오는 걸 막기 위해 ALPACA_MAX_NOTIONAL_USD로 캡.
@@ -2876,6 +2896,11 @@ def calc_alpaca_qty(ref_price: float, sl: float, notional_usd: float) -> int:
         return 1
 
     max_qty_by_notional = max(1, int(ALPACA_MAX_NOTIONAL_USD // ref_price))
+
+    if ALPACA_SIZING_MODE == "tiered":
+        qty = get_tiered_qty(ref_price)
+        print(f"[Alpaca][tiered-sizing] price={ref_price}, qty={qty}")
+        return qty
 
     if ALPACA_SIZING_MODE == "risk":
         equity = get_alpaca_account_equity()
