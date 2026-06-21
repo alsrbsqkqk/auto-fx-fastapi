@@ -1659,6 +1659,11 @@ ALPACA_RISK_PCT = float(os.getenv("ALPACA_RISK_PCT", "0.5"))
 ALPACA_MAX_NOTIONAL_USD = float(os.getenv("ALPACA_MAX_NOTIONAL_USD", "5000"))
 # 주식 SL 버퍼 = ATR * 이 배수 (get_buffer_by_symbol). 페이퍼 트레이딩하면서 0.15/0.20/0.25 A/B 테스트용.
 ALPACA_SL_BUFFER_ATR_MULT = float(os.getenv("ALPACA_SL_BUFFER_ATR_MULT", "0.15"))
+# 🟦 주식 TP/SL ATR 배수. TradingView Pine 전략("BUY STOCK PORTFOLIO A2")의
+#    tpATR(기본 0.8) / slATR(기본 1.0) 입력값과 반드시 동일하게 맞춰야 한다.
+#    Pine에서 입력값을 바꾸면 여기 환경변수도 같이 바꿔야 정렬이 유지된다.
+STOCK_TP_ATR_MULT = float(os.getenv("STOCK_TP_ATR_MULT", "0.8"))
+STOCK_SL_ATR_MULT = float(os.getenv("STOCK_SL_ATR_MULT", "1.0"))
 
 ALPACA_HEADERS = {
     "APCA-API-KEY-ID": ALPACA_API_KEY or "",
@@ -1741,11 +1746,9 @@ async def webhook(request: Request):
             content={"error": "invalid json body", "raw": raw[:200].decode("utf-8", "ignore")},
             status_code=400
         )
-    pair = data.get("pair")
-    signal = data.get("signal")
-    print(f"✅ STEP 2: 데이터 수신 완료 | pair: {pair}")
-    
-    pair = data.get("pair")
+    # 🟦 TradingView 알림이 'pair' 대신 'symbol'로 보내는 경우도 허용
+    #    (예: PineScript alert(... '{"symbol":"{{ticker}}", ...}' ...))
+    pair = data.get("pair") or data.get("symbol")
     signal = data.get("signal")
     print(f"✅ STEP 2: 데이터 수신 완료 | pair: {pair}")
 
@@ -2231,7 +2234,27 @@ async def webhook(request: Request):
         gpt_feedback += f"\n⚠️ TP/SL 추출 실패 → 현실적 계산 적용 (ATR: {atr}, pips: {atr_pips})"
         final_tp, final_sl = adjust_tp_sl_for_structure(pair, price, tp, sl, support, resistance, atr)
 
-    # ✅ 여기서부터 검증 블록 삽입
+    # 🟦 주식 신호는 TradingView Pine 전략("BUY STOCK PORTFOLIO A2")과 TP/SL을 강제로 일치시킨다.
+    #    GPT가 무엇을 계산했든(또는 위 폴백이 무엇을 계산했든) 여기서 최종적으로 덮어써서,
+    #    Pine: longTP = close + ATR*tpATR, longSL = close - ATR*slATR 와 100% 동일하게 만든다.
+    if is_stock_pair(pair) and final_decision in ("BUY", "SELL") and price is not None and atr is not None:
+        _stock_atr = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr)
+        if _stock_atr and _stock_atr > 0:
+            _digits = price_round_digits(pair)
+            if final_decision == "BUY":
+                final_tp = round(price + _stock_atr * STOCK_TP_ATR_MULT, _digits)
+                final_sl = round(price - _stock_atr * STOCK_SL_ATR_MULT, _digits)
+            else:  # SELL
+                final_tp = round(price - _stock_atr * STOCK_TP_ATR_MULT, _digits)
+                final_sl = round(price + _stock_atr * STOCK_SL_ATR_MULT, _digits)
+            tp, sl = final_tp, final_sl  # 아래 검증 블록이 참조하는 tp/sl도 동기화
+            gpt_feedback += (
+                f"\n🟦 주식 TP/SL을 Pine 전략 공식으로 강제 재계산: "
+                f"TP=entry±ATR*{STOCK_TP_ATR_MULT}, SL=entry∓ATR*{STOCK_SL_ATR_MULT} "
+                f"(ATR={_stock_atr:.4f}) → TP={final_tp}, SL={final_sl}"
+            )
+
+    # ✅ 여기서부터 검증 블록 삽입 (FX는 기존과 동일하게 tp/sl 기준으로 계산)
     pip = pip_value_for(pair)
     min_pip = 5 * pip
     tp_sl_ratio = abs(tp - price) / max(1e-9, abs(price - sl))
@@ -3370,6 +3393,7 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
                 "- recent_ohlc, candle_micro, breakout_context, structure_context를 우선 해석하라.\n"
                 "- SL과 TP는 ATR 기준 가급적 최소 50% 이상 거리로 설정하되, 시간이 너무 오래 걸릴 것 같으면 무시해도 좋다.\n"
                 "- 하지만 반드시 **현재가 기준으로 TP는 ATR기반으로 계산하되 과도한 목표 설정을 방지하기 위해, 계산식 TP distance는 max(ATRx1.2, 0.11) 이 공식을 항상 따라라**, SL distance는 max(ATRx1.1, 0.11)이 공식을 항상 따르되 SL은 항상 16pip을 초과하지 않도록 한다. 이내로 설정하게 해줘 어떻게 계산했는지도 보여줘. 예외는 없다 그렇지 않으면 시장 변동성 대비 손실 확률이 급격히 높아진다.\n"
+                "  (※ 위 TP/SL 공식은 FX 전용이다. 아래 (3-1)에서 종목이 미국 주식인 경우 이 공식 대신 별도 규칙을 따른다.)\n"
                 "- 최근 5개 캔들의 고점/저점을 참고해서 너가 설정한 TP/SL이 **REASONABLE한지 꼭 검토**해.\n"
                 "- RSI가 60 이상이고 Stoch RSI가 0.8 이상이며, 가격이 볼린저밴드 상단에 근접한 경우에는 'BUY 피로감'으로 간주해 'SELL'을 좀 더 고려해라.\n"
                 "- RSI가 40 이하이고 Stoch RSI가 0.1 이하이며, 가격이 볼린저밴드 하단에 근접한 경우에는 'SELL 피로감'으로 간주해'BUY'을 좀 더 고려해라.\n\n"
@@ -3382,8 +3406,13 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
                 "- GPT는 BUY/SELL 방향을 기준으로 TP/SL의 방향을 항상 먼저 판단한 후 값(pip 거리)을 계산해야 한다.\n"
                 "- USD/JPY는 pip 단위가 소수점 둘째 자리입니다. TP와 SL은 반드시 이 기준으로 계산하세요. 이 규칙을 어기면 거래가 취소되므로 반드시 지켜야 한다. 예를들면 sell 거래의 진입가가 155.015라면 TP는 154.915가 10pip차이이다 \n\n"
                 + (
-                    f"- ⚠️ 이번 종목({pair})은 미국 주식(Alpaca)입니다. 'pip' 개념이 아니라 달러(센트) 단위로 TP/SL을 계산하세요. "
-                    f"가격은 소수점 둘째 자리(센트) 기준으로 반올림해서 제시하세요.\n\n"
+                    f"(3-1) ⚠️ 이번 종목({pair})은 미국 주식(Alpaca)이다. 위 (2)의 FX용 TP/SL 공식(ATRx1.2/1.1, pip, 16pip 캡)은 "
+                    f"이 종목에는 적용하지 마라. 대신 TradingView Pine 전략과 동일한 아래 공식을 반드시 사용하라:\n"
+                    f"  • BUY: TP = 현재가 + ATR×{STOCK_TP_ATR_MULT}, SL = 현재가 − ATR×{STOCK_SL_ATR_MULT}\n"
+                    f"  • SELL: TP = 현재가 − ATR×{STOCK_TP_ATR_MULT}, SL = 현재가 + ATR×{STOCK_SL_ATR_MULT}\n"
+                    f"  • 단위는 'pip'이 아니라 달러(센트, 소수점 둘째 자리)이다.\n"
+                    f"  • (참고: 이 값은 서버에서 동일한 공식으로 다시 한번 강제 재계산되어 최종 주문에 사용되니, "
+                    f"네가 계산한 값이 위 공식과 다르면 그건 서버 값으로 덮어써진다. 그래도 보고하는 값은 위 공식과 일치시켜라.)\n\n"
                     if is_stock_pair(pair) else ""
                 )
                 +
