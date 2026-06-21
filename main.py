@@ -1698,6 +1698,14 @@ def price_round_digits(pair: str) -> int:
     return 3 if pair.endswith("JPY") else 5
 
 
+def base_granularity_for(pair: str) -> str:
+    """
+    분석 기준 캔들 단위. 주식은 15분봉, FX는 기존과 동일하게 30분봉.
+    (캔들 조회, 지지/저항, MTF 요약, GPT 프롬프트 안내문 전부 이 값을 따른다.)
+    """
+    return "M15" if is_stock_pair(pair) else "M30"
+
+
 def analyze_highs_lows(candles, window=20):
     highs = candles['high'].tail(window).dropna()
     lows = candles['low'].tail(window).dropna()
@@ -1783,7 +1791,7 @@ async def webhook(request: Request):
 
     alert_name = data.get("alert_name", "기본알림")
 
-    candles = get_candles(pair, "M30", 200)
+    candles = get_candles(pair, base_granularity_for(pair), 200)
     # ✅ 캔들 방어 로직 추가
     if candles is None or candles.empty or len(candles) < 3:
         return JSONResponse(content={"error": "캔들 데이터 비정상: None이거나 길이 부족"}, status_code=400)
@@ -1808,7 +1816,7 @@ async def webhook(request: Request):
     last_atr = float(atr_series.dropna().iloc[-1]) if not atr_series.dropna().empty else None
     # ✅ 지지/저항 계산 - timeframe 키 "H1" 로, atr에는 Series 전달
     support, resistance = get_enhanced_support_resistance(
-        candles, price=current_price, atr=last_atr, timeframe="M30", pair=pair
+        candles, price=current_price, atr=last_atr, timeframe=base_granularity_for(pair), pair=pair
     )
 
     support_resistance = {"support": support, "resistance": resistance}
@@ -2332,7 +2340,7 @@ async def webhook(request: Request):
         result = {"status": "skipped"}
     
     executed_time = datetime.utcnow()
-    candles_post = get_candles(pair, "M30", 8)
+    candles_post = get_candles(pair, base_granularity_for(pair), 8)
     price_movements = candles_post[["high", "low"]].to_dict("records")
 
     if final_decision in ("BUY", "SELL") and isinstance(result, dict) and result.get("status") == "order_placed":
@@ -2382,12 +2390,13 @@ def calculate_fibonacci_levels(high, low):
     }
 def get_multi_tf_scalping_data(pair):
     """
-    30분봉 단타 분석을 위한 MTF 캔들 + 보조지표 추세 리스트 수집
-    M30 (진입), H1 (보조 흐름), H4 (큰 흐름)
+    단타 분석을 위한 MTF 캔들 + 보조지표 추세 리스트 수집.
+    진입 타임프레임은 base_granularity_for(pair) — FX는 M30, 주식은 M15. H1(보조 흐름), H4(큰 흐름)는 공통.
     """
+    base_tf = base_granularity_for(pair)
 
     timeframes = {
-        'M30': 100,
+        base_tf: 100,
         'H1': 100,
         'H4': 60
     }
@@ -2409,7 +2418,7 @@ def get_multi_tf_scalping_data(pair):
             df['stoch_rsi'] = ta.momentum.StochRSIIndicator(close=df['close'], window=14).stochrsi()
 
             # 최근 14개 (H4는 10개) 보조지표 리스트 저장
-            n = 14 if tf in ['M30', 'H1'] else 10
+            n = 14 if tf in [base_tf, 'H1'] else 10
             tf_data[tf] = {
                 'rsi_trend': df['rsi'].dropna().iloc[-n:].tolist(),
                 'macd_trend': df['macd'].dropna().iloc[-n:].tolist(),
@@ -3367,8 +3376,8 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
                 "  승률이 55% 미만으로 판단되면 WAIT을 선택할 수 있다.명백한 반대 시그널 뿐 아니라추세 부재, 모멘텀 부재, 박스권 상단/하단 정체도 WAIT 근거가 될 수 있다.\n"
                 "- 애매함, 가능성, 추측만으로 WAIT을 선택해서는 안 된다.\n\n"
                 
-                "📌 [M30 알림 전용: 멀티 타임프레임 분석 지침 - 추가됨]\n"
-                f"현재 알림은 M30에서 발생했습니다. 아래 상위/하위 맥락을 반드시 참고하세요:\n"
+                f"📌 [{base_granularity_for(pair)} 알림 전용: 멀티 타임프레임 분석 지침 - 추가됨]\n"
+                f"현재 알림은 {base_granularity_for(pair)}에서 발생했습니다. 아래 상위/하위 맥락을 반드시 참고하세요:\n"
                 f"{mtf_info}\n"
                 "- H4 추세가 진입 방향과 일치하면 강력한 가점 요소입니다.\n"
                 "- M5 RSI가 극단적(80 이상/20 이하)일 때만 진입 타이밍 조절을 위해 WAIT을 검토하세요.\n\n"
@@ -3418,7 +3427,7 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
                 +
                 "(4) 추세 판단 시 캔들 패턴뿐 아니라 보조지표(RSI, MACD, Stoch RSI, 볼린저밴드)의 **방향성과 강도**를 반드시 함께 고려하라.\n"
                 "- 특히 보조지표의 최근 14봉 흐름 분석은 핵심 판단 자료다. 반드시 함께 고려해라\n"
-                "- 아래는 멀티타임프레임(M30, H1, H4) 기준 요약 정보이다. 각 시간대별 추세가 일치하면 강한 확신으로 간주하고, 상반된 경우 보수적으로 판단하라:\n"
+                f"- 아래는 멀티타임프레임({base_granularity_for(pair)}, H1, H4) 기준 요약 정보이다. 각 시간대별 추세가 일치하면 강한 확신으로 간주하고, 상반된 경우 보수적으로 판단하라:\n"
                 f"📌 시스템 스코어: {score}, 신호 스코어: {signal_score}\n"
                 f"📎 점수 산정 근거 (reasons):\n" + "\n".join([f"- {r}" for r in reasons]) + "\n\n"
                 f"🕯️ 최근 캔들 흐름 요약: {recent_candle_summary}\n\n" +
