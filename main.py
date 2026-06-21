@@ -69,7 +69,12 @@ def capture_tradingview_chart(pair):
 
             # ✅ 중요: 아래 URL을 사용자님의 실제 차트 레이아웃 주소로 바꾸세요!
             # 주소 끝에 ?symbol=FX:USDJPY 처럼 종목을 붙여주면 해당 종목 차트가 열립니다.
-            target_url = f"https://www.tradingview.com/chart/iHBYFrNs/?symbol=FX:{pair.replace('/', '')}"
+            # 🟦 주식은 FX: 대신 거래소 prefix(NASDAQ/NYSE 등)가 필요. 정확한 거래소를 모를 땐
+            #     TradingView가 prefix 없이도 종목명만으로 자동 매칭해주는 경우가 많아 우선 prefix 없이 시도.
+            if is_stock_pair(pair):
+                target_url = f"https://www.tradingview.com/chart/iHBYFrNs/?symbol={pair.replace('/', '')}"
+            else:
+                target_url = f"https://www.tradingview.com/chart/iHBYFrNs/?symbol=FX:{pair.replace('/', '')}"
             
             page.goto(target_url, wait_until="networkidle")
             print("⏳ 지표와 신호가 차트에 나타날 때까지 10초 대기...")
@@ -336,6 +341,15 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window
 
     pip = pip_value_for(pair)
     round_digits = int(abs(np.log10(pip)))
+
+    last_atr = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr)
+
+    # 🟦 클러스터링(군집화) 임계치용 pip. 주식은 가격비례(pip) 대신 ATR 비례로 보정.
+    #    예: TSLA 300달러 → pip=0.03 → threshold=6*0.03=0.18달러(ATR 10~15달러짜리 종목엔 의미 없음)
+    #    → ATR*0.1을 6pip 폭으로 환산한 값과 비교해 더 큰 쪽을 사용
+    cluster_pip = pip
+    if is_stock_pair(pair) and last_atr:
+        cluster_pip = max(pip, (last_atr * 0.1) / 6.0)
     
     # --- 동적 order: 창의 1/10 수준, 2~3로 클램프(반응성 확보) ---
     order = max(2, min(3, window // 10))
@@ -393,8 +407,8 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window
 
     # 📌 스윙 지지/저항 구하기
     support_levels, resistance_levels = find_local_extrema(df, order=order)
-    support_levels    = cluster_levels(support_levels,    pip=pip, threshold_pips=6, min_touch_count=min_touch_count)
-    resistance_levels = cluster_levels(resistance_levels, pip=pip, threshold_pips=6, min_touch_count=min_touch_count)
+    support_levels    = cluster_levels(support_levels,    pip=cluster_pip, threshold_pips=6, min_touch_count=min_touch_count)
+    resistance_levels = cluster_levels(resistance_levels, pip=cluster_pip, threshold_pips=6, min_touch_count=min_touch_count)
     
     # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
     # [A] 후보 부족 시 창을 2배로 확장해 1회 재시도 (단타용)
@@ -403,12 +417,11 @@ def get_enhanced_support_resistance(candles, price, atr, timeframe, pair, window
         order2 = max(2, min(3, (window * 2) // 10))
         if (window * 2) >= (2 * order2 + 1):
             s2, r2 = find_local_extrema(df2, order=order2)
-            s2 = cluster_levels(s2, pip=pip, threshold_pips=6, min_touch_count=min_touch_count)
-            r2 = cluster_levels(r2, pip=pip, threshold_pips=6, min_touch_count=min_touch_count)
+            s2 = cluster_levels(s2, pip=cluster_pip, threshold_pips=6, min_touch_count=min_touch_count)
+            r2 = cluster_levels(r2, pip=cluster_pip, threshold_pips=6, min_touch_count=min_touch_count)
             if s2: support_levels = s2
             if r2: resistance_levels = r2
     # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-    last_atr = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr)
     min_distance = max(6 * pip, 0.8 * last_atr)  # 기존 10*pip, 1.2*ATR → 6*pip, 0.8*ATR
 
 
@@ -465,10 +478,18 @@ def additional_opportunity_score(rsi, stoch_rsi, macd, macd_signal, pattern, tre
 # === pip/거리 헬퍼 ===
 def pip_value_for(pair: str) -> float:
     """
-    통화쌍별 '1 pip'의 가격 크기 반환.
+    통화쌍/종목별 '1 pip 등가' 가격 크기 반환.
+    - 주식: 현재가의 0.01%를 1pip 등가로 취급 (가격대가 천차만별이므로 비율 기반)
+            → 캐시된 최근가가 없으면 1센트(0.01)로 폴백
     - JPY 쿼트: 0.01
-    - 그 외:    0.0001
+    - 그 외 FX: 0.0001
     """
+    if is_stock_pair(pair):
+        last_price = _last_price_cache.get(pair)
+        if last_price:
+            return max(0.01, round(last_price * 0.0001, 6))
+        return 0.01
+
     p = (pair or "").upper().replace("_", "/")
     # EUR/USD, GBP/USD, ...
     if p.endswith("/JPY") or p.endswith("JPY"):
@@ -486,6 +507,32 @@ def atr_in_pips(atr_value: float, pair: str) -> float:
 # ★ 추가: 통합 임계치(모든 페어 공통)
 def dynamic_thresholds(pair: str, atr_value: float):
     pv = pip_value_for(pair)
+
+    # 🟦 주식 전용 분기 (FX 로직은 아래 그대로 유지/미변경)
+    #    FX는 'ATR-in-pips'가 보통 10~50 범위라 near_pips<=14, box_threshold_pips<=30 같은
+    #    캡(상한)이 의미 있었지만, 주식은 pip_value_for()가 가격비례(price*0.0001)라
+    #    ATR/price 비율이 큰 종목(TSLA 등)에서는 'ATR-in-pips'가 수백대로 나와 캡에 눌려버림.
+    #    예: TSLA ATR=10, pv=0.03 → ATR-in-pips=333 → near_pips가 캡(14)에 눌려 14*pv=0.42달러
+    #        (ATR 10달러짜리 종목에 0.42달러 임계치는 무의미)
+    #    → 주식은 캡을 풀고 ATR 비율 그대로 사용(최소 하한만 유지)
+    if is_stock_pair(pair):
+        ap_stock = atr_in_pips(atr_value, pair)  # = ATR/price*10000 (가격 스케일 무관 변동성 비율)
+        near_pips_stock          = max(8.0,  0.35 * ap_stock)
+        box_threshold_pips_stock = max(12.0, 0.80 * ap_stock)
+        breakout_buf_pips_stock  = max(1.0,  0.10 * ap_stock)
+        macd_strong_stock = 20 * pv  # 참고용 값. 실제 MACD 채점은 score_signal_with_filters의 ATR 기반 strong/weak를 사용.
+        macd_weak_stock   = 10 * pv
+
+        return {
+            "near_pips": near_pips_stock,
+            "box_threshold_pips": box_threshold_pips_stock,
+            "breakout_buf_pips": breakout_buf_pips_stock,
+            "macd_strong": macd_strong_stock,
+            "macd_weak": macd_weak_stock,
+            "pip_value": pv,
+        }
+
+    # ===== 기존 FX 로직 (변경 없음) =====
     ap = max(6.0, atr_in_pips(atr_value, pair))     # ATR(pips), 최소 8pip
 
     # 🔧 변경: EUR/USD, GBP/USD는 근접 금지 하한 6 pip, 나머지는 8 pip
@@ -601,8 +648,8 @@ def check_recent_opposite_signal(pair, current_signal, within_minutes=30, *,
 
 
 
-def calculate_structured_sl_tp(entry_price, direction, symbol, support, resistance, pip_size):
-    buffer = get_buffer_by_symbol(symbol)
+def calculate_structured_sl_tp(entry_price, direction, symbol, support, resistance, pip_size, atr=None):
+    buffer = get_buffer_by_symbol(symbol, atr=atr)
     
     if direction == 'BUY':
         sl = support - buffer
@@ -620,13 +667,21 @@ def calculate_structured_sl_tp(entry_price, direction, symbol, support, resistan
     print(f" - SL: {sl}, TP: {tp}, 손익비(r_ratio): {r_ratio:.2f}")
     return sl, tp, r_ratio
 
-def get_buffer_by_symbol(symbol):
-    if symbol in ['EURUSD', 'GBPUSD', 'AUDUSD']:
-        return 10 * 0.0001  # 10 pips
-    elif symbol in ['USDJPY']:
-        return 10 * 0.01
-    else:
-        return 10 * 0.0001
+def get_buffer_by_symbol(symbol, atr=None):
+    # 🟦 주식: 가격비례 pip(10*pip_value_for)는 ATR 대비 너무 작아짐
+    #    (예: TSLA 10*0.03=0.30달러인데 ATR이 10달러면 노이즈에 바로 SL 털림)
+    #    → ATR이 있으면 ATR*0.15를 버퍼로 사용, 없으면 기존 방식으로 폴백
+    if is_stock_pair(symbol):
+        try:
+            atr_val = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr or 0)
+        except Exception:
+            atr_val = 0.0
+        if atr_val > 0:
+            return atr_val * ALPACA_SL_BUFFER_ATR_MULT
+        return 10 * pip_value_for(symbol)
+
+    # ===== 기존 FX 로직 (변경 없음, pip_value_for로 통합되어 있던 부분) =====
+    return 10 * pip_value_for(symbol)
 
 def get_multi_timeframe_context(pair):
     try:
@@ -746,7 +801,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     direction = signal
     symbol = pair
 
-    sl, tp, r_ratio = calculate_structured_sl_tp(entry_price, direction, symbol, support, resistance, pv)
+    sl, tp, r_ratio = calculate_structured_sl_tp(entry_price, direction, symbol, support, resistance, pv, atr=atr)
 
     if r_ratio < 1.4:
         signal_score -= 4.0
@@ -919,29 +974,51 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
             reasons.append("⚠️ 추세+패턴 충돌 + 보완 조건 미충족 → 감점-1")
 
         # === 저항/지지 근접 추격 진입 금지 규칙 ===
-    # BUY: 저항 3pip 이내면 금지. 돌파(확정) 없고 10pip 이내도 금지
+    # BUY: 저항 3pip 이내면 금지(FX). 주식은 3pip(가격비례, 예 TSLA $0.09)가 너무 타이트해 ATR*0.15로 대체.
+    _near_atr_val = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr or 0)
+
+    # 🟦 돌파 확정 버퍼: 주식은 2pip(예: TSLA $0.06)가 틱 노이즈 수준이라 ATR*0.05로 대체.
+    #    너무 크게 잡으면(예 ATR*0.15=$1.5) 돌파 인식이 늦어지므로 0.05 비율 사용.
+    if is_stock_pair(pair):
+        _breakout_buf = _near_atr_val * 0.05
+    else:
+        # ===== 기존 FX 로직 (변경 없음) =====
+        _breakout_buf = 2 * pip_value_for(pair)
+
     if signal == "BUY":
         dist_to_res_pips = pips_between(price, resistance, pair)
-        if dist_to_res_pips < 3:
+        if is_stock_pair(pair):
+            near_res_block = (resistance is not None and price is not None
+                               and abs(resistance - price) < (_near_atr_val * 0.15))
+        else:
+            # ===== 기존 FX 로직 (변경 없음) =====
+            near_res_block = dist_to_res_pips < 3
+        if near_res_block:
             signal_score -= 2
-            reasons.append(f"📉 저항선 {dist_to_res_pips:.1f} pip 이내 → 신중 진입 필요 (감점-2)")
+            reasons.append(f"📉 저항선 근접 → 신중 진입 필요 (감점-2) [dist={dist_to_res_pips:.1f}pip]")
 
         last2 = candles.tail(2)
-        over1 = (last2.iloc[-1]['close'] > resistance + 2 * pip_value_for(pair)) if not last2.empty else False
-        over2 = (len(last2) > 1 and last2.iloc[-2]['close'] > resistance + 2 * pip_value_for(pair)) if not last2.empty else False
+        over1 = (last2.iloc[-1]['close'] > resistance + _breakout_buf) if not last2.empty else False
+        over2 = (len(last2) > 1 and last2.iloc[-2]['close'] > resistance + _breakout_buf) if not last2.empty else False
         confirmed_breakout_up = over1 or (over1 and over2)
 
 
-    # SELL: 지지 3pip 이내면 금지. 이탈(확정) 없고 10pip 이내도 금지
+    # SELL: 지지 3pip 이내면 금지(FX). 주식은 동일하게 ATR*0.15로 대체.
     if signal == "SELL":
         dist_to_sup_pips = pips_between(price, support, pair)
-        if dist_to_sup_pips < 3:
+        if is_stock_pair(pair):
+            near_sup_block = (support is not None and price is not None
+                               and abs(price - support) < (_near_atr_val * 0.15))
+        else:
+            # ===== 기존 FX 로직 (변경 없음) =====
+            near_sup_block = dist_to_sup_pips < 3
+        if near_sup_block:
             signal_score -= 1.5
-            reasons.append(f"📉 지지선 {dist_to_sup_pips:.1f} pip 이내 → 신중 진입 필요 (감점-1.5)")
+            reasons.append(f"📉 지지선 근접 → 신중 진입 필요 (감점-1.5) [dist={dist_to_sup_pips:.1f}pip]")
 
         last2 = candles.tail(2)
-        under1 = (last2.iloc[-1]['close'] < support - 2 * pip_value_for(pair)) if not last2.empty else False
-        under2 = (len(last2) > 1 and last2.iloc[-2]['close'] < support - 2 * pip_value_for(pair)) if not last2.empty else False
+        under1 = (last2.iloc[-1]['close'] < support - _breakout_buf) if not last2.empty else False
+        under2 = (len(last2) > 1 and last2.iloc[-2]['close'] < support - _breakout_buf) if not last2.empty else False
         confirmed_breakdown = under1 or (under1 and under2)
 
 
@@ -1193,12 +1270,17 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
 
         # --- MACD 교차 가점: 모든 페어 공통 (pip/ATR 스케일 적용) ---
     macd_diff = macd - macd_signal
-    if pair.endswith("JPY"):
-        strong = 0.015
-        weak = 0.005
+    _macd_atr = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr or 0)
+    if is_stock_pair(pair):
+        # 🟦 주식: MACD 값 자체가 가격 스케일이 아니라 '변동성(ATR)' 스케일로 움직이므로
+        #    가격 비례(pv) 대신 ATR 비례로 강/약 임계치를 산정. (TSLA처럼 MACD diff가 0.3~2.0대인 경우
+        #    pv=price*0.0001 기준 임계치(예: 0.045)는 너무 작아 거의 항상 'strong'으로 잘못 판정되는 문제 수정)
+        strong = max(_macd_atr * 0.20, pv * 1.5)
+        weak = max(_macd_atr * 0.07, pv * 0.5)
     else:
-        strong = 0.00015
-        weak = 0.00005
+        # FX는 기존 로직 그대로 유지 (JPY strong=0.015, 그 외 strong=0.00015와 동일)
+        strong = 1.5 * pv
+        weak = 0.5 * pv
     micro  = 2 * pv               # 미세변동(≈2 pip) 판단용
 
     if (macd_diff > strong) and trend == "UPTREND":
@@ -1272,7 +1354,7 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
             signal_score -= 1
             reasons.append("🔴 Stoch RSI 1.0 → 극단적 과매수 → 피로감 주의 감점 -1")
     
-    pip = 0.01  # USDJPY pip size
+    pip = pv  # 🟦 고정 0.01(JPY 가정) 대신 자산군별 pip_value(pv)로 통일 (FX는 페어별, 주식은 가격비례)
     
     # 안전 처리
     if price is None:
@@ -1555,6 +1637,61 @@ OANDA_API_KEY = os.getenv("OANDA_API_KEY")
 ACCOUNT_ID = os.getenv("ACCOUNT_ID")
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
+# ============================================================
+# 🟦 Alpaca (미국 주식) 연동 설정
+# ============================================================
+ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
+ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
+# 기본값: Paper(모의투자). 실거래로 전환 시 환경변수 ALPACA_PAPER=false 설정
+ALPACA_PAPER = os.getenv("ALPACA_PAPER", "true").strip().lower() != "false"
+ALPACA_TRADE_BASE_URL = (
+    "https://paper-api.alpaca.markets" if ALPACA_PAPER else "https://api.alpaca.markets"
+)
+ALPACA_DATA_BASE_URL = "https://data.alpaca.markets"
+# 주문당 고정 매수 금액(달러). sizing_mode="fixed"일 때 또는 risk 계산 실패시 폴백으로 사용.
+ALPACA_FIXED_NOTIONAL_USD = float(os.getenv("ALPACA_FIXED_NOTIONAL_USD", "1000"))
+
+# 🟦 포지션 사이징 모드: "risk"(계좌 리스크 % 기반, 권장) 또는 "fixed"(고정 금액)
+ALPACA_SIZING_MODE = os.getenv("ALPACA_SIZING_MODE", "risk").strip().lower()
+# 1회 거래당 허용 리스크 = 계좌 equity의 이 비율(%). 예: 0.5 → 계좌 5만달러면 250달러 리스크.
+ALPACA_RISK_PCT = float(os.getenv("ALPACA_RISK_PCT", "0.5"))
+# SL이 너무 타이트해서 risk 계산상 수량이 과도하게 커지는 것을 막는 안전 캡(달러, notional 기준).
+ALPACA_MAX_NOTIONAL_USD = float(os.getenv("ALPACA_MAX_NOTIONAL_USD", "5000"))
+# 주식 SL 버퍼 = ATR * 이 배수 (get_buffer_by_symbol). 페이퍼 트레이딩하면서 0.15/0.20/0.25 A/B 테스트용.
+ALPACA_SL_BUFFER_ATR_MULT = float(os.getenv("ALPACA_SL_BUFFER_ATR_MULT", "0.15"))
+
+ALPACA_HEADERS = {
+    "APCA-API-KEY-ID": ALPACA_API_KEY or "",
+    "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY or "",
+}
+
+import re as _re
+_STOCK_TICKER_RE = _re.compile(r"^[A-Z]{1,5}(\.[A-Z])?$")
+
+# pair별 가장 최근에 들어온 가격을 캐시 (주식의 'pip 등가값' 계산에 사용)
+_last_price_cache: dict[str, float] = {}
+
+
+def is_stock_pair(pair: str) -> bool:
+    """
+    OANDA FX 페어는 'USD_JPY' 처럼 '_' 가 들어간다.
+    Alpaca 주식 심볼은 'TSLA', 'AAPL' 처럼 '_' 없는 1~5자 영문 티커다.
+    → '_'가 없고 티커 패턴에 맞으면 주식으로 판단.
+    """
+    if not pair:
+        return False
+    p = pair.upper().strip()
+    if "_" in p or "/" in p:
+        return False
+    return bool(_STOCK_TICKER_RE.match(p))
+
+
+def price_round_digits(pair: str) -> int:
+    """주문 가격(TP/SL) 반올림 자릿수. 주식은 센트 단위(2자리)."""
+    if is_stock_pair(pair):
+        return 2
+    return 3 if pair.endswith("JPY") else 5
+
 
 def analyze_highs_lows(candles, window=20):
     highs = candles['high'].tail(window).dropna()
@@ -1629,6 +1766,18 @@ async def webhook(request: Request):
             status_code=400
         )
 
+    # 🟦 주식의 'pip 등가값'/digits 계산에 사용할 최근가 캐시
+    if pair:
+        _last_price_cache[pair] = price
+
+    # 🟦 FX 형식('_' 포함)도 아니고 주식 티커 패턴도 아니면(예: BTCUSD 등) 즉시 차단.
+    #    그대로 두면 is_stock_pair=False → OANDA 경로로 새서 존재하지 않는 instrument로 주문 시도하게 됨.
+    if not is_stock_pair(pair) and "_" not in (pair or "") and "/" not in (pair or ""):
+        return JSONResponse(
+            content={"error": f"지원하지 않는 심볼 형식입니다: {pair} (FX는 'USD_JPY', 주식은 'TSLA' 형식만 지원)"},
+            status_code=400
+        )
+
     alert_name = data.get("alert_name", "기본알림")
 
     candles = get_candles(pair, "M30", 200)
@@ -1664,7 +1813,7 @@ async def webhook(request: Request):
     resistance_distance = abs(resistance - price)
 
     # ✅ 현재가와 저항선 거리 계산 (pip 기준 거리 필터 적용을 위함)
-    pip_size = 0.01 if "JPY" in pair else 0.0001
+    pip_size = pip_value_for(pair)  # 🟦 주식/JPY/그 외 FX를 모두 인식하는 통합 함수로 교체
     resistance_distance = abs(resistance - price)
 
     if candles is None or candles.empty:
@@ -1695,8 +1844,8 @@ async def webhook(request: Request):
     boll_up, boll_mid, boll_low = calculate_bollinger_bands(close)
 
     pattern = detect_candle_pattern(candles)
-    trend = detect_trend(candles, rsi, boll_mid)
-    prev_trend = detect_trend(candles.iloc[:-1], rsi.iloc[:-1], boll_mid.iloc[:-1])
+    trend = detect_trend(candles, rsi, boll_mid, pair=pair)
+    prev_trend = detect_trend(candles.iloc[:-1], rsi.iloc[:-1], boll_mid.iloc[:-1], pair=pair)
     stoch_rsi_clean = stoch_rsi_series.dropna()
     prev_stoch_rsi = stoch_rsi_clean.iloc[-2] if len(stoch_rsi_clean) >= 2 else 0
     liquidity = estimate_liquidity(candles)
@@ -2065,7 +2214,7 @@ async def webhook(request: Request):
     if (final_tp is None or final_sl is None) and price is not None:
         print(f"[CHECK] TP/SL fallback 실행: final_decision={final_decision}, signal={signal}, 기존 tp={tp}, sl={sl}")
     
-        pip_value = 0.01 if "JPY" in pair else 0.0001
+        pip_value = pip_value_for(pair)  # 🟦 주식/JPY/그 외 FX를 모두 인식하는 통합 함수로 교체
 
         tp, sl, atr_pips = calculate_realistic_tp_sl(
             price=price,
@@ -2089,8 +2238,9 @@ async def webhook(request: Request):
 
 
     # ✅ ATR 조건 강화 (보완)
+    # 🟦 절대값 0.0009는 FX(1.0~1.5 스케일) 기준이라 주식엔 적용하지 않음 (가격 스케일이 천차만별)
     last_atr = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr)
-    if last_atr < 0.0009:
+    if not is_stock_pair(pair) and last_atr < 0.0009:
         signal_score -= 1
         reasons.append("⚠️ ATR 낮음(0.0009↓) → 보수적 감점(-1)")
 
@@ -2141,8 +2291,14 @@ async def webhook(request: Request):
             should_execute = False
     
     if should_execute:
-        units = 100000 if final_decision == "BUY" else -100000
-        digits = 3 if pair.endswith("JPY") else 5
+        if is_stock_pair(pair_for_order):
+            # 🟦 주식: 실제 수량은 place_order_alpaca 내부에서 고정금액(ALPACA_FIXED_NOTIONAL_USD)
+            #         ÷ 현재가로 산출되므로, 여기서는 매수/매도 방향만 표시
+            units = 1 if final_decision == "BUY" else -1
+            digits = price_round_digits(pair_for_order)
+        else:
+            units = 100000 if final_decision == "BUY" else -100000
+            digits = 3 if pair.endswith("JPY") else 5
     
         print(f"[DEBUG] WILL PLACE ORDER → pair={pair}, side={final_decision}, units={units}, "
               f"price={price}, tp={final_tp}, sl={final_sl}, digits={digits}, score={signal_score}")
@@ -2260,7 +2416,57 @@ def summarize_mtf_indicators(mtf_data):
 
     return summary  # ✅ 문자열이 아닌 JSON 딕셔너리 그대로 반환
 
+_ALPACA_GRANULARITY_MAP = {
+    "M1": "1Min",
+    "M5": "5Min",
+    "M15": "15Min",
+    "M30": "30Min",
+    "H1": "1Hour",
+    "H4": "4Hour",
+    "D": "1Day",
+}
+
+
+def get_alpaca_candles(symbol, granularity, count):
+    """Alpaca Market Data API에서 주식 캔들(바)을 가져와 OANDA 캔들과 동일한 포맷의 DataFrame으로 반환."""
+    timeframe = _ALPACA_GRANULARITY_MAP.get(granularity, "30Min")
+    url = f"{ALPACA_DATA_BASE_URL}/v2/stocks/{symbol}/bars"
+    params = {
+        "timeframe": timeframe,
+        "limit": count,
+        "adjustment": "raw",
+        "feed": "iex",  # 무료 플랜 기준. 유료(SIP) 사용 시 'sip'로 변경
+    }
+    try:
+        r = requests.get(url, headers=ALPACA_HEADERS, params=params, timeout=15)
+        r.raise_for_status()
+        bars = r.json().get("bars", [])
+    except Exception as e:
+        print(f"❗ [Alpaca] {symbol} 캔들 요청 실패: {e}")
+        return pd.DataFrame(columns=["time", "open", "high", "low", "close", "volume"])
+
+    if not bars:
+        print(f"❗ [Alpaca] {symbol} 캔들 데이터 없음")
+        return pd.DataFrame(columns=["time", "open", "high", "low", "close", "volume"])
+
+    return pd.DataFrame([
+        {
+            "time": b.get("t"),
+            "open": float(b["o"]),
+            "high": float(b["h"]),
+            "low": float(b["l"]),
+            "close": float(b["c"]),
+            "volume": b.get("v", 0),
+        }
+        for b in bars
+    ])
+
+
 def get_candles(pair, granularity, count):
+    # 🟦 주식 심볼이면 Alpaca 데이터로 분기
+    if is_stock_pair(pair):
+        return get_alpaca_candles(pair, granularity, count)
+
     url = f"https://api-fxpractice.oanda.com/v3/instruments/{pair}/candles"
     headers = {"Authorization": f"Bearer {OANDA_API_KEY}"}
     params = {"granularity": granularity, "count": count, "price": "M"}
@@ -2340,6 +2546,8 @@ def detect_box_breakout(candles, pair, box_window=10, box_threshold_pips=None):
     """
     박스권 돌파 감지 (통합/동적 임계치 버전)
     - box_threshold_pips가 None이면 ATR 기반으로 동적으로 결정
+    - 🟦 주식은 pip 환산을 거치지 않고 '달러 단위'로 직접 비교 (가독성/정확도 개선).
+      예: TSLA ATR=10 → box_threshold_pips=266.67pip(=$8) 같은 우회 계산 대신 바로 $8.0 사용.
     """
     if candles is None or candles.empty:
         return {"in_box": False, "breakout": None}
@@ -2347,22 +2555,26 @@ def detect_box_breakout(candles, pair, box_window=10, box_threshold_pips=None):
     # ATR 기반 임계치 계산
     atr_series = calculate_atr(candles)
     last_atr = float(atr_series.dropna().iloc[-1]) if not atr_series.dropna().empty else 0.0
-    thr = dynamic_thresholds(pair, last_atr)
-
-    # 외부에서 임계치가 안 오면 동적값 사용
-    if box_threshold_pips is None:
-        box_threshold_pips = thr["box_threshold_pips"]
-
-    pv = thr["pip_value"]  # pip 크기(USDJPY=0.01, 그 외=0.0001)
 
     recent = candles.tail(box_window)
     high_max = recent["high"].max()
     low_min  = recent["low"].min()
-    box_range_pips = (high_max - low_min) / pv
 
-    # 박스 폭이 임계보다 크면 '박스 아님'
-    if box_range_pips > box_threshold_pips:
-        return {"in_box": False, "breakout": None}
+    if is_stock_pair(pair) and box_threshold_pips is None:
+        # 🟦 주식: 달러 단위로 직접 비교 (dynamic_thresholds의 box_threshold_pips(주식) * pip_value와 동일한 비율)
+        box_range_dollars = high_max - low_min
+        box_threshold_dollars = max(last_atr * 0.8, 0.12)  # 최소 12센트 하한(저ATR 종목 안전장치)
+        if box_range_dollars > box_threshold_dollars:
+            return {"in_box": False, "breakout": None}
+    else:
+        # ===== 기존 FX 로직 (변경 없음) =====
+        thr = dynamic_thresholds(pair, last_atr)
+        if box_threshold_pips is None:
+            box_threshold_pips = thr["box_threshold_pips"]
+        pv = thr["pip_value"]  # pip 크기(USDJPY=0.01, 그 외=0.0001)
+        box_range_pips = (high_max - low_min) / pv
+        if box_range_pips > box_threshold_pips:
+            return {"in_box": False, "breakout": None}
 
     last_close = recent["close"].iloc[-1]
 
@@ -2374,15 +2586,27 @@ def detect_box_breakout(candles, pair, box_window=10, box_threshold_pips=None):
         return {"in_box": True, "breakout": None}
 # === 교체 끝 ===
 
-def detect_trend(candles, rsi, mid_band):
+def detect_trend(candles, rsi, mid_band, pair=None):
     close = candles["close"]
     ema20 = close.ewm(span=20, adjust=False).mean()
     ema50 = close.ewm(span=50, adjust=False).mean()
 
-    # 추세 힘이 약하면 NEUTRAL (JPY 기준 튜닝값)
     gap = abs(ema20.iloc[-1] - ema50.iloc[-1])
-    if gap < 0.05:   # 필요시 0.03~0.08로 조정
-        return "NEUTRAL"
+
+    # 🟦 주식: 고정 0.05달러는 가격대(예: TSLA $300)에서 의미가 없으므로 ATR 비례로 판정
+    if pair and is_stock_pair(pair):
+        try:
+            atr_series = calculate_atr(candles)
+            last_atr = float(atr_series.dropna().iloc[-1]) if not atr_series.dropna().empty else 0.0
+        except Exception:
+            last_atr = 0.0
+        neutral_threshold = (last_atr * 0.10) if last_atr > 0 else 0.05
+        if gap < neutral_threshold:
+            return "NEUTRAL"
+    else:
+        # ===== 기존 FX 로직 (변경 없음, JPY 기준 튜닝값) =====
+        if gap < 0.05:   # 필요시 0.03~0.08로 조정
+            return "NEUTRAL"
 
     if ema20.iloc[-1] > ema50.iloc[-1] and close.iloc[-1] > mid_band.iloc[-1]:
         return "UPTREND"
@@ -2531,11 +2755,34 @@ def fetch_and_score_forex_news(pair):
 
     return score, message
 
+def has_open_position_alpaca(symbol: str) -> tuple[bool, int]:
+    """
+    Alpaca 계좌에 해당 심볼의 열린 포지션이 있는지 확인.
+    return: (열려있음 여부, 1 또는 0 / 조회실패시 -1)
+    """
+    url = f"{ALPACA_TRADE_BASE_URL}/v2/positions/{symbol}"
+    try:
+        r = requests.get(url, headers=ALPACA_HEADERS, timeout=10)
+        if r.status_code == 200:
+            return True, 1
+        if r.status_code == 404:
+            return False, 0
+        print(f"[Alpaca] 포지션 조회 status={r.status_code} body={r.text}")
+        return True, -1  # 애매하면 보수적으로 진입 차단
+    except Exception as e:
+        print("[Alpaca] 포지션 조회 실패:", e)
+        return True, -1
+
+
 def has_open_trade(pair_for_order: str) -> tuple[bool, int]:
     """
-    pair_for_order: 'USD_JPY' 형태
-    return: (열려있음 여부, 해당 종목 openTrades 개수)
+    pair_for_order: FX는 'USD_JPY' 형태, 주식은 'TSLA' 형태
+    return: (열려있음 여부, 해당 종목 open 포지션/트레이드 개수)
     """
+    # 🟦 주식이면 Alpaca 포지션 조회로 분기
+    if is_stock_pair(pair_for_order):
+        return has_open_position_alpaca(pair_for_order)
+
     url = f"https://api-fxpractice.oanda.com/v3/accounts/{ACCOUNT_ID}/openTrades"
     headers = {
         "Authorization": f"Bearer {OANDA_API_KEY}",
@@ -2560,7 +2807,120 @@ def has_open_trade(pair_for_order: str) -> tuple[bool, int]:
         return True, -1
 
 
+def get_alpaca_account_equity():
+    """Alpaca 계좌의 현재 equity(자산)를 조회. 실패 시 None."""
+    url = f"{ALPACA_TRADE_BASE_URL}/v2/account"
+    try:
+        r = requests.get(url, headers=ALPACA_HEADERS, timeout=10)
+        r.raise_for_status()
+        j = r.json()
+        return float(j["equity"])
+    except Exception as e:
+        print("[Alpaca] 계좌 조회 실패:", e)
+        return None
+
+
+def calc_alpaca_qty(ref_price: float, sl: float, notional_usd: float) -> int:
+    """
+    포지션 수량(qty) 산출.
+    - sizing_mode="risk": 계좌 equity * ALPACA_RISK_PCT(%) 만큼만 손실을 허용한다고 가정,
+      SL까지의 거리(stop_distance)로 나눠 수량을 역산. (예: 계좌 5만달러, 리스크 0.5% → 250달러,
+      SL 거리가 5달러면 qty=50주)
+    - SL 거리가 너무 좁아 비정상적으로 큰 수량이 나오는 걸 막기 위해 ALPACA_MAX_NOTIONAL_USD로 캡.
+    - equity 조회 실패/SL 거리 0 등 예외 상황에는 고정금액(ALPACA_FIXED_NOTIONAL_USD) 방식으로 폴백.
+    """
+    try:
+        ref_price = float(ref_price)
+    except Exception:
+        return 1
+    if ref_price <= 0:
+        return 1
+
+    max_qty_by_notional = max(1, int(ALPACA_MAX_NOTIONAL_USD // ref_price))
+
+    if ALPACA_SIZING_MODE == "risk":
+        equity = get_alpaca_account_equity()
+        try:
+            stop_distance = abs(ref_price - float(sl))
+        except Exception:
+            stop_distance = 0.0
+
+        if equity and stop_distance > 0:
+            risk_dollars = equity * (ALPACA_RISK_PCT / 100.0)
+            qty_by_risk = int(risk_dollars // stop_distance)
+            print(f"[Alpaca][risk-sizing] equity={equity}, risk%={ALPACA_RISK_PCT}, "
+                  f"risk$={risk_dollars:.2f}, stop_distance={stop_distance:.4f}, "
+                  f"qty_by_risk={qty_by_risk}, cap_by_notional={max_qty_by_notional}")
+            return max(1, min(qty_by_risk, max_qty_by_notional))
+
+        print("[Alpaca][risk-sizing] equity 조회 실패 또는 stop_distance=0 → 고정금액 방식으로 폴백")
+
+    # fixed 모드 또는 risk 계산 실패시 폴백
+    qty_by_fixed = int(notional_usd // ref_price)
+    return max(1, min(qty_by_fixed, max_qty_by_notional))
+
+
+def place_order_alpaca(symbol, side, notional_usd, ref_price, tp, sl, digits=2):
+    """
+    Alpaca Bracket Order로 시장가 진입 + TP/SL 동시 설정.
+    수량(qty)은 calc_alpaca_qty()에서 산출 (기본: 계좌 리스크% 기반, ALPACA_SIZING_MODE로 전환 가능)
+    side: "BUY" 또는 "SELL"
+    """
+    qty = calc_alpaca_qty(ref_price, sl, notional_usd)
+
+    url = f"{ALPACA_TRADE_BASE_URL}/v2/orders"
+    headers = {**ALPACA_HEADERS, "Content-Type": "application/json"}
+
+    data = {
+        "symbol": symbol,
+        "qty": str(qty),
+        "side": "buy" if side == "BUY" else "sell",
+        "type": "market",
+        "time_in_force": "day",
+        "order_class": "bracket",
+        "take_profit": {"limit_price": str(round(tp, digits))},
+        "stop_loss": {"stop_price": str(round(sl, digits))},
+    }
+
+    try:
+        response = requests.post(url, headers=headers, json=data, timeout=15)
+        try:
+            j = response.json()
+        except Exception:
+            j = {"raw_text": response.text}
+
+        print(f"[Alpaca] status_code={response.status_code}")
+        print(f"[Alpaca] body={j}")
+
+        if 200 <= response.status_code < 300:
+            return {
+                "status": "order_placed",
+                "status_code": response.status_code,
+                "raw": j,
+                "qty": qty,
+            }
+        else:
+            return {
+                "status": "error",
+                "status_code": response.status_code,
+                "raw": j,
+                "qty": qty,
+            }
+
+    except requests.exceptions.RequestException as e:
+        return {"status": "error", "message": str(e)}
+
+
 def place_order(pair, units, tp, sl, digits):
+    # 🟦 주식이면 Alpaca Bracket Order로 분기
+    if is_stock_pair(pair):
+        side = "BUY" if units > 0 else "SELL"
+        ref_price = _last_price_cache.get(pair) or tp  # 캐시 없으면 임시로 tp 사용(거의 발생 안 함)
+        return place_order_alpaca(
+            pair, side, ALPACA_FIXED_NOTIONAL_USD, ref_price, tp, sl,
+            digits=price_round_digits(pair)
+        )
+
     url = f"https://api-fxpractice.oanda.com/v3/accounts/{ACCOUNT_ID}/orders"
     headers = {
         "Authorization": f"Bearer {OANDA_API_KEY}",
@@ -2851,7 +3211,7 @@ def adjust_tp_sl_for_structure(pair, entry, tp, sl, support, resistance, atr):
             tp = max(tp, entry - span)
             sl = min(sl, entry + span)
 
-    digits = 3 if pair.endswith("JPY") else 5
+    digits = price_round_digits(pair)
     return round(tp, digits), round(sl, digits)   
 def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
     try:
@@ -3021,7 +3381,12 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
                 "- 이 규칙은 예외 없이 무조건 지켜야 하며, 이를 위반하는 TP 또는 SL을 생성하는 것은 허용되지 않는다.\n"
                 "- GPT는 BUY/SELL 방향을 기준으로 TP/SL의 방향을 항상 먼저 판단한 후 값(pip 거리)을 계산해야 한다.\n"
                 "- USD/JPY는 pip 단위가 소수점 둘째 자리입니다. TP와 SL은 반드시 이 기준으로 계산하세요. 이 규칙을 어기면 거래가 취소되므로 반드시 지켜야 한다. 예를들면 sell 거래의 진입가가 155.015라면 TP는 154.915가 10pip차이이다 \n\n"
-
+                + (
+                    f"- ⚠️ 이번 종목({pair})은 미국 주식(Alpaca)입니다. 'pip' 개념이 아니라 달러(센트) 단위로 TP/SL을 계산하세요. "
+                    f"가격은 소수점 둘째 자리(센트) 기준으로 반올림해서 제시하세요.\n\n"
+                    if is_stock_pair(pair) else ""
+                )
+                +
                 "(4) 추세 판단 시 캔들 패턴뿐 아니라 보조지표(RSI, MACD, Stoch RSI, 볼린저밴드)의 **방향성과 강도**를 반드시 함께 고려하라.\n"
                 "- 특히 보조지표의 최근 14봉 흐름 분석은 핵심 판단 자료다. 반드시 함께 고려해라\n"
                 "- 아래는 멀티타임프레임(M30, H1, H4) 기준 요약 정보이다. 각 시간대별 추세가 일치하면 강한 확신으로 간주하고, 상반된 경우 보수적으로 판단하라:\n"
