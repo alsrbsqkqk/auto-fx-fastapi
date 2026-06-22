@@ -11,6 +11,7 @@ import openai
 import numpy as np
 import gspread
 import threading
+from concurrent.futures import ThreadPoolExecutor
 import ta
 import time as _t
 import math
@@ -27,7 +28,9 @@ _gpt_cooldown_until = 0.0
 _gpt_rate_lock = threading.Lock()
 _gpt_next_slot = 0.0
 _last_execution_time = 0.0  # 마지막 실행 시간을 저장할 변수
-GPT_RPM = 20                     
+# 🟦 OpenAI Tier 3 기준 gpt-4o 한도가 5,000 RPM이라 20은 너무 낮았음(슬롯 대기가 불필요한 지연의 큰 원인).
+#    안전마진 두고 3000으로 상향. 필요시 환경변수로 재조정 가능.
+GPT_RPM = int(os.getenv("GPT_RPM", "3000"))
 _SLOT = 60.0 / GPT_RPM
 from oauth2client.service_account import ServiceAccountCredentials
 
@@ -685,8 +688,12 @@ def get_buffer_by_symbol(symbol, atr=None):
 
 def get_multi_timeframe_context(pair):
     try:
-
-        df_h4 = get_ohlcv(pair, interval='4h', limit=50)
+        # 🟦 4h/5m 캔들 조회를 병렬로 실행 (순차 대기 시간 단축)
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            fut_h4 = ex.submit(get_ohlcv, pair, interval='4h', limit=50)
+            fut_m5 = ex.submit(get_ohlcv, pair, interval='5m', limit=30)
+            df_h4 = fut_h4.result()
+            df_m5 = fut_m5.result()
 
         h4_last = df_h4['close'].iloc[-1]
 
@@ -701,8 +708,6 @@ def get_multi_timeframe_context(pair):
             h4_trend = "상승세(Bullish)"
         else:
             h4_trend = "하락세(Bearish)"
-
-        df_m5 = get_ohlcv(pair, interval='5m', limit=30)
 
         m5_rsi = ta.momentum.rsi(
             df_m5['close'],
@@ -2071,11 +2076,17 @@ async def webhook(request: Request):
     raw_text = ""  # ✅ 조건문 전에 미리 초기화
     if signal_score >= threshold:
         # 📸 [추가] 1. 사진 찍기
-        try:
-            chart_path = await asyncio.to_thread(capture_tradingview_chart, pair)
-        except Exception as e:
-            print(f"❌ 차트 캡처 실패, 이미지 없이 계속 진행: {e}")
+        # 🟦 주식은 차트 캡처를 스킵한다 (Playwright 미설치로 매번 실패할 뿐 아니라,
+        #    GPT 분석 전 불필요한 지연(수 초)을 줄여서 알림→체결 시차를 최소화하기 위함).
+        #    FX는 기존과 동일하게 캡처 시도.
+        if is_stock_pair(pair):
             chart_path = None
+        else:
+            try:
+                chart_path = await asyncio.to_thread(capture_tradingview_chart, pair)
+            except Exception as e:
+                print(f"❌ 차트 캡처 실패, 이미지 없이 계속 진행: {e}")
+                chart_path = None
     
         # 🖼 [추가] 2. 이미지를 GPT가 읽을 수 있는 문자열로 변환
         base64_image = encode_image(chart_path) if chart_path else None
@@ -2415,6 +2426,7 @@ def get_multi_tf_scalping_data(pair):
     """
     단타 분석을 위한 MTF 캔들 + 보조지표 추세 리스트 수집.
     진입 타임프레임은 base_granularity_for(pair) — FX는 M30, 주식은 M15. H1(보조 흐름), H4(큰 흐름)는 공통.
+    🟦 3개 타임프레임 캔들 조회를 순차 대신 병렬로 실행해서 대기 시간을 줄인다(네트워크 왕복 3번→1번 분량).
     """
     base_tf = base_granularity_for(pair)
 
@@ -2426,8 +2438,11 @@ def get_multi_tf_scalping_data(pair):
 
     tf_data = {}
 
-    for tf, count in timeframes.items():
-        candles = get_candles(pair, tf, count)
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        futures = {tf: ex.submit(get_candles, pair, tf, count) for tf, count in timeframes.items()}
+        fetched = {tf: f.result() for tf, f in futures.items()}
+
+    for tf, candles in fetched.items():
         if candles is None or candles.empty:
             continue
 
@@ -3447,7 +3462,6 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
     mtf_indicators = get_multi_tf_scalping_data(pair)
     mtf_summary_dict = summarize_mtf_indicators(mtf_indicators)
     mtf_summary = json.dumps(mtf_summary_dict, ensure_ascii=False, indent=2)
-    mtf_context = get_multi_timeframe_context(pair)
     print("✅ 테스트 출력: ", mtf_summary)
         
     # 1. GPT에게 보낼 콘텐츠 리스트 생성 (텍스트와 이미지를 분리해서 담기)
