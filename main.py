@@ -1664,6 +1664,8 @@ ALPACA_RISK_PCT = float(os.getenv("ALPACA_RISK_PCT", "0.5"))
 ALPACA_MAX_NOTIONAL_USD = float(os.getenv("ALPACA_MAX_NOTIONAL_USD", "5000"))
 # 주식 SL 버퍼 = ATR * 이 배수 (get_buffer_by_symbol). 페이퍼 트레이딩하면서 0.15/0.20/0.25 A/B 테스트용.
 ALPACA_SL_BUFFER_ATR_MULT = float(os.getenv("ALPACA_SL_BUFFER_ATR_MULT", "0.15"))
+# 신호가 vs 주문 직전 실시간가 차이 허용 한도(%). 이걸 넘으면 신호를 신뢰할 수 없다고 보고 주문 스킵.
+ALPACA_MAX_PRICE_GAP_PCT = float(os.getenv("ALPACA_MAX_PRICE_GAP_PCT", "1.5"))
 # 🟦 주식 TP/SL ATR 배수. TradingView Pine 전략("BUY STOCK PORTFOLIO A2")의
 #    tpATR(기본 0.8) / slATR(기본 1.0) 입력값과 반드시 동일하게 맞춰야 한다.
 #    Pine에서 입력값을 바꾸면 여기 환경변수도 같이 바꿔야 정렬이 유지된다.
@@ -1744,14 +1746,23 @@ def summarize_recent_candle_flow(candles, window=20):
 
 @app.post("/webhook")
 async def webhook(request: Request):
+    """
+    🟦 가벼운 async 래퍼. 실제 처리(process_webhook_sync)는 스레드 풀에서 돌려서,
+       여러 알림이 거의 동시에 들어와도 이벤트 루프가 막히지 않고 동시에 처리되게 한다.
+       (이전에는 전체 로직이 async def 안에서 동기 블로킹 호출을 그대로 실행해서,
+        알림이 몰리면 한 줄로 순서대로 처리되며 뒤로 갈수록 지연/타임아웃이 생겼음)
+    """
+    raw = (await request.body()) or b""
+    return await asyncio.to_thread(process_webhook_sync, raw)
+
+
+def process_webhook_sync(raw: bytes):
     print("✅ STEP 1: 웹훅 진입")
-    # 🚀 바로 여기에 다음 6줄을 삽입하세요
     global _last_execution_time
     current_time = _t.time()
     if current_time - _last_execution_time < 600:  # 600초 = 10분
         print(f"⚠️ [차단] 10분 쿨다운 중입니다. (경과: {int(current_time - _last_execution_time)}초)")
         return JSONResponse(content={"status": "ignored", "reason": "cooldown_active"})
-    raw = (await request.body()) or b""
     try:
         data = json.loads(raw.decode("utf-8") or "{}")
     except Exception:
@@ -2083,7 +2094,7 @@ async def webhook(request: Request):
             chart_path = None
         else:
             try:
-                chart_path = await asyncio.to_thread(capture_tradingview_chart, pair)
+                chart_path = capture_tradingview_chart(pair)
             except Exception as e:
                 print(f"❌ 차트 캡처 실패, 이미지 없이 계속 진행: {e}")
                 chart_path = None
@@ -3005,11 +3016,26 @@ def place_order_alpaca(symbol, side, notional_usd, ref_price, tp, sl, digits=2):
     if fresh_price and ref_price:
         try:
             delta = fresh_price - float(ref_price)
+            gap_pct = abs(delta) / float(ref_price) * 100 if float(ref_price) else 0.0
         except Exception:
             delta = 0.0
+            gap_pct = 0.0
+
+        # 🟦 신호가 vs 실시간가 차이가 비정상적으로 크면(예: 알림 자체가 묵혀있다가 늦게 도착한 경우),
+        #    TP/SL을 억지로 끼워맞춰 체결시키는 대신 그냥 스킵한다 — 신호가 더 이상 신뢰할 수 없기 때문.
+        if gap_pct > ALPACA_MAX_PRICE_GAP_PCT:
+            print(f"⛔ [Alpaca] {symbol} 가격 갱신 폭({gap_pct:.2f}%)이 한도({ALPACA_MAX_PRICE_GAP_PCT}%) 초과 "
+                  f"(신호가={ref_price} → 실시간가={fresh_price}) → 주문 스킵 (신호 신뢰 불가)")
+            return {
+                "status": "skipped",
+                "reason": f"price_gap_{gap_pct:.2f}pct_exceeds_{ALPACA_MAX_PRICE_GAP_PCT}pct",
+                "ref_price": ref_price,
+                "fresh_price": fresh_price,
+            }
+
         if delta:
             print(f"[Alpaca] {symbol} 가격 갱신: 신호가={ref_price} → 실시간가={fresh_price} "
-                  f"(Δ{delta:+.4f}) — TP/SL을 동일 거리만큼 이동")
+                  f"(Δ{delta:+.4f}, {gap_pct:.2f}%) — TP/SL을 동일 거리만큼 이동")
             tp = tp + delta
             sl = sl + delta
             ref_price = fresh_price
