@@ -2755,6 +2755,11 @@ def fetch_news_events():
     return events
 
 def filter_relevant_news(pair, within_minutes=90):
+    # 🟦 주식은 "통화코드" 개념이 없어서(ForexFactory류 경제지표 뉴스는 FX 전용) 매칭 대상이 없음.
+    #    pair.split("_")[1] 같은 FX 전용 파싱이 'NVDA'처럼 '_' 없는 티커에서 IndexError를 내던 부분 수정.
+    if is_stock_pair(pair):
+        return []
+
     currency = pair.split("_")[0] if pair.startswith("USD") else pair.split("_")[1]
     now_utc = datetime.utcnow().replace(tzinfo=pytz.UTC)
     events = fetch_news_events()
