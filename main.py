@@ -2336,7 +2336,11 @@ def process_webhook_sync(raw: bytes):
     )
     
     # 2️⃣ RSI 극단값 필터 (❗ 차단만 가능, True로 되살리지 않음)
-    if should_execute:
+    # 🟦 주식은 이 필터를 적용하지 않음 — Pine 전략(BUY STOCK PORTFOLIO)이 돌파/모멘텀
+    #    지속(continuation) 전략이라 RSI>50만 요구하고 상한이 없음. RSI 과열을 "꼭지"로 보고
+    #    차단하는 이 필터는 반전(reversal) 매매가 많은 FX용 안전장치라 주식 전략 의도와 안 맞음.
+    #    FX는 기존 그대로 유지.
+    if should_execute and not is_stock_pair(pair):
         if (
             (final_decision == "BUY" and rsi.iloc[-1] > 85)
             or (final_decision == "SELL" and rsi.iloc[-1] < 20)
