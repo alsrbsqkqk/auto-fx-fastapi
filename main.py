@@ -1,4 +1,4 @@
-    # ⚠️ V2 업그레이드된 자동 트레이딩 스크립트 (학습 강화, 트렌드 보강, 시트 시간 보정 포함)
+# ⚠️ V2 업그레이드된 자동 트레이딩 스크립트 (학습 강화, 트렌드 보강, 시트 시간 보정 포함)
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from zoneinfo import ZoneInfo
@@ -1792,9 +1792,14 @@ async def webhook(request: Request):
     alert_name = data.get("alert_name", "기본알림")
 
     candles = get_candles(pair, base_granularity_for(pair), 200)
-    # ✅ 캔들 방어 로직 추가
-    if candles is None or candles.empty or len(candles) < 3:
-        return JSONResponse(content={"error": "캔들 데이터 비정상: None이거나 길이 부족"}, status_code=400)
+    # ✅ 캔들 방어 로직 — ATR(14) 계산 가능한 최소 개수(14개)로 강화
+    candle_count = len(candles) if candles is not None else 0
+    print(f"📊 [{pair}] 캔들 수신: {candle_count}개")
+    if candles is None or candles.empty or candle_count < 14:
+        return JSONResponse(
+            content={"error": f"캔들 데이터 부족: {pair} {candle_count}개 (ATR(14) 계산에 최소 14개 필요)"},
+            status_code=400
+        )
     print("✅ STEP 4: 캔들 데이터 수신")
     # 동적 지지/저항선 계산 (파동 기반)
     print("📉 candles.tail():\n", candles.tail())
@@ -1814,6 +1819,17 @@ async def webhook(request: Request):
     # ✅ ATR 먼저 계산 (Series)
     atr_series = calculate_atr(candles)
     last_atr = float(atr_series.dropna().iloc[-1]) if not atr_series.dropna().empty else None
+
+    # ✅ ATR 계산 불가(캔들 부족 등)면 여기서 죽지 않고 깔끔하게 에러 응답
+    if last_atr is None:
+        print(f"❗ [{pair}] ATR 계산 불가 — 캔들 {len(candles)}개로는 ATR(14) 계산에 데이터 부족")
+        return JSONResponse(
+            content={
+                "error": f"{pair}: ATR 계산 불가 (캔들 {len(candles)}개, ATR(14)에 최소 14개 필요)"
+            },
+            status_code=400
+        )
+
     # ✅ 지지/저항 계산 - timeframe 키 "H1" 로, atr에는 Series 전달
     support, resistance = get_enhanced_support_resistance(
         candles, price=current_price, atr=last_atr, timeframe=base_granularity_for(pair), pair=pair
@@ -3768,4 +3784,3 @@ def get_last_trade_time():
             return datetime.fromisoformat(f.read().strip())
     except:
         return None
-
