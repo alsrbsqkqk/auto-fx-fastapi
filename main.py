@@ -1,4 +1,4 @@
-# ⚠️ V2 업그레이드된 자동 트레이딩 스크립트 (학습 강화, 트렌드 보강, 시트 시간 보정 포함)
+    # ⚠️ V2 업그레이드된 자동 트레이딩 스크립트 (학습 강화, 트렌드 보강, 시트 시간 보정 포함)
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from zoneinfo import ZoneInfo
@@ -2482,15 +2482,29 @@ _ALPACA_GRANULARITY_MAP = {
 }
 
 
+_ALPACA_BARS_PER_TRADING_DAY = {
+    "1Min": 390, "5Min": 78, "15Min": 26, "30Min": 13, "1Hour": 7, "4Hour": 2, "1Day": 1
+}
+
+
 def get_alpaca_candles(symbol, granularity, count):
     """Alpaca Market Data API에서 주식 캔들(바)을 가져와 OANDA 캔들과 동일한 포맷의 DataFrame으로 반환."""
     timeframe = _ALPACA_GRANULARITY_MAP.get(granularity, "30Min")
+
+    # 🟦 start를 안 주면 Alpaca가 충분히 과거로 안 거슬러가고 "오늘 일부만" 주는 경우가 있어서,
+    #    count(예:200)를 채우기에 충분한 만큼 명시적으로 start를 과거로 잡아줌.
+    bars_per_day = _ALPACA_BARS_PER_TRADING_DAY.get(timeframe, 26)
+    needed_trading_days = max(5, (count // max(1, bars_per_day)) + 5)
+    # 주말/공휴일 버퍼로 1.6배 캘린더일로 환산
+    start_dt = datetime.utcnow() - timedelta(days=int(needed_trading_days * 1.6))
+
     url = f"{ALPACA_DATA_BASE_URL}/v2/stocks/{symbol}/bars"
     params = {
         "timeframe": timeframe,
         "limit": count,
         "adjustment": "raw",
         "feed": "iex",  # 무료 플랜 기준. 유료(SIP) 사용 시 'sip'로 변경
+        "start": start_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
     try:
         r = requests.get(url, headers=ALPACA_HEADERS, params=params, timeout=15)
@@ -2501,8 +2515,10 @@ def get_alpaca_candles(symbol, granularity, count):
         return pd.DataFrame(columns=["time", "open", "high", "low", "close", "volume"])
 
     if not bars:
-        print(f"❗ [Alpaca] {symbol} 캔들 데이터 없음")
+        print(f"❗ [Alpaca] {symbol} 캔들 데이터 없음 (start={params['start']})")
         return pd.DataFrame(columns=["time", "open", "high", "low", "close", "volume"])
+
+    print(f"📊 [Alpaca] {symbol} {timeframe} 캔들 {len(bars)}개 수신 (start={params['start']})")
 
     return pd.DataFrame([
         {
