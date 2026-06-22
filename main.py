@@ -2357,7 +2357,7 @@ async def webhook(request: Request):
         print(f"[DEBUG] WILL PLACE ORDER → pair={pair}, side={final_decision}, units={units}, "
               f"price={price}, tp={final_tp}, sl={final_sl}, digits={digits}, score={signal_score}")
     
-        result = place_order(pair_for_order, units, final_tp, final_sl, digits)
+        result = place_order(pair_for_order, units, final_tp, final_sl, digits, price=price)
     else:
         print(f"[DEBUG] SKIP ORDER → should_execute={should_execute}, decision={final_decision}, score={signal_score}")
         result = {"status": "skipped"}
@@ -3044,11 +3044,14 @@ def place_order_alpaca(symbol, side, notional_usd, ref_price, tp, sl, digits=2):
         return {"status": "error", "message": str(e)}
 
 
-def place_order(pair, units, tp, sl, digits):
+def place_order(pair, units, tp, sl, digits, price=None):
     # 🟦 주식이면 Alpaca Bracket Order로 분기
     if is_stock_pair(pair):
         side = "BUY" if units > 0 else "SELL"
-        ref_price = _last_price_cache.get(pair) or tp  # 캐시 없으면 임시로 tp 사용(거의 발생 안 함)
+        # 🟦 전역 _last_price_cache는 동시에 들어오는 다른 요청이 같은 종목 캐시를 덮어쓸 수 있어서
+        #    (예: GPT 분석 도는 몇 초 사이 같은 종목 알림이 또 들어오면 엉뚱한 가격이 섞임)
+        #    이 요청 자체의 price를 우선 사용. price가 안 넘어온 경우에만 캐시로 폴백.
+        ref_price = price if price is not None else (_last_price_cache.get(pair) or tp)
         return place_order_alpaca(
             pair, side, ALPACA_FIXED_NOTIONAL_USD, ref_price, tp, sl,
             digits=price_round_digits(pair)
