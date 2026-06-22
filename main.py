@@ -2522,7 +2522,7 @@ def get_alpaca_candles(symbol, granularity, count):
     timeframe = _ALPACA_GRANULARITY_MAP.get(granularity, "30Min")
 
     # 🟦 start를 안 주면 Alpaca가 충분히 과거로 안 거슬러가고 "오늘 일부만" 주는 경우가 있어서,
-    #    count(예:200)를 채우기에 충분한 만큼 명시적으로 start를 과거로 잡아줌.
+    #    count(예:200)를 채우기에 충분한 만큼 명시적으로 start를 과거로 잡아줌(데이터 없음 방지용 하한선).
     bars_per_day = _ALPACA_BARS_PER_TRADING_DAY.get(timeframe, 26)
     needed_trading_days = max(5, (count // max(1, bars_per_day)) + 5)
     # 주말/공휴일 버퍼로 1.6배 캘린더일로 환산
@@ -2535,6 +2535,12 @@ def get_alpaca_candles(symbol, granularity, count):
         "adjustment": "raw",
         "feed": "iex",  # 무료 플랜 기준. 유료(SIP) 사용 시 'sip'로 변경
         "start": start_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        # 🟦 핵심 수정: sort를 안 주면(기본 asc) start부터 "오래된 것부터" limit개를 채워서,
+        #    조회 구간에 limit보다 많은 바가 있으면 최근 데이터가 통째로 잘려나간다
+        #    (이번 GEV 사례: 19일치 중 200개를 과거부터 채우니 최근 6~7거래일이 누락되어,
+        #     일주일 전 가격(975~990)이 "최신 캔들"로 둔갑함).
+        #    desc로 최신 것부터 limit개를 받은 뒤 아래에서 시간순으로 다시 뒤집는다.
+        "sort": "desc",
     }
     try:
         r = requests.get(url, headers=ALPACA_HEADERS, params=params, timeout=15)
@@ -2548,7 +2554,11 @@ def get_alpaca_candles(symbol, granularity, count):
         print(f"❗ [Alpaca] {symbol} 캔들 데이터 없음 (start={params['start']})")
         return pd.DataFrame(columns=["time", "open", "high", "low", "close", "volume"])
 
-    print(f"📊 [Alpaca] {symbol} {timeframe} 캔들 {len(bars)}개 수신 (start={params['start']})")
+    # desc로 받았으니 시간 오름차순으로 뒤집어서, candles.iloc[-1]이 항상 "가장 최근" 캔들이 되게 한다.
+    bars = list(reversed(bars))
+
+    print(f"📊 [Alpaca] {symbol} {timeframe} 캔들 {len(bars)}개 수신 "
+          f"(최근: {bars[-1].get('t')}, 가장 오래된: {bars[0].get('t')})")
 
     return pd.DataFrame([
         {
