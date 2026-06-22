@@ -2043,7 +2043,7 @@ async def webhook(request: Request):
     "SELL_ENTRY_BAR_CLOSE": -7.0,
     "기본알림": 3.0,
     "Test Alarm": 0.0,
-    "BUY_STOCK_PORTFOLIO_A2": -1.0
+    "BUY_STOCK_PORTFOLIO_A2": 0.0
     }
 
     alert_data = payload.get("alert_data", {})
@@ -2061,7 +2061,7 @@ async def webhook(request: Request):
     # 🟦 Pine 쪽 alert()는 안 건드리고, 주식 신호인데 strategy_name이 따로 안 와서
     #    "기본알림"(FX 기준 3.0)으로 떨어진 경우만 주식 전용 threshold로 바꿔준다.
     if is_stock_pair(pair) and strategy_name == "기본알림":
-        threshold = strategy_thresholds.get("BUY_STOCK_PORTFOLIO_A2", -1.0)
+        threshold = strategy_thresholds.get("BUY_STOCK_PORTFOLIO_A2", 0.0)
 
     print(f"[DEBUG] strategy_name={strategy_name}, threshold={threshold}, score={signal_score}")
     gpt_feedback = "GPT 분석 생략: 점수 미달"
@@ -2961,12 +2961,44 @@ def calc_alpaca_qty(ref_price: float, sl: float, notional_usd: float) -> int:
     return max(1, min(qty_by_fixed, max_qty_by_notional))
 
 
+def get_alpaca_latest_price(symbol):
+    """Alpaca 최신 체결가(latest trade) 조회. 실패 시 None."""
+    url = f"{ALPACA_DATA_BASE_URL}/v2/stocks/{symbol}/trades/latest"
+    params = {"feed": "iex"}
+    try:
+        r = requests.get(url, headers=ALPACA_HEADERS, params=params, timeout=10)
+        r.raise_for_status()
+        return float(r.json()["trade"]["p"])
+    except Exception as e:
+        print(f"[Alpaca] {symbol} 최신가 조회 실패: {e}")
+        return None
+
+
 def place_order_alpaca(symbol, side, notional_usd, ref_price, tp, sl, digits=2):
     """
     Alpaca Bracket Order로 시장가 진입 + TP/SL 동시 설정.
     수량(qty)은 calc_alpaca_qty()에서 산출 (기본: 계좌 리스크% 기반, ALPACA_SIZING_MODE로 전환 가능)
     side: "BUY" 또는 "SELL"
+
+    🟦 알림 발사 시점 가격(ref_price)과 실제 주문 시점 가격 사이에 시차로 인한 괴리가 생기면
+       (GPT 분석 등으로 수 초~수십 초 지연), TP/SL이 실시간가 기준으로 무효(예: BUY인데
+       TP가 현재가보다 낮음)가 되어 Alpaca가 422로 거부하는 경우가 있었음.
+       → 주문 직전 최신가를 다시 조회해서, TP/SL을 "원래 의도했던 거리"만큼 그대로 이동시켜
+         항상 실시간가 기준으로 유효하게 만든다.
     """
+    fresh_price = get_alpaca_latest_price(symbol)
+    if fresh_price and ref_price:
+        try:
+            delta = fresh_price - float(ref_price)
+        except Exception:
+            delta = 0.0
+        if delta:
+            print(f"[Alpaca] {symbol} 가격 갱신: 신호가={ref_price} → 실시간가={fresh_price} "
+                  f"(Δ{delta:+.4f}) — TP/SL을 동일 거리만큼 이동")
+            tp = tp + delta
+            sl = sl + delta
+            ref_price = fresh_price
+
     qty = calc_alpaca_qty(ref_price, sl, notional_usd)
 
     url = f"{ALPACA_TRADE_BASE_URL}/v2/orders"
