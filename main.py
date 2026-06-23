@@ -2063,7 +2063,7 @@ def process_webhook_sync(raw: bytes):
     "SELL_ENTRY_BAR_CLOSE": -7.0,
     "기본알림": 3.0,
     "Test Alarm": 0.0,
-    "BUY_STOCK_PORTFOLIO_A5": -1.0
+    "BUY_STOCK_PORTFOLIO_A2": 0.0
     }
 
     alert_data = payload.get("alert_data", {})
@@ -2081,7 +2081,7 @@ def process_webhook_sync(raw: bytes):
     # 🟦 Pine 쪽 alert()는 안 건드리고, 주식 신호인데 strategy_name이 따로 안 와서
     #    "기본알림"(FX 기준 3.0)으로 떨어진 경우만 주식 전용 threshold로 바꿔준다.
     if is_stock_pair(pair) and strategy_name == "기본알림":
-        threshold = strategy_thresholds.get("BUY_STOCK_PORTFOLIO_A5", -1.0)
+        threshold = strategy_thresholds.get("BUY_STOCK_PORTFOLIO_A2", 0.0)
 
     print(f"[DEBUG] strategy_name={strategy_name}, threshold={threshold}, score={signal_score}")
     gpt_feedback = "GPT 분석 생략: 점수 미달"
@@ -3600,6 +3600,22 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
                     f"  • 단위는 'pip'이 아니라 달러(센트, 소수점 둘째 자리)이다.\n"
                     f"  • (참고: 이 값은 서버에서 동일한 공식으로 다시 한번 강제 재계산되어 최종 주문에 사용되니, "
                     f"네가 계산한 값이 위 공식과 다르면 그건 서버 값으로 덮어써진다. 그래도 보고하는 값은 위 공식과 일치시켜라.)\n\n"
+                    f"(3-2) ⚠️ [주식 전용 판단 규칙 — 반드시 지켜라]\n"
+                    f"이 주식 알림들은 'breakout + continuation(지속)' 전략에서 나온다. 원본 Pine 진입 조건은 정확히 이렇다:\n"
+                    f"  • 최근 3봉 고점 돌파 + 모멘텀 캔들(종가>시가, 종가>전봉고가) + RSI>50 + StochRSI K>20\n"
+                    f"이 조건들은 이미 알림이 발사된 시점에 전부 충족된 상태다. 즉 너의 역할은 '진입할지 말지를 새로 정하는 것'이 아니라, "
+                    f"'그 사이 추세가 꺾일 명백한 반대 증거가 있는지'만 확인하는 것이다.\n"
+                    f"  ❌ 아래 항목은 절대로 '단독' WAIT 근거로 쓰지 마라 (이 전략에서는 경고가 아니라 돌파 확인 신호다):\n"
+                    f"     - 볼린저밴드 상단 돌파/근접 (continuation 전략에서는 돌파가 강하다는 뜻)\n"
+                    f"     - 저항선 근접 (저항을 뚫고 가는 게 이 전략의 핵심이다)\n"
+                    f"     - Stoch RSI 과열(>0.8) 단독 (RSI/MACD가 같은 방향이면 과열은 모멘텀 강도일 뿐이다)\n"
+                    f"     - RSI 60~80대 '과매수 경계' 단독 (이 전략은 RSI>50만 요구하며 상한이 없다)\n"
+                    f"  ✅ WAIT은 아래처럼 '명백한 반대 증거'가 있을 때만 선택하라:\n"
+                    f"     - MACD가 시그널선 아래로 새로 꺾이며(약세 교차) RSI도 같이 하락 중인 경우\n"
+                    f"     - 최근 캔들이 분명한 약세 패턴(예: 강한 장대음봉, 갭다운)으로 돌파를 무효화한 경우\n"
+                    f"     - RSI/MACD/StochRSI 셋 다 동시에 하락 방향으로 전환된 경우\n"
+                    f"  위 '✅ WAIT 근거'에 해당하지 않는다면, 위 (3-1) 공식 그대로 BUY/SELL을 확정하라. "
+                    f"애매하다고 보수적으로 WAIT을 고르지 마라 — 애매함은 BUY/SELL 유지 근거다.\n\n"
                     if is_stock_pair(pair) else ""
                 )
                 +
@@ -3996,7 +4012,13 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
         checked += 1
 
         gran = base_granularity_for(pair)
-        candles = get_candles(pair, gran, 50)
+        # 🟦 버그 수정: 50개 고정이면, 평가가 늦어질수록(1시간마다 도니까 몇 시간 뒤일 수 있음)
+        #    "가장 최근 N개"가 진입 시점보다 한참 뒤부터 시작돼서 진입 직후(SL 터치 가능 구간)를
+        #    통째로 못 보고 누락 → 나중에 회복해서 TP쪽으로 간 부분만 보고 TP_HIT으로 오판하게 됨.
+        #    경과 시간을 확실히 덮을 만큼 동적으로 더 많이 가져온다.
+        _gran_minutes = {"M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240}.get(gran, 15)
+        bars_needed = int(elapsed_minutes / _gran_minutes) + 20  # 여유 버퍼 20개
+        candles = get_candles(pair, gran, max(50, bars_needed))
         if candles is None or candles.empty:
             continue
 
@@ -4005,6 +4027,15 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
             candles["time_dt"] = pd.to_datetime(candles["time"], utc=True)
             entry_time_utc = entry_time.astimezone(ZoneInfo("UTC")) if entry_time.tzinfo else entry_time
             after = candles[candles["time_dt"] >= entry_time_utc]
+
+            # 🟦 안전장치: 가져온 캔들의 시작점이 진입 시점보다 너무 늦으면(=진입 직후 구간이 누락됐으면)
+            #    잘못된 판정(특히 거짓 TP_HIT)을 낼 수 있으니, 이번엔 건너뛰고 다음 시간에 재시도.
+            earliest_fetched = candles["time_dt"].min()
+            gap_minutes = (entry_time_utc - earliest_fetched).total_seconds() / 60
+            if gap_minutes > _gran_minutes * 2:
+                print(f"⚠️ [결과추적] {pair} 캔들이 진입시점을 충분히 못 덮음 "
+                      f"(진입={entry_time_utc}, 가져온 캔들 시작={earliest_fetched}) → 이번엔 스킵")
+                continue
         except Exception as e:
             print(f"❗ [결과추적] {pair} 캔들 시간 처리 실패: {e}")
             continue
