@@ -2063,7 +2063,7 @@ def process_webhook_sync(raw: bytes):
     "SELL_ENTRY_BAR_CLOSE": -7.0,
     "기본알림": 3.0,
     "Test Alarm": 0.0,
-    "BUY_STOCK_PORTFOLIO_A2": 0.0
+    "BUY_STOCK_PORTFOLIO_A5": -1.0
     }
 
     alert_data = payload.get("alert_data", {})
@@ -2081,7 +2081,7 @@ def process_webhook_sync(raw: bytes):
     # 🟦 Pine 쪽 alert()는 안 건드리고, 주식 신호인데 strategy_name이 따로 안 와서
     #    "기본알림"(FX 기준 3.0)으로 떨어진 경우만 주식 전용 threshold로 바꿔준다.
     if is_stock_pair(pair) and strategy_name == "기본알림":
-        threshold = strategy_thresholds.get("BUY_STOCK_PORTFOLIO_A2", 0.0)
+        threshold = strategy_thresholds.get("BUY_STOCK_PORTFOLIO_A5", -1.0)
 
     print(f"[DEBUG] strategy_name={strategy_name}, threshold={threshold}, score={signal_score}")
     gpt_feedback = "GPT 분석 생략: 점수 미달"
