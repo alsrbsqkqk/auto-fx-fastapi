@@ -203,6 +203,10 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     is_buy = expected_direction == "BUY"
     is_sell = expected_direction == "SELL"
 
+    # 🟦 버그 수정: breakout_confirmed가 정의된 적 없이 사용되고 있었음(stoch_rsi>0.9일 때 NameError로 크래시).
+    #    "저항을 이미 뚫고 올라간 상태인가"를 의미하므로, price>resistance로 정의.
+    breakout_confirmed = (price is not None and resistance is not None and price > resistance)
+
     # === macd_signal fallback ===
     if macd_signal is None:
         macd_signal = macd
@@ -2419,8 +2423,24 @@ def process_webhook_sync(raw: bytes):
             adjustment_suggestion = "SL 터치 → SL 너무 타이트했을 수 있음, 다음 전략에서 완화 필요"
         elif abs(tp - price) < abs(sl - price):
             adjustment_suggestion = "TP 거의 닿았으나 실패 → TP 약간 보수적일 필요 있음"
-            
-    
+
+    # 🟦 버그 수정: 이 함수가 끝까지 정상 처리됐을 때 명시적인 return이 없어서
+    #    FastAPI가 암묵적으로 None을 받아 응답 바디가 그냥 "null"이 되고 있었음.
+    #    (크래시는 아니었지만, 응답 내용이 비어있는 건 깔끔하지 않으므로 명확히 반환)
+    #    signal_score 등이 numpy 타입(float64)일 수 있어 JSONResponse의 json.dumps가
+    #    실패할 수 있으므로 안전하게 캐스팅.
+    try:
+        safe_score = float(signal_score) if signal_score is not None else None
+    except Exception:
+        safe_score = None
+    return JSONResponse(content={
+        "status": "processed",
+        "pair": str(pair) if pair is not None else None,
+        "decision": str(final_decision) if final_decision is not None else None,
+        "score": safe_score,
+    })
+
+
 def calculate_atr(candles, period=14):
     high_low = candles['high'] - candles['low']
     high_close = np.abs(candles['high'] - candles['close'].shift())
@@ -3886,6 +3906,167 @@ def log_trade_result(
     except Exception as e:
         print("❌ Google Sheet append_row 실패:", e)
         print("🧨 clean_row 전체 내용:\n", clean_row)
+
+
+# ============================================================
+# 🟦 결과 자동 추적 (백테스트 보조) — 1시간마다 미정 행들을 채워준다
+# ============================================================
+
+def _generate_outcome_note(outcome: str, reasons_text: str, decision_text: str, was_executed: bool) -> str:
+    """
+    GPT 호출 없이 규칙 기반으로 짧은 설명 생성.
+    score_components/reason 텍스트에 특정 키워드가 있으면 그걸 결과와 엮어서 설명한다.
+    """
+    text = reasons_text or ""
+    overheated = any(k in text for k in ["과열", "과매수", "과매도", "피로"])
+    strong_momentum = any(k in text for k in ["골든크로스", "모멘텀 유지", "추세 상승"])
+    exec_tag = "(실거래)" if was_executed else "(미실행/가정)"
+
+    if outcome == "TP_HIT":
+        if overheated:
+            return f"✅ TP 적중 {exec_tag} — 과열 경고가 있었지만 모멘텀이 더 강하게 이어졌음"
+        if strong_momentum:
+            return f"✅ TP 적중 {exec_tag} — 모멘텀 신호와 결과가 일치함"
+        return f"✅ TP 적중 {exec_tag}"
+    elif outcome == "SL_HIT":
+        if overheated:
+            return f"❌ SL 적중 {exec_tag} — 과열 경고가 실제로 맞아떨어짐 (필터 강화 검토 필요)"
+        return f"❌ SL 적중 {exec_tag} — 특별한 경고 신호 없었는데도 손절 도달"
+    elif outcome == "TIMEOUT_NO_HIT":
+        return f"⏳ 시간초과 {exec_tag} — TP/SL 둘 다 도달 못함 (박스권/모멘텀 부족 가능성)"
+    return ""
+
+
+def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes: int = 5):
+    """
+    구글시트에서 아직 결과가 안 채워진 행들을 찾아서,
+    그 시점 이후 캔들을 다시 조회해 TP/SL 중 뭘 먼저 쳤는지 판정하고
+    result / outcome_analysis 컬럼에 자동으로 채워넣는다.
+    (1시간마다 백그라운드로 호출됨. 수동으로도 /run_outcome_tracker 로 트리거 가능)
+    """
+    try:
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
+        client = gspread.authorize(creds)
+        sheet = client.open("민균 FX trading result").sheet1
+        all_rows = sheet.get_all_values()
+    except Exception as e:
+        print(f"❌ [결과추적] 시트 읽기 실패: {e}")
+        return {"checked": 0, "updated": 0, "error": str(e)}
+
+    checked = 0
+    updated = 0
+
+    for i, row in enumerate(all_rows[1:], start=2):  # 1번째 줄은 헤더, 시트 row는 1-indexed
+        try:
+            timestamp_str = row[0] if len(row) > 0 else ""
+            pair = row[1] if len(row) > 1 else ""
+            signal_dir = row[3] if len(row) > 3 else ""   # 원래 알림 방향(BUY/SELL) — decision이 WAIT여도 이건 살아있음
+            decision_text = row[4] if len(row) > 4 else ""
+            reasons_text = row[15] if len(row) > 15 else ""
+            result_col = row[16] if len(row) > 16 else ""
+            price_s = row[19] if len(row) > 19 else ""
+            tp_s = row[20] if len(row) > 20 else ""
+            sl_s = row[21] if len(row) > 21 else ""
+        except Exception:
+            continue
+
+        if signal_dir not in ("BUY", "SELL"):
+            continue
+        if result_col not in ("", "미정"):
+            continue  # 이미 평가됨
+
+        try:
+            price_f = float(price_s)
+            tp_f = float(tp_s)
+            sl_f = float(sl_s)
+        except Exception:
+            continue  # TP/SL이 없는 행(WAIT인데 값 자체가 없는 경우 등)은 평가 불가 → 스킵
+
+        try:
+            entry_time = datetime.fromisoformat(timestamp_str)
+        except Exception:
+            continue
+
+        now = datetime.now(entry_time.tzinfo) if entry_time.tzinfo else datetime.now()
+        elapsed_minutes = (now - entry_time).total_seconds() / 60
+        if elapsed_minutes < min_elapsed_minutes:
+            continue  # 아직 너무 따끈따끈한 신호 → 다음 시간에 다시 체크
+
+        checked += 1
+
+        gran = base_granularity_for(pair)
+        candles = get_candles(pair, gran, 50)
+        if candles is None or candles.empty:
+            continue
+
+        try:
+            candles = candles.copy()
+            candles["time_dt"] = pd.to_datetime(candles["time"], utc=True)
+            entry_time_utc = entry_time.astimezone(ZoneInfo("UTC")) if entry_time.tzinfo else entry_time
+            after = candles[candles["time_dt"] >= entry_time_utc]
+        except Exception as e:
+            print(f"❗ [결과추적] {pair} 캔들 시간 처리 실패: {e}")
+            continue
+
+        outcome = "PENDING"
+        for _, c in after.iterrows():
+            if signal_dir == "BUY":
+                if c["low"] <= sl_f:
+                    outcome = "SL_HIT"
+                    break
+                if c["high"] >= tp_f:
+                    outcome = "TP_HIT"
+                    break
+            else:  # SELL
+                if c["high"] >= sl_f:
+                    outcome = "SL_HIT"
+                    break
+                if c["low"] <= tp_f:
+                    outcome = "TP_HIT"
+                    break
+
+        if outcome == "PENDING":
+            if elapsed_minutes > max_window_minutes:
+                outcome = "TIMEOUT_NO_HIT"
+            else:
+                continue  # 아직 더 기다려야 함 (다음 시간에 재평가)
+
+        was_executed = decision_text in ("BUY", "SELL")
+        note = _generate_outcome_note(outcome, reasons_text, decision_text, was_executed)
+
+        try:
+            sheet.update_cell(i, 17, outcome)        # 'result' 컬럼 (1-indexed 17번째)
+            sheet.update_cell(i, 34, note)            # 'outcome_analysis' 컬럼 (1-indexed 34번째)
+            updated += 1
+            print(f"✅ [결과추적] row {i} ({pair}, {signal_dir}) → {outcome}")
+        except Exception as e:
+            print(f"❌ [결과추적] row {i} 시트 업데이트 실패: {e}")
+
+    print(f"📊 [결과추적] 체크 {checked}건 / 업데이트 {updated}건")
+    return {"checked": checked, "updated": updated}
+
+
+async def _hourly_outcome_tracker_loop():
+    """1시간마다 evaluate_pending_outcomes()를 백그라운드 스레드에서 실행."""
+    while True:
+        try:
+            await asyncio.to_thread(evaluate_pending_outcomes)
+        except Exception as e:
+            print(f"❌ [결과추적 루프] 오류: {e}")
+        await asyncio.sleep(3600)  # 1시간
+
+
+@app.on_event("startup")
+async def _start_background_tasks():
+    asyncio.create_task(_hourly_outcome_tracker_loop())
+
+
+@app.post("/run_outcome_tracker")
+async def run_outcome_tracker_endpoint():
+    """수동으로 즉시 결과 추적을 돌리고 싶을 때 호출 (정기 1시간 루프와 별개)."""
+    result = await asyncio.to_thread(evaluate_pending_outcomes)
+    return JSONResponse(content=result)
 
 
 def get_last_trade_time():
