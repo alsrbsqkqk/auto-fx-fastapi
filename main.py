@@ -827,7 +827,10 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
         reasons.append("🌙 애틀랜타 19~23시 거래 감점 (-3)")
         
     # ====================================
-    if macd < -0.02 and trend != "DOWNTREND":
+    # 🟦 -0.02는 FX 스케일(가격 1.0~1.5대) 전용 절대값이라, 주식(가격 수십~수천)에서는
+    #    MACD가 조금만 음수여도 항상 걸려서 의미 없는 상시 감점이 됨. 주식은 ATR 비례로 교체.
+    _macd_weak_thresh = -(atr * 0.02) if (is_stock_pair(pair) and atr) else -0.02
+    if macd < _macd_weak_thresh and trend != "DOWNTREND":
         score -= 1.5
         reasons.append("🔻 MACD 약세 + 추세 모호 → 신호 신뢰도 낮음 (감점 -1.5)")
 
@@ -2958,15 +2961,14 @@ def get_alpaca_account_equity():
 
 def get_tiered_qty(price: float) -> int:
     """
-    가격대별 고정 수량표.
-    $1000 이상 : 1주
-    $500~999   : 2주
-    $300~499   : 3주
-    $200~299   : 5주
-    $100~199   : 10주
-    $100 미만  : 15주
+    가격대별 고정 수량표
+    $1000 이상   : 1주
+    $500~999     : 2주
+    $300~499     : 3주
+    $200~299     : 5주
+    $100~199     : 10주
+    $100 미만     : 15주
     """
-
     if price >= 1000:
         return 1
     elif price >= 500:
@@ -4095,11 +4097,21 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
         was_executed = decision_text in ("BUY", "SELL")
         note = _generate_outcome_note(outcome, reasons_text, decision_text, was_executed)
 
+        # 🟦 실제 손익(가격 기준) 계산 — 지금까지 pnl 컬럼이 항상 비어있던 부분을 채움
+        if outcome == "TP_HIT":
+            exit_price = tp_f
+        elif outcome == "SL_HIT":
+            exit_price = sl_f
+        else:  # TIMEOUT_NO_HIT — 마지막으로 본 가격을 기준으로 평가손익 추정
+            exit_price = float(after.iloc[-1]["close"]) if not after.empty else price_f
+        pnl_value = (exit_price - price_f) if signal_dir == "BUY" else (price_f - exit_price)
+
         try:
             sheet.update_cell(i, 17, outcome)        # 'result' 컬럼 (1-indexed 17번째)
+            sheet.update_cell(i, 23, round(pnl_value, 5))  # 'pnl' 컬럼 (1-indexed 23번째)
             sheet.update_cell(i, 34, note)            # 'outcome_analysis' 컬럼 (1-indexed 34번째)
             updated += 1
-            print(f"✅ [결과추적] row {i} ({pair}, {signal_dir}) → {outcome}")
+            print(f"✅ [결과추적] row {i} ({pair}, {signal_dir}) → {outcome} (pnl={pnl_value:.5f})")
         except Exception as e:
             print(f"❌ [결과추적] row {i} 시트 업데이트 실패: {e}")
 
