@@ -1673,6 +1673,8 @@ ALPACA_MAX_NOTIONAL_USD = float(os.getenv("ALPACA_MAX_NOTIONAL_USD", "5000"))
 ALPACA_SL_BUFFER_ATR_MULT = float(os.getenv("ALPACA_SL_BUFFER_ATR_MULT", "0.15"))
 # 신호가 vs 주문 직전 실시간가 차이 허용 한도(%). 이걸 넘으면 신호를 신뢰할 수 없다고 보고 주문 스킵.
 ALPACA_MAX_PRICE_GAP_PCT = float(os.getenv("ALPACA_MAX_PRICE_GAP_PCT", "1.5"))
+# 주식 신규 진입 컷오프 시각(미국 동부시간, 24시간 기준). 이 시각 이후 알림은 진입 안 함.
+STOCK_ENTRY_CUTOFF_HOUR = int(os.getenv("STOCK_ENTRY_CUTOFF_HOUR", "15"))
 # 🟦 주식 TP/SL ATR 배수. TradingView Pine 전략("BUY STOCK PORTFOLIO A2")의
 #    tpATR(기본 0.8) / slATR(기본 1.0) 입력값과 반드시 동일하게 맞춰야 한다.
 #    Pine에서 입력값을 바꾸면 여기 환경변수도 같이 바꿔야 정렬이 유지된다.
@@ -2227,7 +2229,7 @@ def process_webhook_sync(raw: bytes):
 
         
     print(f"✅ STEP 10: 전략 요약 저장 호출 | decision: {decision}, TP: {tp}, SL: {sl}")
-    log_trade_result(
+    sheet_row_idx = log_trade_result(
         pair=pair,
         signal=signal,
         decision=final_decision,
@@ -2357,6 +2359,18 @@ def process_webhook_sync(raw: bytes):
             )
             should_execute = False
     
+    # 2-1️⃣ 주식 전용: 장마감 임박 시간대 신규 진입 차단
+    #    이 전략은 1~2시간 내 청산을 목표로 하는데, 장마감(16:00 ET) 직전에 들어가면
+    #    실현될 시간이 부족하고, 더 심각하게는 그날 안에 TP/SL이 안 닿으면(이제 GTC로 바꿨지만
+    #    그래도) 청산 안 된 포지션이 다음날까지 시장 노출을 떠안게 된다.
+    if should_execute and is_stock_pair(pair):
+        _ny_hour = datetime.now(ZoneInfo("America/New_York")).hour
+        if _ny_hour >= STOCK_ENTRY_CUTOFF_HOUR:
+            reasons.append(
+                f"❌ 장마감 임박({_ny_hour}시 ≥ 컷오프 {STOCK_ENTRY_CUTOFF_HOUR}시) → 신규 진입 차단"
+            )
+            should_execute = False
+
     # 3️⃣ (선택) ATR 보수 필터 – 이미 점수에 반영했으므로 여기선 추가 차단 안 함
     # if should_execute and last_atr < 0.0009:
     #     reasons.append("❌ ATR 너무 낮음 → 진입 차단")
@@ -2391,6 +2405,16 @@ def process_webhook_sync(raw: bytes):
               f"price={price}, tp={final_tp}, sl={final_sl}, digits={digits}, score={signal_score}")
     
         result = place_order(pair_for_order, units, final_tp, final_sl, digits, price=price)
+
+        # 🟦 주식이고 실제로 가격 재조정이 일어난 경우, 시트에 이미 적힌 옛날 price/tp/sl을
+        #    실제 주문에 쓰인 최종값으로 다시 보정한다 (결과추적이 보는 기준값을 일치시키기 위함).
+        if is_stock_pair(pair_for_order) and isinstance(result, dict) and "final_tp" in result:
+            correct_sheet_trade_prices(
+                sheet_row_idx,
+                result.get("final_price", price),
+                result.get("final_tp"),
+                result.get("final_sl"),
+            )
     else:
         print(f"[DEBUG] SKIP ORDER → should_execute={should_execute}, decision={final_decision}, score={signal_score}")
         result = {"status": "skipped"}
@@ -2946,6 +2970,29 @@ def has_open_trade(pair_for_order: str) -> tuple[bool, int]:
         return True, -1
 
 
+def correct_sheet_trade_prices(row_idx, price, tp, sl):
+    """
+    place_order_alpaca()가 주문 직전 실시간가로 TP/SL을 다시 맞춘 뒤에는,
+    이미 log_trade_result()로 시트에 기록해둔 (옛날) price/tp/sl이 실제 주문값과 달라진다.
+    이 함수가 해당 행의 price/tp/sl 컬럼을 실제 사용된 최종값으로 다시 덮어써서
+    시트와 Alpaca가 항상 같은 숫자를 보게 한다. (결과추적도 이 보정된 값을 기준으로 판정하게 됨)
+    """
+    if row_idx is None:
+        return
+    try:
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
+        client = gspread.authorize(creds)
+        sheet = client.open("민균 FX trading result").sheet1
+        sheet.update_cell(row_idx, 20, round(float(price), 5))  # price (1-indexed 20번째)
+        sheet.update_cell(row_idx, 21, round(float(tp), 5))     # tp
+        sheet.update_cell(row_idx, 22, round(float(sl), 5))     # sl
+        print(f"✅ [시트보정] row {row_idx} price/tp/sl을 실제 주문값으로 갱신 "
+              f"(price={price}, tp={tp}, sl={sl})")
+    except Exception as e:
+        print(f"❌ [시트보정] row {row_idx} 업데이트 실패: {e}")
+
+
 def get_alpaca_account_equity():
     """Alpaca 계좌의 현재 equity(자산)를 조회. 실패 시 None."""
     url = f"{ALPACA_TRADE_BASE_URL}/v2/account"
@@ -3087,15 +3134,21 @@ def place_order_alpaca(symbol, side, notional_usd, ref_price, tp, sl, digits=2):
     url = f"{ALPACA_TRADE_BASE_URL}/v2/orders"
     headers = {**ALPACA_HEADERS, "Content-Type": "application/json"}
 
+    final_tp_rounded = round(tp, digits)
+    final_sl_rounded = round(sl, digits)
+
     data = {
         "symbol": symbol,
         "qty": str(qty),
         "side": "buy" if side == "BUY" else "sell",
         "type": "market",
-        "time_in_force": "day",
+        # 🟦 day로 하면 TP/SL(자식 주문)도 같은 day로 적용돼서, 장마감까지 둘 다 안 닿으면
+        #    보호 주문 자체가 사라지고 포지션이 무방비로 밤새 노출된다(Alpaca 공식 동작).
+        #    GTC로 바꿔서, 당일에 못 닿아도 다음 거래일까지 TP/SL 보호가 계속 유지되게 한다.
+        "time_in_force": "gtc",
         "order_class": "bracket",
-        "take_profit": {"limit_price": str(round(tp, digits))},
-        "stop_loss": {"stop_price": str(round(sl, digits))},
+        "take_profit": {"limit_price": str(final_tp_rounded)},
+        "stop_loss": {"stop_price": str(final_sl_rounded)},
     }
 
     try:
@@ -3108,12 +3161,17 @@ def place_order_alpaca(symbol, side, notional_usd, ref_price, tp, sl, digits=2):
         print(f"[Alpaca] status_code={response.status_code}")
         print(f"[Alpaca] body={j}")
 
+        # 🟦 실제 주문에 쓰인 최종 가격들(실시간가로 보정된 값)을 항상 같이 반환.
+        #    호출부에서 이 값으로 구글시트의 price/tp/sl을 다시 보정해서, 시트와 Alpaca가 항상 일치하게 한다.
         if 200 <= response.status_code < 300:
             return {
                 "status": "order_placed",
                 "status_code": response.status_code,
                 "raw": j,
                 "qty": qty,
+                "final_price": ref_price,
+                "final_tp": final_tp_rounded,
+                "final_sl": final_sl_rounded,
             }
         else:
             return {
@@ -3121,6 +3179,9 @@ def place_order_alpaca(symbol, side, notional_usd, ref_price, tp, sl, digits=2):
                 "status_code": response.status_code,
                 "raw": j,
                 "qty": qty,
+                "final_price": ref_price,
+                "final_tp": final_tp_rounded,
+                "final_sl": final_sl_rounded,
             }
 
     except requests.exceptions.RequestException as e:
@@ -3927,9 +3988,14 @@ def log_trade_result(
 
     try:
         sheet.append_row(clean_row)
+        try:
+            return len(sheet.get_all_values())  # 방금 추가된 행의 번호(1-indexed) 반환
+        except Exception:
+            return None
     except Exception as e:
         print("❌ Google Sheet append_row 실패:", e)
         print("🧨 clean_row 전체 내용:\n", clean_row)
+        return None
 
 
 # ============================================================
