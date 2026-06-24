@@ -4017,13 +4017,22 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
         #    1분봉으로 보면 그 순서를 거의 다 구분할 수 있다.
         gran = "M1"
         _gran_minutes = 1
-        # 🟦 버그 수정: 50개 고정이면, 평가가 늦어질수록(1시간마다 도니까 몇 시간 뒤일 수 있음)
-        #    "가장 최근 N개"가 진입 시점보다 한참 뒤부터 시작돼서 진입 직후(SL 터치 가능 구간)를
-        #    통째로 못 보고 누락 → 나중에 회복해서 TP쪽으로 간 부분만 보고 TP_HIT으로 오판하게 됨.
-        #    경과 시간을 확실히 덮을 만큼 동적으로 더 많이 가져온다.
+        # 🟦 경과 시간을 확실히 덮을 만큼 동적으로 더 많이 가져오되,
+        #    OANDA/Alpaca 쪽 1회 요청 한도(보통 5000개 안팎)를 넘기면 400 에러가 나므로 안전하게 캡.
         bars_needed = int(elapsed_minutes / _gran_minutes) + 20  # 여유 버퍼 20개
-        candles = get_candles(pair, gran, max(50, bars_needed))
+        bars_capped = min(bars_needed, 4500)
+        candles = get_candles(pair, gran, max(50, bars_capped))
         if candles is None or candles.empty:
+            # 캔들 자체를 못 가져온 경우 — 그래도 4시간 넘었으면 더 기다릴 의미 없으니 시간초과로 정리
+            if elapsed_minutes > max_window_minutes:
+                was_executed = decision_text in ("BUY", "SELL")
+                note = _generate_outcome_note("TIMEOUT_NO_HIT", reasons_text, decision_text, was_executed)
+                try:
+                    sheet.update_cell(i, 17, "TIMEOUT_NO_HIT")
+                    sheet.update_cell(i, 34, note + " (캔들 조회 실패로 판정 불가)")
+                    updated += 1
+                except Exception:
+                    pass
             continue
 
         try:
@@ -4032,13 +4041,23 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
             entry_time_utc = entry_time.astimezone(ZoneInfo("UTC")) if entry_time.tzinfo else entry_time
             after = candles[candles["time_dt"] >= entry_time_utc]
 
-            # 🟦 안전장치: 가져온 캔들의 시작점이 진입 시점보다 너무 늦으면(=진입 직후 구간이 누락됐으면)
-            #    잘못된 판정(특히 거짓 TP_HIT)을 낼 수 있으니, 이번엔 건너뛰고 다음 시간에 재시도.
+            # 🟦 안전장치: 가져온 캔들의 "가장 이른" 시점이 진입 시점보다 늦으면
+            #    (=진입 직후 구간이 통째로 누락된 것) 잘못된 판정(특히 거짓 TP_HIT)을 낼 수 있다.
+            #    ⚠️ 방향 주의: earliest_fetched가 entry_time보다 "나중"일 때만 문제다.
+            #    (이전 버전엔 부호가 반대로 들어가서, 오히려 충분히 덮인 정상 케이스를 스킵시키던 버그가 있었음)
             earliest_fetched = candles["time_dt"].min()
-            gap_minutes = (entry_time_utc - earliest_fetched).total_seconds() / 60
+            gap_minutes = (earliest_fetched - entry_time_utc).total_seconds() / 60
             if gap_minutes > _gran_minutes * 2:
-                print(f"⚠️ [결과추적] {pair} 캔들이 진입시점을 충분히 못 덮음 "
-                      f"(진입={entry_time_utc}, 가져온 캔들 시작={earliest_fetched}) → 이번엔 스킵")
+                if elapsed_minutes > max_window_minutes and bars_needed > bars_capped:
+                    # 너무 오래된 신호라 캡에 걸려 영영 못 덮는 경우 → 시간초과로 정리하고 끝
+                    was_executed = decision_text in ("BUY", "SELL")
+                    note = _generate_outcome_note("TIMEOUT_NO_HIT", reasons_text, decision_text, was_executed)
+                    sheet.update_cell(i, 17, "TIMEOUT_NO_HIT")
+                    sheet.update_cell(i, 34, note + " (데이터가 너무 오래돼 정밀 판정 불가)")
+                    updated += 1
+                else:
+                    print(f"⚠️ [결과추적] {pair} 캔들이 진입시점을 충분히 못 덮음 "
+                          f"(진입={entry_time_utc}, 가져온 캔들 시작={earliest_fetched}) → 이번엔 스킵")
                 continue
         except Exception as e:
             print(f"❗ [결과추적] {pair} 캔들 시간 처리 실패: {e}")
