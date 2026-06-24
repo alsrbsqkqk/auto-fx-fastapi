@@ -2063,7 +2063,7 @@ def process_webhook_sync(raw: bytes):
     "SELL_ENTRY_BAR_CLOSE": -7.0,
     "기본알림": 3.0,
     "Test Alarm": 0.0,
-    "BUY_STOCK_PORTFOLIO_A2": -1.0
+    "BUY_STOCK_PORTFOLIO_A2": 0.0
     }
 
     alert_data = payload.get("alert_data", {})
@@ -2081,7 +2081,7 @@ def process_webhook_sync(raw: bytes):
     # 🟦 Pine 쪽 alert()는 안 건드리고, 주식 신호인데 strategy_name이 따로 안 와서
     #    "기본알림"(FX 기준 3.0)으로 떨어진 경우만 주식 전용 threshold로 바꿔준다.
     if is_stock_pair(pair) and strategy_name == "기본알림":
-        threshold = strategy_thresholds.get("BUY_STOCK_PORTFOLIO_A2", -1.0)
+        threshold = strategy_thresholds.get("BUY_STOCK_PORTFOLIO_A2", 0.0)
 
     print(f"[DEBUG] strategy_name={strategy_name}, threshold={threshold}, score={signal_score}")
     gpt_feedback = "GPT 분석 생략: 점수 미달"
@@ -4098,8 +4098,10 @@ async def _start_background_tasks():
 
 
 @app.post("/run_outcome_tracker")
+@app.get("/run_outcome_tracker")
 async def run_outcome_tracker_endpoint():
-    """수동으로 즉시 결과 추적을 돌리고 싶을 때 호출 (정기 1시간 루프와 별개)."""
+    """수동으로 즉시 결과 추적을 돌리고 싶을 때 호출 (정기 1시간 루프와 별개).
+    GET도 받게 해놔서 브라우저 주소창에 URL만 붙여넣어도 바로 실행됨."""
     result = await asyncio.to_thread(evaluate_pending_outcomes)
     return JSONResponse(content=result)
 
