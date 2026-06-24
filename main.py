@@ -4011,12 +4011,16 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
 
         checked += 1
 
-        gran = base_granularity_for(pair)
+        # 🟦 결과 "판정"은 알림 자체의 타임프레임(15분 등)과 무관하게 1분봉으로 본다.
+        #    15분봉 하나엔 시가/고가/저가/종가만 있어서, 그 15분 안에서 SL을 먼저 쳤는지
+        #    TP를 먼저 쳤는지 순서를 구분할 수 없다(둘 다 한 봉 안에 있으면 어느 게 먼저인지 모름).
+        #    1분봉으로 보면 그 순서를 거의 다 구분할 수 있다.
+        gran = "M1"
+        _gran_minutes = 1
         # 🟦 버그 수정: 50개 고정이면, 평가가 늦어질수록(1시간마다 도니까 몇 시간 뒤일 수 있음)
         #    "가장 최근 N개"가 진입 시점보다 한참 뒤부터 시작돼서 진입 직후(SL 터치 가능 구간)를
         #    통째로 못 보고 누락 → 나중에 회복해서 TP쪽으로 간 부분만 보고 TP_HIT으로 오판하게 됨.
         #    경과 시간을 확실히 덮을 만큼 동적으로 더 많이 가져온다.
-        _gran_minutes = {"M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240}.get(gran, 15)
         bars_needed = int(elapsed_minutes / _gran_minutes) + 20  # 여유 버퍼 20개
         candles = get_candles(pair, gran, max(50, bars_needed))
         if candles is None or candles.empty:
