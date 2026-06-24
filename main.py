@@ -3008,26 +3008,26 @@ def get_alpaca_account_equity():
 
 def get_tiered_qty(price: float) -> int:
     """
-    가격대별 고정 수량표
-    $1000 이상   : 1주
-    $500~999     : 2주
-    $300~499     : 3주
-    $200~299     : 5주
-    $100~199     : 10주
-    $100 미만     : 15주
+    가격대별 고정 수량표 (기존 대비 3배 상향)
+    $1000 이상   : 3주
+    $500~999     : 6주
+    $300~499     : 9주
+    $200~299     : 15주
+    $100~199     : 30주
+    $100 미만     : 45주
     """
     if price >= 1000:
-        return 1
-    elif price >= 500:
-        return 2
-    elif price >= 300:
         return 3
+    elif price >= 500:
+        return 6
+    elif price >= 300:
+        return 9
     elif price >= 200:
-        return 5
-    elif price >= 100:
-        return 10
-    else:
         return 15
+    elif price >= 100:
+        return 30
+    else:
+        return 45
 
 
 def calc_alpaca_qty(ref_price: float, sl: float, notional_usd: float) -> int:
