@@ -3076,6 +3076,32 @@ def calc_alpaca_qty(ref_price: float, sl: float, notional_usd: float) -> int:
     return max(1, min(qty_by_fixed, max_qty_by_notional))
 
 
+def get_alpaca_fill_status(symbol, after_iso):
+    """
+    Alpaca 주문 내역에서 해당 종목의 entry(시장가) 주문이 실제로 체결됐는지 확인.
+    return: (filled: bool, filled_avg_price: float|None, filled_at: str|None)
+    못 찾으면 (False, None, None) — 보수적으로 "아직 체결 안 됨"으로 취급.
+    """
+    url = f"{ALPACA_TRADE_BASE_URL}/v2/orders"
+    params = {"symbols": symbol, "status": "all", "after": after_iso, "limit": 20, "direction": "asc"}
+    try:
+        r = requests.get(url, headers=ALPACA_HEADERS, params=params, timeout=10)
+        r.raise_for_status()
+        orders = r.json()
+        for o in orders:
+            # bracket의 진입(market) 주문만 본다. (TP/SL은 limit/stop이라 order_class로도 구분 가능)
+            if o.get("type") == "market" and o.get("symbol") == symbol:
+                status = o.get("status")
+                if status == "filled":
+                    return True, float(o.get("filled_avg_price") or 0) or None, o.get("filled_at")
+                else:
+                    return False, None, None
+        return False, None, None
+    except Exception as e:
+        print(f"❗ [Alpaca] {symbol} 주문 체결 상태 조회 실패: {e}")
+        return False, None, None
+
+
 def get_alpaca_latest_price(symbol):
     """Alpaca 최신 체결가(latest trade) 조회. 실패 시 None."""
     url = f"{ALPACA_DATA_BASE_URL}/v2/stocks/{symbol}/trades/latest"
@@ -4085,6 +4111,28 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
 
         checked += 1
 
+        # 🟦 주식은 평가 전에 "진짜 체결됐는지" 먼저 확인한다.
+        #    market 주문이 장마감 직후/체결 지연 등으로 아직 'accepted' 상태일 수 있는데,
+        #    이때 캔들 가격만 보고 TP_HIT/SL_HIT을 매기면 실제로는 포지션이 없는데 가짜 결과가 찍힌다.
+        if is_stock_pair(pair) and decision_text in ("BUY", "SELL"):
+            entry_time_iso = entry_time.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%SZ") if entry_time.tzinfo else entry_time.strftime("%Y-%m-%dT%H:%M:%SZ")
+            filled, filled_price, filled_at = get_alpaca_fill_status(pair, entry_time_iso)
+            if not filled:
+                if elapsed_minutes > max_window_minutes:
+                    # 너무 오래 기다렸는데도 체결 안 됐으면 더 기다릴 의미 없음 → 정리
+                    try:
+                        sheet.update_cell(i, 17, "NOT_FILLED")
+                        sheet.update_cell(i, 34, "⚠️ 주문이 체결되지 않아 실제 포지션이 없었음 (TP/SL 판정 대상 아님)")
+                        updated += 1
+                    except Exception:
+                        pass
+                else:
+                    print(f"⏳ [결과추적] {pair} 아직 주문 미체결(accepted/held 등) → 이번엔 스킵, 다음 시간에 재확인")
+                continue
+            elif filled_price:
+                # 실제 체결가가 시트에 기록된 price와 다르면, 더 정확한 체결가로 보정해서 판정
+                price_f = filled_price
+
         # 🟦 결과 "판정"은 알림 자체의 타임프레임(15분 등)과 무관하게 1분봉으로 본다.
         #    15분봉 하나엔 시가/고가/저가/종가만 있어서, 그 15분 안에서 SL을 먼저 쳤는지
         #    TP를 먼저 쳤는지 순서를 구분할 수 없다(둘 다 한 봉 안에 있으면 어느 게 먼저인지 모름).
@@ -4185,13 +4233,262 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
     return {"checked": checked, "updated": updated}
 
 
+def sync_alpaca_trade_log():
+    """
+    Alpaca 주문 내역(원본 데이터)을 직접 조회해서 'Alpaca 거래내역' 탭에 깔끔하게 정리.
+    - 탭이 없으면 자동으로 만들고 헤더도 자동으로 씀 (사용자가 직접 만들 필요 없음).
+    - 매번 전체를 다시 계산해서 덮어쓴다(상태 변화: 진행중→TP/SL청산 반영이 쉬워짐).
+    """
+    HEADERS = [
+        "주문ID", "진입시각", "종목", "방향", "수량", "진입가",
+        "TP가", "SL가", "상태", "청산가", "청산시각", "보유시간(분)",
+        "손익($)", "손익(%)", "누적손익($)"
+    ]
+
+    try:
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
+        client = gspread.authorize(creds)
+        spreadsheet = client.open("민균 FX trading result")
+
+        try:
+            ws = spreadsheet.worksheet("Alpaca 거래내역")
+        except gspread.exceptions.WorksheetNotFound:
+            ws = spreadsheet.add_worksheet(title="Alpaca 거래내역", rows=1000, cols=len(HEADERS))
+            print("✅ [Alpaca거래내역] 탭이 없어서 새로 생성했습니다.")
+    except Exception as e:
+        print(f"❌ [Alpaca거래내역] 시트 연결 실패: {e}")
+        return
+
+    try:
+        url = f"{ALPACA_TRADE_BASE_URL}/v2/orders"
+        params = {"status": "all", "nested": "true", "limit": 500, "direction": "desc"}
+        r = requests.get(url, headers=ALPACA_HEADERS, params=params, timeout=15)
+        r.raise_for_status()
+        orders = r.json()
+    except Exception as e:
+        print(f"❌ [Alpaca거래내역] 주문 내역 조회 실패: {e}")
+        return
+
+    rows = []
+    for o in orders:
+        if o.get("order_class") != "bracket":
+            continue  # 우리가 직접 만든 bracket 진입 주문만 대상
+
+        status = o.get("status")
+        symbol = o.get("symbol")
+        side = (o.get("side") or "").upper()
+        qty = float(o.get("filled_qty") or o.get("qty") or 0)
+
+        if status != "filled":
+            # 진입 자체가 안 된 주문(취소/만료 등) — 참고용으로만 표시
+            rows.append({
+                "order_id": o.get("id"), "entry_time": o.get("submitted_at"),
+                "symbol": symbol, "side": side, "qty": qty,
+                "entry_price": None, "tp": None, "sl": None,
+                "status_kr": f"미체결({status})", "exit_price": None, "exit_time": None,
+                "pnl": None,
+            })
+            continue
+
+        entry_price = float(o.get("filled_avg_price") or 0)
+        entry_time = o.get("filled_at")
+
+        tp_price, sl_price = None, None
+        exit_price, exit_time, status_kr = None, None, "진행중"
+
+        for leg in (o.get("legs") or []):
+            leg_type = leg.get("type")
+            if leg_type == "limit":
+                tp_price = float(leg.get("limit_price") or 0) or tp_price
+                if leg.get("status") == "filled":
+                    exit_price = float(leg.get("filled_avg_price") or 0)
+                    exit_time = leg.get("filled_at")
+                    status_kr = "TP청산"
+            elif leg_type in ("stop", "stop_limit"):
+                sl_price = float(leg.get("stop_price") or 0) or sl_price
+                if leg.get("status") == "filled":
+                    exit_price = float(leg.get("filled_avg_price") or 0)
+                    exit_time = leg.get("filled_at")
+                    status_kr = "SL청산"
+
+        pnl = None
+        if exit_price is not None and entry_price:
+            direction = 1 if side == "BUY" else -1
+            pnl = round((exit_price - entry_price) * qty * direction, 2)
+
+        rows.append({
+            "order_id": o.get("id"), "entry_time": entry_time,
+            "symbol": symbol, "side": side, "qty": qty,
+            "entry_price": entry_price, "tp": tp_price, "sl": sl_price,
+            "status_kr": status_kr, "exit_price": exit_price, "exit_time": exit_time,
+            "pnl": pnl,
+        })
+
+    # 진입시각 오름차순 정렬 (누적손익 계산을 위해)
+    rows = [r for r in rows if r["entry_time"]]
+    rows.sort(key=lambda r: r["entry_time"])
+
+    sheet_rows = [HEADERS]
+    cum_pnl = 0.0
+    for r in rows:
+        hold_minutes = ""
+        if r["exit_time"] and r["entry_time"]:
+            try:
+                t1 = datetime.fromisoformat(r["entry_time"].replace("Z", "+00:00"))
+                t2 = datetime.fromisoformat(r["exit_time"].replace("Z", "+00:00"))
+                hold_minutes = round((t2 - t1).total_seconds() / 60, 1)
+            except Exception:
+                hold_minutes = ""
+
+        pnl_pct = ""
+        if r["pnl"] is not None and r["entry_price"]:
+            pnl_pct = round(r["pnl"] / (r["entry_price"] * r["qty"]) * 100, 2) if r["qty"] else ""
+
+        if r["pnl"] is not None:
+            cum_pnl += r["pnl"]
+
+        sheet_rows.append([
+            r["order_id"], r["entry_time"], r["symbol"], r["side"], r["qty"],
+            r["entry_price"], r["tp"], r["sl"], r["status_kr"],
+            r["exit_price"], r["exit_time"], hold_minutes,
+            r["pnl"], pnl_pct, round(cum_pnl, 2) if r["pnl"] is not None else ""
+        ])
+
+    try:
+        ws.clear()
+        ws.update("A1", sheet_rows)
+        print(f"✅ [Alpaca거래내역] {len(rows)}건 갱신 완료")
+    except Exception as e:
+        print(f"❌ [Alpaca거래내역] 시트 쓰기 실패: {e}")
+
+
+def sync_symbol_performance_summary():
+    """
+    'Alpaca 거래내역'(체결/손익 진실 데이터) + 메인 시트(전체 알림 빈도)를 합쳐서
+    종목별 승률/손익/빈도를 정리한 '종목별 성과분석' 탭을 만든다.
+    탭이 없으면 자동 생성, 매번 전체 재계산해서 덮어쓴다.
+    승률·총손익 기준으로 정렬해서, 어떤 종목이 좋고 어떤 종목을 빼야 할지 한눈에 보이게 한다.
+    """
+    HEADERS = [
+        "종목", "알림 빈도(전체)", "체결 건수", "체결비율(%)",
+        "승(TP)", "패(SL)", "승률(%)", "총손익($)", "평균손익($)",
+        "평균보유시간(분)", "평가"
+    ]
+
+    try:
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
+        client = gspread.authorize(creds)
+        spreadsheet = client.open("민균 FX trading result")
+
+        try:
+            trade_ws = spreadsheet.worksheet("Alpaca 거래내역")
+            trade_rows = trade_ws.get_all_values()
+        except gspread.exceptions.WorksheetNotFound:
+            print("⚠️ [종목별성과] 'Alpaca 거래내역' 탭이 아직 없음 → sync_alpaca_trade_log()를 먼저 실행해야 함")
+            return
+
+        main_ws = spreadsheet.sheet1
+        main_rows = main_ws.get_all_values()
+
+        try:
+            summary_ws = spreadsheet.worksheet("종목별 성과분석")
+        except gspread.exceptions.WorksheetNotFound:
+            summary_ws = spreadsheet.add_worksheet(title="종목별 성과분석", rows=200, cols=len(HEADERS))
+            print("✅ [종목별성과] 탭이 없어서 새로 생성했습니다.")
+    except Exception as e:
+        print(f"❌ [종목별성과] 시트 연결 실패: {e}")
+        return
+
+    # 1) 메인 시트에서 종목별 전체 알림 빈도 집계 (실행 여부 무관, 그냥 알림이 몇 번 왔는지)
+    freq = {}
+    for row in main_rows[1:]:
+        if len(row) > 1 and row[1]:
+            freq[row[1]] = freq.get(row[1], 0) + 1
+
+    # 2) 'Alpaca 거래내역' 탭에서 종목별 승/패/손익 집계 (헤더: 주문ID,진입시각,종목,방향,수량,진입가,TP가,SL가,상태,청산가,청산시각,보유시간(분),손익($),손익(%),누적손익($))
+    stats = {}  # symbol -> {tp, sl, pnl_list, hold_list}
+    for row in trade_rows[1:]:
+        if len(row) < 13:
+            continue
+        symbol = row[2]
+        status_kr = row[8]
+        pnl_str = row[12]
+        hold_str = row[11]
+        if not symbol or status_kr not in ("TP청산", "SL청산"):
+            continue
+        s = stats.setdefault(symbol, {"tp": 0, "sl": 0, "pnl_list": [], "hold_list": []})
+        if status_kr == "TP청산":
+            s["tp"] += 1
+        else:
+            s["sl"] += 1
+        try:
+            s["pnl_list"].append(float(pnl_str))
+        except Exception:
+            pass
+        try:
+            s["hold_list"].append(float(hold_str))
+        except Exception:
+            pass
+
+    all_symbols = sorted(set(list(freq.keys()) + list(stats.keys())))
+    summary_rows = [HEADERS]
+    computed = []
+    for sym in all_symbols:
+        s = stats.get(sym, {"tp": 0, "sl": 0, "pnl_list": [], "hold_list": []})
+        trades = s["tp"] + s["sl"]
+        win_rate = round(s["tp"] / trades * 100, 1) if trades else ""
+        total_pnl = round(sum(s["pnl_list"]), 2) if s["pnl_list"] else ""
+        avg_pnl = round(sum(s["pnl_list"]) / len(s["pnl_list"]), 2) if s["pnl_list"] else ""
+        avg_hold = round(sum(s["hold_list"]) / len(s["hold_list"]), 1) if s["hold_list"] else ""
+        signal_count = freq.get(sym, 0)
+        fill_rate = round(trades / signal_count * 100, 1) if signal_count else ""
+
+        # 간단한 자동 평가 코멘트 (표본 5건 미만이면 판단 보류)
+        if trades < 5:
+            verdict = f"표본 부족({trades}건) — 판단 보류"
+        elif isinstance(total_pnl, (int, float)) and total_pnl > 0 and isinstance(win_rate, (int, float)) and win_rate >= 50:
+            verdict = "✅ 양호 — 유지 후보"
+        elif isinstance(total_pnl, (int, float)) and total_pnl < 0:
+            verdict = "❌ 부진 — 제외 검토"
+        else:
+            verdict = "🟡 애매 — 추가 관찰 필요"
+
+        computed.append([
+            sym, signal_count, trades, fill_rate,
+            s["tp"], s["sl"], win_rate, total_pnl, avg_pnl,
+            avg_hold, verdict
+        ])
+
+    # 총손익 내림차순 정렬 (숫자 아닌 건 맨 뒤로)
+    computed.sort(key=lambda r: r[7] if isinstance(r[7], (int, float)) else -1e18, reverse=True)
+    summary_rows.extend(computed)
+
+    try:
+        summary_ws.clear()
+        summary_ws.update("A1", summary_rows)
+        print(f"✅ [종목별성과] {len(computed)}개 종목 갱신 완료")
+    except Exception as e:
+        print(f"❌ [종목별성과] 시트 쓰기 실패: {e}")
+
+
 async def _hourly_outcome_tracker_loop():
-    """1시간마다 evaluate_pending_outcomes()를 백그라운드 스레드에서 실행."""
+    """1시간마다 evaluate_pending_outcomes(), sync_alpaca_trade_log(), sync_symbol_performance_summary()를
+    순서대로 백그라운드 스레드에서 실행."""
     while True:
         try:
             await asyncio.to_thread(evaluate_pending_outcomes)
         except Exception as e:
             print(f"❌ [결과추적 루프] 오류: {e}")
+        try:
+            await asyncio.to_thread(sync_alpaca_trade_log)
+        except Exception as e:
+            print(f"❌ [Alpaca거래내역 루프] 오류: {e}")
+        try:
+            await asyncio.to_thread(sync_symbol_performance_summary)
+        except Exception as e:
+            print(f"❌ [종목별성과 루프] 오류: {e}")
         await asyncio.sleep(3600)  # 1시간
 
 
@@ -4207,6 +4504,23 @@ async def run_outcome_tracker_endpoint():
     GET도 받게 해놔서 브라우저 주소창에 URL만 붙여넣어도 바로 실행됨."""
     result = await asyncio.to_thread(evaluate_pending_outcomes)
     return JSONResponse(content=result)
+
+
+@app.post("/sync_alpaca_trade_log")
+@app.get("/sync_alpaca_trade_log")
+async def sync_alpaca_trade_log_endpoint():
+    """'Alpaca 거래내역' 탭을 지금 바로 갱신하고 싶을 때 호출 (정기 1시간 루프와 별개)."""
+    await asyncio.to_thread(sync_alpaca_trade_log)
+    return JSONResponse(content={"status": "done"})
+
+
+@app.post("/sync_symbol_performance")
+@app.get("/sync_symbol_performance")
+async def sync_symbol_performance_endpoint():
+    """'종목별 성과분석' 탭을 지금 바로 갱신하고 싶을 때 호출 (정기 1시간 루프와 별개).
+    'Alpaca 거래내역' 탭이 먼저 갱신돼 있어야 의미 있는 데이터가 나온다."""
+    await asyncio.to_thread(sync_symbol_performance_summary)
+    return JSONResponse(content={"status": "done"})
 
 
 def get_last_trade_time():
