@@ -4473,6 +4473,80 @@ def sync_symbol_performance_summary():
         print(f"❌ [종목별성과] 시트 쓰기 실패: {e}")
 
 
+def sync_top_active_candidates(top_n: int = 5):
+    """
+    Alpaca Screener API(most-actives, 거래량 상위)를 조회해서
+    '오늘의 추천 후보' 탭에 정리. 매일 오전 10시(ET)에 자동 실행됨.
+    이미 포트폴리오에 있는 종목(메인 시트에 이력이 있는 종목)인지도 같이 표시.
+    """
+    HEADERS = ["조회일", "종목", "거래량", "현재가", "이미 담겨있나?"]
+
+    try:
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
+        client = gspread.authorize(creds)
+        spreadsheet = client.open("민균 FX trading result")
+
+        main_rows = spreadsheet.sheet1.get_all_values()
+        existing_symbols = {row[1] for row in main_rows[1:] if len(row) > 1 and row[1]}
+
+        try:
+            ws = spreadsheet.worksheet("오늘의 추천 후보")
+        except gspread.exceptions.WorksheetNotFound:
+            ws = spreadsheet.add_worksheet(title="오늘의 추천 후보", rows=500, cols=len(HEADERS))
+            print("✅ [추천후보] 탭이 없어서 새로 생성했습니다.")
+    except Exception as e:
+        print(f"❌ [추천후보] 시트 연결 실패: {e}")
+        return
+
+    try:
+        url = f"{ALPACA_DATA_BASE_URL}/v1beta1/screener/stocks/most-actives"
+        params = {"by": "volume", "top": top_n}
+        r = requests.get(url, headers=ALPACA_HEADERS, params=params, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        actives = data.get("most_actives") or data.get("mostActives") or []
+    except Exception as e:
+        print(f"❌ [추천후보] Alpaca 조회 실패: {e}")
+        return
+
+    today_str = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+    new_rows = []
+    for item in actives:
+        symbol = item.get("symbol")
+        volume = item.get("volume") or item.get("trade_count")
+        if not symbol:
+            continue
+        price = get_alpaca_latest_price(symbol)
+        already = "✅ 이미 있음" if symbol in existing_symbols else "🆕 신규"
+        new_rows.append([today_str, symbol, volume, price, already])
+
+    try:
+        existing = ws.get_all_values()
+        if not existing:
+            ws.append_row(HEADERS)
+        ws.append_rows(new_rows)
+        print(f"✅ [추천후보] {len(new_rows)}건 추가 완료 ({today_str})")
+    except Exception as e:
+        print(f"❌ [추천후보] 시트 쓰기 실패: {e}")
+
+
+async def _daily_top_movers_loop():
+    """매일 미국 동부시간 오전 10시에 sync_top_active_candidates()를 1번 실행."""
+    while True:
+        now_ny = datetime.now(ZoneInfo("America/New_York"))
+        target = now_ny.replace(hour=10, minute=0, second=0, microsecond=0)
+        if now_ny >= target:
+            target = target + timedelta(days=1)
+        wait_seconds = (target - now_ny).total_seconds()
+        await asyncio.sleep(wait_seconds)
+        try:
+            await asyncio.to_thread(sync_top_active_candidates)
+        except Exception as e:
+            print(f"❌ [추천후보 루프] 오류: {e}")
+        await asyncio.sleep(60)  # 같은 분에 중복 실행 방지용 약간의 여유
+
+
 async def _hourly_outcome_tracker_loop():
     """1시간마다 evaluate_pending_outcomes(), sync_alpaca_trade_log(), sync_symbol_performance_summary()를
     순서대로 백그라운드 스레드에서 실행."""
@@ -4495,6 +4569,7 @@ async def _hourly_outcome_tracker_loop():
 @app.on_event("startup")
 async def _start_background_tasks():
     asyncio.create_task(_hourly_outcome_tracker_loop())
+    asyncio.create_task(_daily_top_movers_loop())
 
 
 @app.post("/run_outcome_tracker")
@@ -4520,6 +4595,14 @@ async def sync_symbol_performance_endpoint():
     """'종목별 성과분석' 탭을 지금 바로 갱신하고 싶을 때 호출 (정기 1시간 루프와 별개).
     'Alpaca 거래내역' 탭이 먼저 갱신돼 있어야 의미 있는 데이터가 나온다."""
     await asyncio.to_thread(sync_symbol_performance_summary)
+    return JSONResponse(content={"status": "done"})
+
+
+@app.post("/sync_top_active_candidates")
+@app.get("/sync_top_active_candidates")
+async def sync_top_active_candidates_endpoint():
+    """'오늘의 추천 후보' 탭을 지금 바로 갱신하고 싶을 때 호출 (정기 매일 오전 10시 자동 실행과 별개)."""
+    await asyncio.to_thread(sync_top_active_candidates)
     return JSONResponse(content={"status": "done"})
 
 
