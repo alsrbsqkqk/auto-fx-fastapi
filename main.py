@@ -3079,8 +3079,8 @@ def calc_alpaca_qty(ref_price: float, sl: float, notional_usd: float) -> int:
 def get_alpaca_fill_status(symbol, after_iso):
     """
     Alpaca 주문 내역에서 해당 종목의 entry(시장가) 주문이 실제로 체결됐는지 확인.
-    return: (filled: bool, filled_avg_price: float|None, filled_at: str|None)
-    못 찾으면 (False, None, None) — 보수적으로 "아직 체결 안 됨"으로 취급.
+    return: (filled: bool, filled_avg_price: float|None, filled_at: str|None, filled_qty: float|None)
+    못 찾으면 (False, None, None, None) — 보수적으로 "아직 체결 안 됨"으로 취급.
     """
     url = f"{ALPACA_TRADE_BASE_URL}/v2/orders"
     params = {"symbols": symbol, "status": "all", "after": after_iso, "limit": 20, "direction": "asc"}
@@ -3093,13 +3093,18 @@ def get_alpaca_fill_status(symbol, after_iso):
             if o.get("type") == "market" and o.get("symbol") == symbol:
                 status = o.get("status")
                 if status == "filled":
-                    return True, float(o.get("filled_avg_price") or 0) or None, o.get("filled_at")
+                    return (
+                        True,
+                        float(o.get("filled_avg_price") or 0) or None,
+                        o.get("filled_at"),
+                        float(o.get("filled_qty") or 0) or None,
+                    )
                 else:
-                    return False, None, None
-        return False, None, None
+                    return False, None, None, None
+        return False, None, None, None
     except Exception as e:
         print(f"❗ [Alpaca] {symbol} 주문 체결 상태 조회 실패: {e}")
-        return False, None, None
+        return False, None, None, None
 
 
 def get_alpaca_latest_price(symbol):
@@ -4066,6 +4071,15 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
         client = gspread.authorize(creds)
         sheet = client.open("민균 FX trading result").sheet1
         all_rows = sheet.get_all_values()
+        # 🟦 기존 is_new_high/is_new_low 컬럼을 quantity/total pnl로 재사용 — 헤더 라벨도 같이 갱신
+        try:
+            header_row = all_rows[0] if all_rows else []
+            if len(header_row) > 23 and header_row[23] != "quantity":
+                sheet.update_cell(1, 24, "quantity")
+            if len(header_row) > 24 and header_row[24] != "total_pnl":
+                sheet.update_cell(1, 25, "total_pnl")
+        except Exception as e:
+            print(f"⚠️ [결과추적] 헤더 라벨 갱신 실패(무시): {e}")
     except Exception as e:
         print(f"❌ [결과추적] 시트 읽기 실패: {e}")
         return {"checked": 0, "updated": 0, "error": str(e)}
@@ -4111,12 +4125,16 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
 
         checked += 1
 
+        # 🟦 거래 수량 — FX는 고정 100,000 units, 주식은 Alpaca 실제 체결 수량을 그대로 사용.
+        #    이게 없으면 PNL이 "1주(또는 1단위) 기준" 가격차이로만 계산돼서 실제 손익과 안 맞는다.
+        trade_qty = 100000 if not is_stock_pair(pair) else None
+
         # 🟦 주식은 평가 전에 "진짜 체결됐는지" 먼저 확인한다.
         #    market 주문이 장마감 직후/체결 지연 등으로 아직 'accepted' 상태일 수 있는데,
         #    이때 캔들 가격만 보고 TP_HIT/SL_HIT을 매기면 실제로는 포지션이 없는데 가짜 결과가 찍힌다.
         if is_stock_pair(pair) and decision_text in ("BUY", "SELL"):
             entry_time_iso = entry_time.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%SZ") if entry_time.tzinfo else entry_time.strftime("%Y-%m-%dT%H:%M:%SZ")
-            filled, filled_price, filled_at = get_alpaca_fill_status(pair, entry_time_iso)
+            filled, filled_price, filled_at, filled_qty = get_alpaca_fill_status(pair, entry_time_iso)
             if not filled:
                 if elapsed_minutes > max_window_minutes:
                     # 너무 오래 기다렸는데도 체결 안 됐으면 더 기다릴 의미 없음 → 정리
@@ -4132,6 +4150,8 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
             elif filled_price:
                 # 실제 체결가가 시트에 기록된 price와 다르면, 더 정확한 체결가로 보정해서 판정
                 price_f = filled_price
+            if filled_qty:
+                trade_qty = filled_qty
 
         # 🟦 결과 "판정"은 알림 자체의 타임프레임(15분 등)과 무관하게 1분봉으로 본다.
         #    15분봉 하나엔 시가/고가/저가/종가만 있어서, 그 15분 안에서 SL을 먼저 쳤는지
@@ -4211,7 +4231,7 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
         was_executed = decision_text in ("BUY", "SELL")
         note = _generate_outcome_note(outcome, reasons_text, decision_text, was_executed)
 
-        # 🟦 실제 손익(가격 기준) 계산 — 지금까지 pnl 컬럼이 항상 비어있던 부분을 채움
+        # 🟦 실제 손익(가격 기준, 1주/1단위 기준) 계산 — 'pnl' 컬럼은 기존 그대로 유지
         if outcome == "TP_HIT":
             exit_price = tp_f
         elif outcome == "SL_HIT":
@@ -4220,12 +4240,22 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
             exit_price = float(after.iloc[-1]["close"]) if not after.empty else price_f
         pnl_value = (exit_price - price_f) if signal_dir == "BUY" else (price_f - exit_price)
 
+        # 🟦 버그 수정: PNL이 1주/1단위 기준 가격차이로만 계산돼서 실제 수량을 반영 못 하고 있었음.
+        #    수량(trade_qty)을 곱한 "실제 총손익"을 따로 계산해서 보여준다.
+        #    주식인데 체결 수량을 못 가져온 경우(드묾)는 가격대별 고정수량표로 추정.
+        if trade_qty is None:
+            trade_qty = get_tiered_qty(price_f) if is_stock_pair(pair) else 100000
+        total_pnl_value = round(pnl_value * trade_qty, 2)
+
         try:
             sheet.update_cell(i, 17, outcome)        # 'result' 컬럼 (1-indexed 17번째)
-            sheet.update_cell(i, 23, round(pnl_value, 5))  # 'pnl' 컬럼 (1-indexed 23번째)
+            sheet.update_cell(i, 23, round(pnl_value, 5))  # 'pnl' 컬럼 (1-indexed 23번째, 1주/1단위 기준 그대로 유지)
+            sheet.update_cell(i, 24, trade_qty)       # 기존 'is_new_high' → 'quantity'(수량)로 재사용
+            sheet.update_cell(i, 25, total_pnl_value) # 기존 'is_new_low' → 'total pnl'(총손익)로 재사용
             sheet.update_cell(i, 34, note)            # 'outcome_analysis' 컬럼 (1-indexed 34번째)
             updated += 1
-            print(f"✅ [결과추적] row {i} ({pair}, {signal_dir}) → {outcome} (pnl={pnl_value:.5f})")
+            print(f"✅ [결과추적] row {i} ({pair}, {signal_dir}) → {outcome} "
+                  f"(1단위pnl={pnl_value:.5f}, 수량={trade_qty}, 총손익={total_pnl_value})")
         except Exception as e:
             print(f"❌ [결과추적] row {i} 시트 업데이트 실패: {e}")
 
@@ -4233,14 +4263,49 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
     return {"checked": checked, "updated": updated}
 
 
+def _build_score_lookup(main_rows):
+    """메인 시트에서 종목별 (시각, 점수) 리스트를 만든다. 'Alpaca 거래내역'과 시각 매칭용."""
+    lookup = {}
+    for row in main_rows[1:]:
+        if len(row) < 6 or not row[1]:
+            continue
+        try:
+            ts = datetime.fromisoformat(row[0])
+            score = float(row[5])
+        except Exception:
+            continue
+        lookup.setdefault(row[1], []).append((ts, score))
+    for sym in lookup:
+        lookup[sym].sort(key=lambda x: x[0])
+    return lookup
+
+
+def _find_matching_score(lookup, symbol, target_time_str, tolerance_minutes=10):
+    """주문의 entry_time과 가장 가까운(허용오차 내) 메인 시트 점수를 찾아 반환. 못 찾으면 None."""
+    if symbol not in lookup or not target_time_str:
+        return None
+    try:
+        target = datetime.fromisoformat(target_time_str.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    best, best_diff = None, None
+    for ts, score in lookup[symbol]:
+        ts_utc = ts.astimezone(ZoneInfo("UTC")) if ts.tzinfo else ts
+        diff = abs((target - ts_utc).total_seconds())
+        if diff <= tolerance_minutes * 60 and (best_diff is None or diff < best_diff):
+            best, best_diff = score, diff
+    return best
+
+
 def sync_alpaca_trade_log():
     """
     Alpaca 주문 내역(원본 데이터)을 직접 조회해서 'Alpaca 거래내역' 탭에 깔끔하게 정리.
     - 탭이 없으면 자동으로 만들고 헤더도 자동으로 씀 (사용자가 직접 만들 필요 없음).
     - 매번 전체를 다시 계산해서 덮어쓴다(상태 변화: 진행중→TP/SL청산 반영이 쉬워짐).
+    - 메인 시트의 signal_score를 시각 매칭해서 같이 기록 → 나중에 threshold 백테스팅용.
     """
     HEADERS = [
-        "주문ID", "진입시각", "종목", "방향", "수량", "진입가",
+        "주문ID", "진입시각", "종목", "방향", "점수", "수량", "진입가",
         "TP가", "SL가", "상태", "청산가", "청산시각", "보유시간(분)",
         "손익($)", "손익(%)", "누적손익($)"
     ]
@@ -4250,6 +4315,7 @@ def sync_alpaca_trade_log():
         creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
         client = gspread.authorize(creds)
         spreadsheet = client.open("민균 FX trading result")
+        score_lookup = _build_score_lookup(spreadsheet.sheet1.get_all_values())
 
         try:
             ws = spreadsheet.worksheet("Alpaca 거래내역")
@@ -4282,9 +4348,10 @@ def sync_alpaca_trade_log():
 
         if status != "filled":
             # 진입 자체가 안 된 주문(취소/만료 등) — 참고용으로만 표시
+            score = _find_matching_score(score_lookup, symbol, o.get("submitted_at"))
             rows.append({
                 "order_id": o.get("id"), "entry_time": o.get("submitted_at"),
-                "symbol": symbol, "side": side, "qty": qty,
+                "symbol": symbol, "side": side, "score": score, "qty": qty,
                 "entry_price": None, "tp": None, "sl": None,
                 "status_kr": f"미체결({status})", "exit_price": None, "exit_time": None,
                 "pnl": None,
@@ -4317,9 +4384,11 @@ def sync_alpaca_trade_log():
             direction = 1 if side == "BUY" else -1
             pnl = round((exit_price - entry_price) * qty * direction, 2)
 
+        score = _find_matching_score(score_lookup, symbol, entry_time)
+
         rows.append({
             "order_id": o.get("id"), "entry_time": entry_time,
-            "symbol": symbol, "side": side, "qty": qty,
+            "symbol": symbol, "side": side, "score": score, "qty": qty,
             "entry_price": entry_price, "tp": tp_price, "sl": sl_price,
             "status_kr": status_kr, "exit_price": exit_price, "exit_time": exit_time,
             "pnl": pnl,
@@ -4349,7 +4418,7 @@ def sync_alpaca_trade_log():
             cum_pnl += r["pnl"]
 
         sheet_rows.append([
-            r["order_id"], r["entry_time"], r["symbol"], r["side"], r["qty"],
+            r["order_id"], r["entry_time"], r["symbol"], r["side"], r["score"], r["qty"],
             r["entry_price"], r["tp"], r["sl"], r["status_kr"],
             r["exit_price"], r["exit_time"], hold_minutes,
             r["pnl"], pnl_pct, round(cum_pnl, 2) if r["pnl"] is not None else ""
@@ -4407,15 +4476,16 @@ def sync_symbol_performance_summary():
         if len(row) > 1 and row[1]:
             freq[row[1]] = freq.get(row[1], 0) + 1
 
-    # 2) 'Alpaca 거래내역' 탭에서 종목별 승/패/손익 집계 (헤더: 주문ID,진입시각,종목,방향,수량,진입가,TP가,SL가,상태,청산가,청산시각,보유시간(분),손익($),손익(%),누적손익($))
+    # 2) 'Alpaca 거래내역' 탭에서 종목별 승/패/손익 집계
+    #    헤더: 주문ID,진입시각,종목,방향,점수,수량,진입가,TP가,SL가,상태,청산가,청산시각,보유시간(분),손익($),손익(%),누적손익($)
     stats = {}  # symbol -> {tp, sl, pnl_list, hold_list}
     for row in trade_rows[1:]:
-        if len(row) < 13:
+        if len(row) < 14:
             continue
         symbol = row[2]
-        status_kr = row[8]
-        pnl_str = row[12]
-        hold_str = row[11]
+        status_kr = row[9]
+        pnl_str = row[13]
+        hold_str = row[12]
         if not symbol or status_kr not in ("TP청산", "SL청산"):
             continue
         s = stats.setdefault(symbol, {"tp": 0, "sl": 0, "pnl_list": [], "hold_list": []})
@@ -4547,6 +4617,83 @@ async def _daily_top_movers_loop():
         await asyncio.sleep(60)  # 같은 분에 중복 실행 방지용 약간의 여유
 
 
+def sync_score_bucket_analysis():
+    """
+    'Alpaca 거래내역'의 점수 컬럼을 구간별로 나눠서 승률/손익을 분석.
+    "threshold를 X로 올리면/내리면 승률·손익이 어떻게 바뀌는지"를 보기 위한 용도.
+    탭이 없으면 자동 생성, 매번 전체 재계산해서 덮어쓴다.
+    """
+    HEADERS = ["점수구간", "거래건수", "승(TP)", "패(SL)", "승률(%)", "총손익($)", "평균손익($)"]
+    BUCKETS = [
+        (-999, -3, "-3 미만"), (-3, -2, "-3~-2"), (-2, -1, "-2~-1"), (-1, 0, "-1~0"),
+        (0, 1, "0~1"), (1, 2, "1~2"), (2, 3, "2~3"), (3, 4, "3~4"), (4, 999, "4 이상"),
+    ]
+
+    try:
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
+        client = gspread.authorize(creds)
+        spreadsheet = client.open("민균 FX trading result")
+
+        try:
+            trade_ws = spreadsheet.worksheet("Alpaca 거래내역")
+            trade_rows = trade_ws.get_all_values()
+        except gspread.exceptions.WorksheetNotFound:
+            print("⚠️ [점수구간분석] 'Alpaca 거래내역' 탭이 아직 없음 → sync_alpaca_trade_log()를 먼저 실행해야 함")
+            return
+
+        try:
+            ws = spreadsheet.worksheet("스코어대별 성과분석")
+        except gspread.exceptions.WorksheetNotFound:
+            ws = spreadsheet.add_worksheet(title="스코어대별 성과분석", rows=50, cols=len(HEADERS))
+            print("✅ [점수구간분석] 탭이 없어서 새로 생성했습니다.")
+    except Exception as e:
+        print(f"❌ [점수구간분석] 시트 연결 실패: {e}")
+        return
+
+    bucket_stats = {b[2]: {"tp": 0, "sl": 0, "pnl_list": []} for b in BUCKETS}
+    # 헤더: 주문ID,진입시각,종목,방향,점수,수량,진입가,TP가,SL가,상태,청산가,청산시각,보유시간(분),손익($),손익(%),누적손익($)
+    for row in trade_rows[1:]:
+        if len(row) < 14:
+            continue
+        score_str, status_kr, pnl_str = row[4], row[9], row[13]
+        if status_kr not in ("TP청산", "SL청산"):
+            continue
+        try:
+            score = float(score_str)
+        except Exception:
+            continue  # 점수 매칭이 안 된 옛날 거래(점수 컬럼 추가 전)는 집계에서 제외
+
+        for lo, hi, label in BUCKETS:
+            if lo <= score < hi:
+                b = bucket_stats[label]
+                if status_kr == "TP청산":
+                    b["tp"] += 1
+                else:
+                    b["sl"] += 1
+                try:
+                    b["pnl_list"].append(float(pnl_str))
+                except Exception:
+                    pass
+                break
+
+    summary_rows = [HEADERS]
+    for lo, hi, label in BUCKETS:
+        b = bucket_stats[label]
+        trades = b["tp"] + b["sl"]
+        win_rate = round(b["tp"] / trades * 100, 1) if trades else ""
+        total_pnl = round(sum(b["pnl_list"]), 2) if b["pnl_list"] else ""
+        avg_pnl = round(sum(b["pnl_list"]) / len(b["pnl_list"]), 2) if b["pnl_list"] else ""
+        summary_rows.append([label, trades, b["tp"], b["sl"], win_rate, total_pnl, avg_pnl])
+
+    try:
+        ws.clear()
+        ws.update("A1", summary_rows)
+        print("✅ [점수구간분석] 갱신 완료")
+    except Exception as e:
+        print(f"❌ [점수구간분석] 시트 쓰기 실패: {e}")
+
+
 async def _hourly_outcome_tracker_loop():
     """1시간마다 evaluate_pending_outcomes(), sync_alpaca_trade_log(), sync_symbol_performance_summary()를
     순서대로 백그라운드 스레드에서 실행."""
@@ -4563,6 +4710,10 @@ async def _hourly_outcome_tracker_loop():
             await asyncio.to_thread(sync_symbol_performance_summary)
         except Exception as e:
             print(f"❌ [종목별성과 루프] 오류: {e}")
+        try:
+            await asyncio.to_thread(sync_score_bucket_analysis)
+        except Exception as e:
+            print(f"❌ [점수구간분석 루프] 오류: {e}")
         await asyncio.sleep(3600)  # 1시간
 
 
@@ -4603,6 +4754,15 @@ async def sync_symbol_performance_endpoint():
 async def sync_top_active_candidates_endpoint():
     """'오늘의 추천 후보' 탭을 지금 바로 갱신하고 싶을 때 호출 (정기 매일 오전 10시 자동 실행과 별개)."""
     await asyncio.to_thread(sync_top_active_candidates)
+    return JSONResponse(content={"status": "done"})
+
+
+@app.post("/sync_score_bucket_analysis")
+@app.get("/sync_score_bucket_analysis")
+async def sync_score_bucket_analysis_endpoint():
+    """'스코어대별 성과분석' 탭을 지금 바로 갱신하고 싶을 때 호출 (정기 1시간 루프와 별개).
+    'Alpaca 거래내역'이 먼저 갱신돼 있어야 의미 있는 데이터가 나온다."""
+    await asyncio.to_thread(sync_score_bucket_analysis)
     return JSONResponse(content={"status": "done"})
 
 
