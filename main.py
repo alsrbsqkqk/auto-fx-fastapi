@@ -829,10 +829,21 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     # ====================================
     # 🟦 -0.02는 FX 스케일(가격 1.0~1.5대) 전용 절대값이라, 주식(가격 수십~수천)에서는
     #    MACD가 조금만 음수여도 항상 걸려서 의미 없는 상시 감점이 됨. 주식은 ATR 비례로 교체.
+    # 🟦 추가 수정: "MACD가 음수다" 자체와 "MACD가 음수인데 계속 나빠지고 있다"는 다르다.
+    #    음수여도 최근 3개 값이 계속 좋아지고 있으면(회복 중) 이건 약세가 아니라 회복 신호라
+    #    패널티를 절반으로 줄인다 (완전히 없애지는 않음 — 아직 양전환 전이라는 리스크는 남아있음).
+    _macd_recovering = (
+        macd_trend and len(macd_trend) >= 3
+        and macd_trend[-1] > macd_trend[-2] > macd_trend[-3]
+    )
     _macd_weak_thresh = -(atr * 0.02) if (is_stock_pair(pair) and atr) else -0.02
     if macd < _macd_weak_thresh and trend != "DOWNTREND":
-        score -= 1.5
-        reasons.append("🔻 MACD 약세 + 추세 모호 → 신호 신뢰도 낮음 (감점 -1.5)")
+        if _macd_recovering:
+            score -= 0.75
+            reasons.append("🔻 MACD 음수지만 회복 중 → 약세 판정 완화 (감점 -0.75, 기존 -1.5)")
+        else:
+            score -= 1.5
+            reasons.append("🔻 MACD 약세 + 추세 모호 → 신호 신뢰도 낮음 (감점 -1.5)")
 
     # RSI + Stoch RSI 과매수 상태에서 SELL 진입 위험
     if signal == "SELL" and rsi > 70 and stoch_rsi > 0.85:
@@ -1054,11 +1065,17 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     
         # 🔥 애매한 전환/되돌림 구간
         else:
-    
-            signal_score -= 0.3
-            reasons.append(
-                "🟡 NEUTRAL 추세 → continuation 신뢰도 낮음 (-0.7)"
-            )
+            # 🟦 주식은 Pine이 이미 "3봉 고점 돌파"를 확인한 뒤에야 알림을 보낸다.
+            #    이 시점의 NEUTRAL은 추세가 진짜 없다는 뜻이 아니라, EMA 기반 추세 판정이
+            #    막 시작된 돌파를 아직 못 따라잡은 지표 지연일 가능성이 높다.
+            #    그래서 주식은 감점을 더 약하게(-0.15), FX는 기존 그대로(-0.3) 유지.
+            #    (표시 문구가 "-0.7"로 돼있었는데 실제 감점은 -0.3이었던 불일치도 같이 수정)
+            if is_stock_pair(pair):
+                signal_score -= 0.15
+                reasons.append("🟡 NEUTRAL 추세(돌파 초기 지표 지연 가능성) → 약한 감점 (-0.15)")
+            else:
+                signal_score -= 0.3
+                reasons.append("🟡 NEUTRAL 추세 → continuation 신뢰도 낮음 (-0.3)")
     
     
     # ==================================================
@@ -1358,10 +1375,28 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
                 signal_score -= 2.0
                 reasons.append("⛔ SELL 차단: 과매도(Stoch<0.2) + MACD 약화 + 추세 불리 → 추격 매도 위험 감점 -2")
    
+    # 🟦 breakout_confirmed/near_resistance를 stoch_rsi>=0.95 체크보다 먼저 계산해서,
+    #    "추세 라벨(UPTREND)"이 아니라 "실제 돌파 확정 여부"로 과열 판정을 보완할 수 있게 함.
+    _atr_val_early = atr if atr is not None else 0.0
+    _res_val_early = resistance if resistance is not None else None
+    _near_resistance_early = False
+    if _res_val_early is not None and price is not None:
+        _near_resistance_early = (_res_val_early - price) <= max(10 * pv, _atr_val_early * 0.6)
+    _buffer_early = max(2 * pv, _atr_val_early * 0.10)
+    _breakout_confirmed_early = False
+    if _res_val_early is not None and close is not None:
+        _breakout_confirmed_early = close >= (_res_val_early + _buffer_early)
+
     if stoch_rsi >= 0.95:
-        if trend == "UPTREND" and macd > 0:
+        # 🟦 주식은 detect_trend의 NEUTRAL 판정이 막 시작된 돌파를 못 따라잡는 경우가 많아서,
+        #    "UPTREND여야만 봐준다"는 조건 대신 실제 돌파 확정 여부(breakout_confirmed)도 같이 인정.
+        _confirmed_momentum = (trend == "UPTREND" and macd is not None and macd > 0) or (
+            is_stock_pair(pair) and _breakout_confirmed_early and not _near_resistance_early
+            and macd is not None and macd > 0
+        )
+        if _confirmed_momentum:
             signal_score -= 0.5
-            reasons.append("🟡 Stoch RSI 과열이지만 상승추세 + MACD 양수 → 조건부 감점 -0.5")
+            reasons.append("🟡 Stoch RSI 과열이지만 돌파확정/상승추세 + MACD 양수 → 조건부 감점 -0.5")
         else:
             signal_score -= 1
             reasons.append("🔴 Stoch RSI 1.0 → 극단적 과매수 → 피로감 주의 감점 -1")
@@ -2164,7 +2199,7 @@ def process_webhook_sync(raw: bytes):
         )
         print(f"📄 GPT Raw Response: {raw_text!r}")
         gpt_feedback = raw_text
-        parsed_decision, tp, sl = parse_gpt_feedback(raw_text) if raw_text else ("WAIT", None, None)
+        parsed_decision, tp, sl, wait_confidence = parse_gpt_feedback(raw_text) if raw_text else ("WAIT", None, None, None)
         
         if parsed_decision in ["BUY", "SELL"]:
             final_decision = parsed_decision
@@ -2174,6 +2209,22 @@ def process_webhook_sync(raw: bytes):
             print(
                 f"[✔️UPDATE] GPT 결정 적용: "
                 f"{final_decision}, tp={final_tp}, sl={final_sl}"
+            )
+        elif (
+            parsed_decision == "WAIT"
+            and is_stock_pair(pair)
+            and signal in ("BUY", "SELL")
+            and (wait_confidence is None or wait_confidence < 80)
+        ):
+            # 🟦 GPT가 WAIT을 골랐지만, 확신도(wait_confidence)가 80 미만이거나 안 줬으면
+            #    서버가 강제로 원래 알림 방향(BUY/SELL)으로 되돌린다.
+            #    TP/SL은 None으로 두면 아래 ATR 기반 강제 재계산 단계에서 다시 정확히 채워진다.
+            final_decision = signal
+            final_tp = None
+            final_sl = None
+            print(
+                f"🔁 [WAIT 확신도 부족] GPT가 WAIT 선택했지만 wait_confidence={wait_confidence} "
+                f"(80 미만 또는 누락) → 원래 방향({signal})으로 강제 환원"
             )
         else:
         
@@ -3370,6 +3421,7 @@ def parse_gpt_feedback(text):
     final_decision = "WAIT"
     tp = None
     sl = None
+    wait_confidence = None
 
     try:
         data = extract_json_block(text)
@@ -3378,7 +3430,8 @@ def parse_gpt_feedback(text):
             final_decision = str(data.get("decision", "WAIT")).upper()
             tp = safe_float(data.get("tp"))
             sl = safe_float(data.get("sl"))
-            print(f"[DEBUG] JSON 추출 성공: decision={final_decision}, tp={tp}, sl={sl}")
+            wait_confidence = safe_float(data.get("wait_confidence"))
+            print(f"[DEBUG] JSON 추출 성공: decision={final_decision}, tp={tp}, sl={sl}, wait_confidence={wait_confidence}")
             print(f"[TRACE] 최종 판단 결과: final_decision={final_decision}, tp={tp}, sl={sl}")  # ← 추가
             # ⛔️ 파싱 실패 시 강제 초기화
             if final_decision not in ["BUY", "SELL"]:
@@ -3386,7 +3439,7 @@ def parse_gpt_feedback(text):
                 tp = None
                 sl = None
             
-            return final_decision, tp, sl
+            return final_decision, tp, sl, wait_confidence
 
     except Exception as e:
         print(f"[WARN] JSON 파싱 실패: {e}, fallback 실행")
@@ -3394,13 +3447,13 @@ def parse_gpt_feedback(text):
         # fallback 조건: 기존 판단이 없을 때만 덮어씀
         if final_decision != "WAIT" and (tp is not None and sl is not None):
             print("[INFO] fallback 진입했지만 기존 결정 BUY/SELL 유지함")
-            return final_decision, tp, sl
+            return final_decision, tp, sl, wait_confidence
         else:
             print("[INFO] fallback 조건 충족 → WAIT 처리")
             final_decision = "WAIT"
             tp = None
             sl = None
-            return final_decision, tp, sl
+            return final_decision, tp, sl, wait_confidence
 
 
     # ✅ 명확한 판단 패턴 탐색 (정규식 우선)
@@ -3468,7 +3521,7 @@ def parse_gpt_feedback(text):
         return float(nums[-1]) if nums else None
 
 
-    return final_decision, tp, sl
+    return final_decision, tp, sl, wait_confidence
     print(f"[DEBUG] 최종 결정 리턴: final_decision={final_decision}, tp={tp}, sl={sl}")
 
 
@@ -3716,6 +3769,14 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
                     f"     - RSI/MACD/StochRSI 셋 다 동시에 하락 방향으로 전환된 경우\n"
                     f"  위 '✅ WAIT 근거'에 해당하지 않는다면, 위 (3-1) 공식 그대로 BUY/SELL을 확정하라. "
                     f"애매하다고 보수적으로 WAIT을 고르지 마라 — 애매함은 BUY/SELL 유지 근거다.\n\n"
+                    f"(3-3) ⚠️ [WAIT 선택 시 추가 규칙 — 둘 다 만족해야만 WAIT 가능]\n"
+                    f"WAIT은 함부로 선택하면 안 된다. 아래 두 조건을 **모두** 만족해야만 WAIT을 선택할 수 있다:\n"
+                    f"  1. 위 '✅ WAIT 근거' 중 최소 하나를 reason에 구체적으로(어떤 지표가 어떻게 꺾였는지) 명시해야 한다.\n"
+                    f"     ('과매수라서', '저항 근접이라서' 같은 금지된 이유만 댄 WAIT은 무효다.)\n"
+                    f"  2. 이 신호가 실패할 것이라는 확신도(wait_confidence, 0~100 정수)가 **80 이상**이어야 한다.\n"
+                    f"     80 미만이면 WAIT을 선택할 수 없다 — 원래 알림 방향(BUY/SELL)을 그대로 확정하라.\n"
+                    f"  위 둘 중 하나라도 못 만족하면 절대 WAIT을 출력하지 말고, 원래 신호 방향으로 decision을 내라.\n"
+                    f"  JSON에 wait_confidence 필드를 추가하라 (WAIT이 아니면 0으로 채워라).\n\n"
                     if is_stock_pair(pair) else ""
                 )
                 +
@@ -3747,6 +3808,7 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
                 "  \"decision\": \"BUY\" | \"SELL\" | \"WAIT\",\n"
                 "  \"tp\": <숫자>,       // 반드시 숫자(float). 따옴표 금지. 예: 1.1745\n"
                 "  \"sl\": <숫자>,       // 반드시 숫자(float). 따옴표 금지.\n"
+                "  \"wait_confidence\": <0~100 정수>,  // WAIT일 때만 의미 있음. WAIT이 아니면 0.\n"
                 "  \"reason\": \"<간단한 핵심 이유 하나만 간결하게>\"\n"
                 "}\n\n"
                 "‼️ 출력 시 유의사항:\n"
