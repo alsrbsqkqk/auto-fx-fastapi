@@ -1710,6 +1710,8 @@ ALPACA_SL_BUFFER_ATR_MULT = float(os.getenv("ALPACA_SL_BUFFER_ATR_MULT", "0.15")
 ALPACA_MAX_PRICE_GAP_PCT = float(os.getenv("ALPACA_MAX_PRICE_GAP_PCT", "1.5"))
 # 주식 신규 진입 컷오프 시각(미국 동부시간, 24시간 기준). 이 시각 이후 알림은 진입 안 함.
 STOCK_ENTRY_CUTOFF_HOUR = int(os.getenv("STOCK_ENTRY_CUTOFF_HOUR", "15"))
+# 결과추적/거래내역/성과분석 탭들을 몇 분마다 갱신할지 (기본 30분)
+OUTCOME_TRACKER_INTERVAL_MINUTES = int(os.getenv("OUTCOME_TRACKER_INTERVAL_MINUTES", "30"))
 # 🟦 주식 TP/SL ATR 배수. TradingView Pine 전략("BUY STOCK PORTFOLIO A2")의
 #    tpATR(기본 0.8) / slATR(기본 1.0) 입력값과 반드시 동일하게 맞춰야 한다.
 #    Pine에서 입력값을 바꾸면 여기 환경변수도 같이 바꿔야 정렬이 유지된다.
@@ -2436,11 +2438,27 @@ def process_webhook_sync(raw: bytes):
     if should_execute:
         pair_for_order = pair.replace("/", "_")
     
-        # ✅ (추가) 이미 열린 트레이드가 있으면 신규 진입 스킵 (FIFO 방지)
-        opened, cnt = has_open_trade(pair_for_order)
-        if opened:
-            print(f"[SKIP] {pair_for_order} openTrades={cnt} → FIFO 방지로 신규진입 스킵")
-            should_execute = False
+        if is_stock_pair(pair_for_order):
+            # 🟦 주식: FX의 FIFO 완전차단 대신, "가격대별 정상 1회 거래수량의 2배"를
+            #    누적 보유 한도로 둔다. 이미 그 한도까지 채워져 있으면 추가 진입 스킵.
+            #    (FIFO 완전차단은 NFA 규정상 FX에만 강제되는 룰이라 주식에 그대로 가져올 필요는 없음.
+            #     다만 한 종목에 무제한 집중되는 것은 막기 위해 한도를 둠.)
+            existing_qty = get_alpaca_position_qty(pair_for_order)
+            intended_qty = get_tiered_qty(price)
+            max_total_qty = intended_qty * 2
+            if existing_qty + intended_qty > max_total_qty:
+                print(f"[SKIP] {pair_for_order} 기존 보유 {existing_qty}주 + 신규 {intended_qty}주 "
+                      f"= 한도({max_total_qty}주, 정상수량×2) 초과 → 신규진입 스킵")
+                should_execute = False
+            else:
+                print(f"[OK] {pair_for_order} 기존 보유 {existing_qty}주 + 신규 {intended_qty}주 "
+                      f"≤ 한도({max_total_qty}주) → 진입 허용")
+        else:
+            # ✅ FX: 이미 열린 트레이드가 있으면 신규 진입 스킵 (FIFO 방지, NFA 규정 준수)
+            opened, cnt = has_open_trade(pair_for_order)
+            if opened:
+                print(f"[SKIP] {pair_for_order} openTrades={cnt} → FIFO 방지로 신규진입 스킵")
+                should_execute = False
     
     if should_execute:
         if is_stock_pair(pair_for_order):
@@ -2968,6 +2986,25 @@ def fetch_and_score_forex_news(pair):
         message = "❓ 뉴스 확인 실패"
 
     return score, message
+
+def get_alpaca_position_qty(symbol: str) -> float:
+    """
+    Alpaca 계좌에 해당 심볼의 현재 보유 수량(절댓값)을 반환. 포지션 없으면 0.
+    조회 실패 시 보수적으로 큰 값(99999)을 반환해서 신규 진입을 막는다(애매하면 차단).
+    """
+    url = f"{ALPACA_TRADE_BASE_URL}/v2/positions/{symbol}"
+    try:
+        r = requests.get(url, headers=ALPACA_HEADERS, timeout=10)
+        if r.status_code == 404:
+            return 0.0
+        if r.status_code == 200:
+            return abs(float(r.json().get("qty", 0)))
+        print(f"[Alpaca] 포지션 수량 조회 status={r.status_code} body={r.text}")
+        return 99999.0
+    except Exception as e:
+        print("[Alpaca] 포지션 수량 조회 실패:", e)
+        return 99999.0
+
 
 def has_open_position_alpaca(symbol: str) -> tuple[bool, int]:
     """
@@ -4757,8 +4794,8 @@ def sync_score_bucket_analysis():
 
 
 async def _hourly_outcome_tracker_loop():
-    """1시간마다 evaluate_pending_outcomes(), sync_alpaca_trade_log(), sync_symbol_performance_summary()를
-    순서대로 백그라운드 스레드에서 실행."""
+    """OUTCOME_TRACKER_INTERVAL_MINUTES(기본 30분)마다 evaluate_pending_outcomes(), sync_alpaca_trade_log(),
+    sync_symbol_performance_summary(), sync_score_bucket_analysis()를 순서대로 백그라운드 스레드에서 실행."""
     while True:
         try:
             await asyncio.to_thread(evaluate_pending_outcomes)
@@ -4776,7 +4813,7 @@ async def _hourly_outcome_tracker_loop():
             await asyncio.to_thread(sync_score_bucket_analysis)
         except Exception as e:
             print(f"❌ [점수구간분석 루프] 오류: {e}")
-        await asyncio.sleep(3600)  # 1시간
+        await asyncio.sleep(OUTCOME_TRACKER_INTERVAL_MINUTES * 60)
 
 
 @app.on_event("startup")
