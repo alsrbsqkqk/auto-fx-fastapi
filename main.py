@@ -1712,6 +1712,8 @@ ALPACA_MAX_PRICE_GAP_PCT = float(os.getenv("ALPACA_MAX_PRICE_GAP_PCT", "1.5"))
 STOCK_ENTRY_CUTOFF_HOUR = int(os.getenv("STOCK_ENTRY_CUTOFF_HOUR", "15"))
 # 결과추적/거래내역/성과분석 탭들을 몇 분마다 갱신할지 (기본 30분)
 OUTCOME_TRACKER_INTERVAL_MINUTES = int(os.getenv("OUTCOME_TRACKER_INTERVAL_MINUTES", "30"))
+# 진입 후 이 시간(분)이 지나도 TP/SL 둘 다 안 닿으면 강제로 시장가 청산
+STOCK_TIME_EXIT_MINUTES = int(os.getenv("STOCK_TIME_EXIT_MINUTES", "90"))
 # 🟦 주식 TP/SL ATR 배수. TradingView Pine 전략("BUY STOCK PORTFOLIO A2")의
 #    tpATR(기본 0.8) / slATR(기본 1.0) 입력값과 반드시 동일하게 맞춰야 한다.
 #    Pine에서 입력값을 바꾸면 여기 환경변수도 같이 바꿔야 정렬이 유지된다.
@@ -4422,6 +4424,74 @@ def _find_matching_score(lookup, symbol, target_time_str, tolerance_minutes=10):
     return best
 
 
+def _find_force_close_fill(symbol, entry_time_iso):
+    """
+    TP/SL 레그가 둘 다 취소된 채로 포지션이 닫혔을 때, 그 청산을 실행한
+    별도의 시장가 주문(체결가/체결시각)을 찾아서 반환. 못 찾으면 (None, None).
+    """
+    if not entry_time_iso:
+        return None, None
+    url = f"{ALPACA_TRADE_BASE_URL}/v2/orders"
+    params = {"symbols": symbol, "status": "closed", "after": entry_time_iso, "limit": 20, "direction": "asc"}
+    try:
+        r = requests.get(url, headers=ALPACA_HEADERS, params=params, timeout=10)
+        r.raise_for_status()
+        for o in r.json():
+            # bracket의 자식(legs)이 아니라, 독립적으로 들어간 시장가 청산 주문만 찾는다.
+            if o.get("type") == "market" and o.get("status") == "filled" and not o.get("legs"):
+                return float(o.get("filled_avg_price") or 0), o.get("filled_at")
+    except Exception as e:
+        print(f"❗ [강제청산조회] {symbol} 청산주문 조회 실패: {e}")
+    return None, None
+
+
+def close_stale_positions(cutoff_minutes=None):
+    """
+    'Alpaca 거래내역' 탭에서 상태가 '진행중'인 거래 중, 진입 후 cutoff_minutes
+    (기본 STOCK_TIME_EXIT_MINUTES)가 지났는데도 안 닫힌 것들을 시장가로 강제 청산한다.
+    Alpaca의 DELETE /v2/positions/{symbol}을 쓰면 TP/SL 예약주문도 같이 정리되면서
+    시장가로 청산된다 (공식 문서 기준 동작).
+    """
+    cutoff = cutoff_minutes or STOCK_TIME_EXIT_MINUTES
+    try:
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
+        client = gspread.authorize(creds)
+        rows = client.open("민균 FX trading result").worksheet("Alpaca 거래내역").get_all_values()
+    except Exception as e:
+        print(f"❌ [강제청산] 시트 읽기 실패: {e}")
+        return {"checked": 0, "closed": 0}
+
+    now_utc = datetime.now(ZoneInfo("UTC"))
+    checked, closed = 0, 0
+
+    # 헤더: 주문ID,진입시각,종목,방향,점수,수량,진입가,TP가,SL가,상태,청산가,청산시각,보유시간(분),손익($),손익(%),누적손익($)
+    for row in rows[1:]:
+        if len(row) < 10 or row[9] != "진행중":
+            continue
+        symbol = row[2]
+        try:
+            entry_t = datetime.fromisoformat(row[1].replace("Z", "+00:00"))
+        except Exception:
+            continue
+        held_minutes = (now_utc - entry_t).total_seconds() / 60
+        if held_minutes < cutoff:
+            continue
+
+        checked += 1
+        print(f"⏰ [강제청산] {symbol} 진입 후 {held_minutes:.1f}분 경과(컷오프 {cutoff}분) → 강제 시장가 청산 시도")
+        try:
+            r = requests.delete(f"{ALPACA_TRADE_BASE_URL}/v2/positions/{symbol}", headers=ALPACA_HEADERS, timeout=15)
+            print(f"[강제청산] {symbol} 결과: {r.status_code} {r.text[:300]}")
+            if r.status_code in (200, 207):
+                closed += 1
+        except Exception as e:
+            print(f"❌ [강제청산] {symbol} 청산 요청 실패: {e}")
+
+    print(f"📊 [강제청산] 체크 {checked}건 / 청산 {closed}건")
+    return {"checked": checked, "closed": closed}
+
+
 def sync_alpaca_trade_log():
     """
     Alpaca 주문 내역(원본 데이터)을 직접 조회해서 'Alpaca 거래내역' 탭에 깔끔하게 정리.
@@ -4503,6 +4573,14 @@ def sync_alpaca_trade_log():
                     exit_price = float(leg.get("filled_avg_price") or 0)
                     exit_time = leg.get("filled_at")
                     status_kr = "SL청산"
+
+        # 🟦 TP/SL 둘 다 체결 안 됐는데 둘 다 "취소(canceled)" 상태면 → 우리 시간초과 강제청산
+        #    (TIME_EXIT)으로 닫힌 경우다. 그 청산을 실행한 별도의 시장가 주문을 찾아서 채운다.
+        legs = o.get("legs") or []
+        if status_kr == "진행중" and legs and all(leg.get("status") == "canceled" for leg in legs):
+            close_price, close_time = _find_force_close_fill(symbol, entry_time)
+            if close_price is not None:
+                exit_price, exit_time, status_kr = close_price, close_time, "TIME_EXIT"
 
         pnl = None
         if exit_price is not None and entry_price:
@@ -4611,10 +4689,16 @@ def sync_symbol_performance_summary():
         status_kr = row[9]
         pnl_str = row[13]
         hold_str = row[12]
-        if not symbol or status_kr not in ("TP청산", "SL청산"):
+        if not symbol or status_kr not in ("TP청산", "SL청산", "TIME_EXIT"):
             continue
         s = stats.setdefault(symbol, {"tp": 0, "sl": 0, "pnl_list": [], "hold_list": []})
-        if status_kr == "TP청산":
+        # 🟦 TIME_EXIT(시간초과 강제청산)은 TP/SL 어느 쪽도 아니라서, 실현손익 부호로 승/패를 나눈다.
+        try:
+            _pnl_for_winloss = float(pnl_str)
+        except Exception:
+            _pnl_for_winloss = None
+        is_win = (status_kr == "TP청산") or (status_kr == "TIME_EXIT" and _pnl_for_winloss is not None and _pnl_for_winloss > 0)
+        if is_win:
             s["tp"] += 1
         else:
             s["sl"] += 1
@@ -4782,7 +4866,7 @@ def sync_score_bucket_analysis():
         if len(row) < 14:
             continue
         score_str, status_kr, pnl_str = row[4], row[9], row[13]
-        if status_kr not in ("TP청산", "SL청산"):
+        if status_kr not in ("TP청산", "SL청산", "TIME_EXIT"):
             continue
         try:
             score = float(score_str)
@@ -4792,7 +4876,12 @@ def sync_score_bucket_analysis():
         for lo, hi, label in BUCKETS:
             if lo <= score < hi:
                 b = bucket_stats[label]
-                if status_kr == "TP청산":
+                try:
+                    _pnl_for_winloss = float(pnl_str)
+                except Exception:
+                    _pnl_for_winloss = None
+                is_win = (status_kr == "TP청산") or (status_kr == "TIME_EXIT" and _pnl_for_winloss is not None and _pnl_for_winloss > 0)
+                if is_win:
                     b["tp"] += 1
                 else:
                     b["sl"] += 1
@@ -4832,7 +4921,7 @@ def _aggregate_trade_stats(trade_rows, start=None, end=None):
     intervals = []  # (entry_dt, exit_dt) — 동시노출 계산용
 
     for row in trade_rows[1:]:
-        if len(row) < 14 or row[9] not in ("TP청산", "SL청산"):
+        if len(row) < 14 or row[9] not in ("TP청산", "SL청산", "TIME_EXIT"):
             continue
         try:
             t = datetime.fromisoformat(row[1].replace("Z", "+00:00")).astimezone(ZoneInfo("America/New_York"))
@@ -4845,7 +4934,12 @@ def _aggregate_trade_stats(trade_rows, start=None, end=None):
         total_trades += 1
         h = hour_stats.setdefault(t.hour, {"tp": 0, "sl": 0})
         d = dow_stats.setdefault(t.weekday(), {"tp": 0, "sl": 0})
-        if row[9] == "TP청산":
+        try:
+            _pnl_for_winloss = float(row[13])
+        except Exception:
+            _pnl_for_winloss = None
+        is_win = (row[9] == "TP청산") or (row[9] == "TIME_EXIT" and _pnl_for_winloss is not None and _pnl_for_winloss > 0)
+        if is_win:
             h["tp"] += 1
             d["tp"] += 1
         else:
@@ -5143,6 +5237,10 @@ async def _hourly_outcome_tracker_loop():
         except Exception as e:
             print(f"❌ [Alpaca거래내역 루프] 오류: {e}")
         try:
+            await asyncio.to_thread(close_stale_positions)
+        except Exception as e:
+            print(f"❌ [강제청산 루프] 오류: {e}")
+        try:
             await asyncio.to_thread(sync_symbol_performance_summary)
         except Exception as e:
             print(f"❌ [종목별성과 루프] 오류: {e}")
@@ -5175,6 +5273,15 @@ async def sync_alpaca_trade_log_endpoint():
     """'Alpaca 거래내역' 탭을 지금 바로 갱신하고 싶을 때 호출 (정기 1시간 루프와 별개)."""
     await asyncio.to_thread(sync_alpaca_trade_log)
     return JSONResponse(content={"status": "done"})
+
+
+@app.post("/close_stale_positions")
+@app.get("/close_stale_positions")
+async def close_stale_positions_endpoint():
+    """STOCK_TIME_EXIT_MINUTES(기본 90분)가 지난 미청산 포지션들을 지금 바로 강제 청산하고 싶을 때 호출
+    (정기 루프와 별개). 'Alpaca 거래내역'이 먼저 최신 상태여야 정확하다."""
+    result = await asyncio.to_thread(close_stale_positions)
+    return JSONResponse(content=result)
 
 
 @app.post("/sync_symbol_performance")
