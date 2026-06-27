@@ -4793,6 +4793,202 @@ def sync_score_bucket_analysis():
         print(f"❌ [점수구간분석] 시트 쓰기 실패: {e}")
 
 
+def generate_weekly_report():
+    """
+    매주 토요일 오전, 지난 1주일 데이터를 종합 분석해서 '주간 리포트' 탭에 리포트를 남긴다.
+    - 시간대별/요일별 승률, TP/SL 합리성, WAIT 놓친기회/방어성공 비율, 점수구간 성과, 종목별 성과는
+      전부 코드로 정확히 집계 (숫자는 GPT가 만들지 않음 — 환각 방지).
+    - 그 집계 결과를 GPT에게 줘서, 패턴 해석과 개선 제안을 자연어 리포트로 작성하게 함.
+    - 코드 레벨 버그 진단까지는 이 자동 리포트로 한계가 있다는 점은 리포트 안에도 명시함.
+    """
+    try:
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
+        client = gspread.authorize(creds)
+        spreadsheet = client.open("민균 FX trading result")
+        main_rows = spreadsheet.sheet1.get_all_values()
+        try:
+            trade_rows = spreadsheet.worksheet("Alpaca 거래내역").get_all_values()
+        except gspread.exceptions.WorksheetNotFound:
+            trade_rows = []
+        try:
+            report_ws = spreadsheet.worksheet("주간 리포트")
+        except gspread.exceptions.WorksheetNotFound:
+            report_ws = spreadsheet.add_worksheet(title="주간 리포트", rows=2000, cols=2)
+            report_ws.append_row(["작성일", "리포트 내용"])
+            print("✅ [주간리포트] 탭이 없어서 새로 생성했습니다.")
+    except Exception as e:
+        print(f"❌ [주간리포트] 시트 연결 실패: {e}")
+        return
+
+    now_ny = datetime.now(ZoneInfo("America/New_York"))
+    week_ago = now_ny - timedelta(days=7)
+
+    # 1) Alpaca 거래내역에서 지난 1주일 거래만 추려서 시간대별/요일별 집계
+    #    헤더: 주문ID,진입시각,종목,방향,점수,수량,진입가,TP가,SL가,상태,청산가,청산시각,보유시간(분),손익($),손익(%),누적손익($)
+    hour_stats = {}   # hour -> {tp, sl}
+    dow_stats = {}    # 요일(0=월) -> {tp, sl}
+    hold_times = []
+    total_trades = 0
+    total_pnl_week = 0.0
+
+    for row in trade_rows[1:]:
+        if len(row) < 14 or row[9] not in ("TP청산", "SL청산"):
+            continue
+        try:
+            t = datetime.fromisoformat(row[1].replace("Z", "+00:00")).astimezone(ZoneInfo("America/New_York"))
+        except Exception:
+            continue
+        if t < week_ago:
+            continue
+        total_trades += 1
+        h = hour_stats.setdefault(t.hour, {"tp": 0, "sl": 0})
+        d = dow_stats.setdefault(t.weekday(), {"tp": 0, "sl": 0})
+        if row[9] == "TP청산":
+            h["tp"] += 1
+            d["tp"] += 1
+        else:
+            h["sl"] += 1
+            d["sl"] += 1
+        try:
+            hold_times.append(float(row[12]))
+        except Exception:
+            pass
+        try:
+            total_pnl_week += float(row[13])
+        except Exception:
+            pass
+
+    hour_table = []
+    for h in sorted(hour_stats):
+        s = hour_stats[h]
+        t = s["tp"] + s["sl"]
+        hour_table.append(f"{h}시: {t}건, 승률 {round(s['tp']/t*100,1)}%" if t else f"{h}시: 0건")
+
+    dow_names = ["월", "화", "수", "목", "금", "토", "일"]
+    dow_table = []
+    for d in sorted(dow_stats):
+        s = dow_stats[d]
+        t = s["tp"] + s["sl"]
+        dow_table.append(f"{dow_names[d]}: {t}건, 승률 {round(s['tp']/t*100,1)}%" if t else f"{dow_names[d]}: 0건")
+
+    avg_hold = round(sum(hold_times) / len(hold_times), 1) if hold_times else "데이터 없음"
+
+    # 2) WAIT인데 결과(result)가 있는 행 → "놓친 기회" vs "방어 성공" 비율 (메인 시트, 지난 1주일)
+    wait_tp, wait_sl = 0, 0
+    for row in main_rows[1:]:
+        if len(row) < 17:
+            continue
+        try:
+            t = datetime.fromisoformat(row[0])
+        except Exception:
+            continue
+        if t < week_ago:
+            continue
+        if row[4] not in ("WAIT",) and not row[4].startswith("SKIPPED"):
+            continue
+        if row[16] == "TP_HIT":
+            wait_tp += 1
+        elif row[16] == "SL_HIT":
+            wait_sl += 1
+
+    # 3) 종목별/점수구간별 요약 텍스트 (이미 있는 탭 데이터 재사용)
+    try:
+        symbol_rows = spreadsheet.worksheet("종목별 성과분석").get_all_values()
+        symbol_summary = "\n".join([",".join(r) for r in symbol_rows[:20]])
+    except Exception:
+        symbol_summary = "데이터 없음"
+
+    try:
+        score_rows = spreadsheet.worksheet("스코어대별 성과분석").get_all_values()
+        score_summary = "\n".join([",".join(r) for r in score_rows])
+    except Exception:
+        score_summary = "데이터 없음"
+
+    stats_summary = f"""
+[지난 7일 거래 통계 — 전부 코드로 정확히 집계된 숫자]
+총 체결 거래: {total_trades}건
+주간 총손익: ${round(total_pnl_week, 2)}
+평균 보유시간: {avg_hold}분
+
+시간대별 승률:
+{chr(10).join(hour_table) if hour_table else "데이터 없음"}
+
+요일별 승률:
+{chr(10).join(dow_table) if dow_table else "데이터 없음"}
+
+WAIT/필터된 신호 중 실제 결과:
+- WAIT/SKIPPED인데 나중에 TP_HIT(놓친 기회): {wait_tp}건
+- WAIT/SKIPPED인데 나중에 SL_HIT(방어 성공): {wait_sl}건
+
+종목별 성과분석 탭(상위 20행):
+{symbol_summary}
+
+점수구간별 성과분석 탭:
+{score_summary}
+"""
+
+    prompt = f"""너는 퀀트 트레이딩 시스템 분석가다. 아래는 지난 7일간 자동매매 시스템의 실제 거래 통계다.
+이 숫자들(이미 정확히 집계된 값, 네가 새로 계산하지 마라)을 바탕으로 한국어 주간 리포트를 작성하라.
+
+{stats_summary}
+
+리포트에 반드시 포함할 것:
+1. 이번 주 전체 요약 (한 줄)
+2. 시간대별/요일별 패턴에서 발견된 것 — 특정 시간/요일이 유난히 안 좋으면 짚어라
+3. TP/SL 비율이 합리적인지 (현재 TP=ATR×0.8, SL=ATR×1.0 고정) — 이번 주 데이터 기준으로 손익분기 승률과 실제 승률 비교
+4. WAIT 판단이 합리적이었는지 — 놓친 기회 vs 방어 성공 비율로 판단
+5. 점수구간별 성과를 보고 threshold를 올리거나 내려야 할지 구체적 제안
+6. 제외를 검토할 만한 종목과 그 이유
+7. 마지막에 명시: "이 리포트는 통계 기반이며, 코드 레벨 버그나 로직 오류 진단은 Claude와 직접 데이터를 보며 논의하는 것을 권장함"
+
+너무 길게 쓰지 말고, 핵심만 명확하게. 마크다운 헤더(##) 써도 된다."""
+
+    try:
+        body = {
+            "model": "gpt-4o-2024-11-20",
+            "input": [{"role": "user", "content": prompt}],
+            "temperature": 0.3,
+            "max_output_tokens": 1800,
+        }
+        r = requests.post(OPENAI_URL, headers=OPENAI_HEADERS, json=body, timeout=60)
+        r.raise_for_status()
+        resp = r.json()
+        report_text = ""
+        for item in resp.get("output", []):
+            for c in item.get("content", []):
+                if c.get("type") == "output_text":
+                    report_text += c.get("text", "")
+        if not report_text:
+            report_text = stats_summary  # GPT 실패 시 최소한 숫자는 남김
+    except Exception as e:
+        print(f"❌ [주간리포트] GPT 호출 실패: {e}")
+        report_text = stats_summary
+
+    try:
+        report_ws.append_row([now_ny.strftime("%Y-%m-%d"), report_text])
+        print(f"✅ [주간리포트] {now_ny.strftime('%Y-%m-%d')} 리포트 작성 완료")
+    except Exception as e:
+        print(f"❌ [주간리포트] 시트 쓰기 실패: {e}")
+
+
+async def _weekly_report_loop():
+    """매주 토요일 오전 9시(ET)에 generate_weekly_report()를 1번 실행."""
+    while True:
+        now_ny = datetime.now(ZoneInfo("America/New_York"))
+        days_until_sat = (5 - now_ny.weekday()) % 7  # weekday(): 월=0 ... 토=5
+        target = (now_ny + timedelta(days=days_until_sat)).replace(hour=9, minute=0, second=0, microsecond=0)
+        if target <= now_ny:
+            target += timedelta(days=7)
+        wait_seconds = (target - now_ny).total_seconds()
+        await asyncio.sleep(wait_seconds)
+        try:
+            await asyncio.to_thread(generate_weekly_report)
+        except Exception as e:
+            print(f"❌ [주간리포트 루프] 오류: {e}")
+        await asyncio.sleep(60)
+
+
 async def _hourly_outcome_tracker_loop():
     """OUTCOME_TRACKER_INTERVAL_MINUTES(기본 30분)마다 evaluate_pending_outcomes(), sync_alpaca_trade_log(),
     sync_symbol_performance_summary(), sync_score_bucket_analysis()를 순서대로 백그라운드 스레드에서 실행."""
@@ -4820,6 +5016,7 @@ async def _hourly_outcome_tracker_loop():
 async def _start_background_tasks():
     asyncio.create_task(_hourly_outcome_tracker_loop())
     asyncio.create_task(_daily_top_movers_loop())
+    asyncio.create_task(_weekly_report_loop())
 
 
 @app.post("/run_outcome_tracker")
@@ -4862,6 +5059,15 @@ async def sync_score_bucket_analysis_endpoint():
     """'스코어대별 성과분석' 탭을 지금 바로 갱신하고 싶을 때 호출 (정기 1시간 루프와 별개).
     'Alpaca 거래내역'이 먼저 갱신돼 있어야 의미 있는 데이터가 나온다."""
     await asyncio.to_thread(sync_score_bucket_analysis)
+    return JSONResponse(content={"status": "done"})
+
+
+@app.post("/generate_weekly_report")
+@app.get("/generate_weekly_report")
+async def generate_weekly_report_endpoint():
+    """'주간 리포트' 탭에 지금 바로 리포트를 1건 작성하고 싶을 때 호출 (정기 토요일 오전 9시 자동 실행과 별개).
+    'Alpaca 거래내역'/'종목별 성과분석'/'스코어대별 성과분석'이 먼저 갱신돼 있어야 의미 있는 리포트가 나온다."""
+    await asyncio.to_thread(generate_weekly_report)
     return JSONResponse(content={"status": "done"})
 
 
