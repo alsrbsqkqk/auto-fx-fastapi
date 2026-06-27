@@ -26,6 +26,13 @@ _gpt_lock = threading.Lock()
 _gpt_last_ts = 0.0
 _gpt_cooldown_until = 0.0
 _gpt_rate_lock = threading.Lock()
+# 🟦 같은 종목 반복신호 감지용 — 1시간 내 같은 종목에서 2번째 신호가 나오면,
+#    그 신호까지는 허용하고 그 다음(3번째)부터는 그 종목만 1시간 쉬게 한다.
+_symbol_signal_lock = threading.Lock()
+_symbol_signal_history = {}   # symbol -> [datetime, ...] (최근 1시간 이내 신호만 유지)
+_symbol_cooldown_until = {}   # symbol -> datetime (이 시각까지 신규진입 차단)
+SYMBOL_REPEAT_WINDOW_MINUTES = int(os.getenv("SYMBOL_REPEAT_WINDOW_MINUTES", "60"))
+SYMBOL_REPEAT_COOLDOWN_MINUTES = int(os.getenv("SYMBOL_REPEAT_COOLDOWN_MINUTES", "60"))
 _gpt_next_slot = 0.0
 _last_execution_time = 0.0  # 마지막 실행 시간을 저장할 변수
 # 🟦 OpenAI Tier 3 기준 gpt-4o 한도가 5,000 RPM이라 20은 너무 낮았음(슬롯 대기가 불필요한 지연의 큰 원인).
@@ -2467,6 +2474,15 @@ def process_webhook_sync(raw: bytes):
         pair_for_order = pair.replace("/", "_")
     
         if is_stock_pair(pair_for_order):
+            # 🟦 같은 종목 반복신호 쿨다운 — 1시간 내 2번째 신호까지는 허용, 3번째부터 그 종목만 1시간 휴식.
+            allowed, reason = check_symbol_repeat_cooldown(pair_for_order)
+            if not allowed:
+                print(f"[SKIP] {reason}")
+                should_execute = False
+            elif reason:
+                print(f"[INFO] {reason}")
+
+        if should_execute and is_stock_pair(pair_for_order):
             # 🟦 주식: FX의 FIFO 완전차단 대신, "가격대별 정상 1회 거래수량의 2배"를
             #    누적 보유 한도로 둔다. 이미 그 한도까지 채워져 있으면 추가 진입 스킵.
             #    (FIFO 완전차단은 NFA 규정상 FX에만 강제되는 룰이라 주식에 그대로 가져올 필요는 없음.
@@ -2481,7 +2497,7 @@ def process_webhook_sync(raw: bytes):
             else:
                 print(f"[OK] {pair_for_order} 기존 보유 {existing_qty}주 + 신규 {intended_qty}주 "
                       f"≤ 한도({max_total_qty}주) → 진입 허용")
-        else:
+        elif should_execute and not is_stock_pair(pair_for_order):
             # ✅ FX: 이미 열린 트레이드가 있으면 신규 진입 스킵 (FIFO 방지, NFA 규정 준수)
             opened, cnt = has_open_trade(pair_for_order)
             if opened:
@@ -3014,6 +3030,33 @@ def fetch_and_score_forex_news(pair):
         message = "❓ 뉴스 확인 실패"
 
     return score, message
+
+def check_symbol_repeat_cooldown(pair: str) -> tuple[bool, str]:
+    """
+    같은 종목이 SYMBOL_REPEAT_WINDOW_MINUTES(기본 60분) 내에 2번째 신호를 내면,
+    그 신호까지는 허용하고 그 다음(3번째)부터는 SYMBOL_REPEAT_COOLDOWN_MINUTES(기본 60분)
+    동안 그 종목만 신규진입을 차단한다. (포트폴리오 전체가 아니라 그 종목만)
+    return: (allowed: bool, reason: str)
+    """
+    now = datetime.now(ZoneInfo("UTC"))
+    with _symbol_signal_lock:
+        cd_until = _symbol_cooldown_until.get(pair)
+        if cd_until and now < cd_until:
+            remaining = (cd_until - now).total_seconds() / 60
+            return False, f"{pair} 반복신호 쿨다운 중 (남은 시간 {remaining:.1f}분)"
+
+        window_start = now - timedelta(minutes=SYMBOL_REPEAT_WINDOW_MINUTES)
+        history = [t for t in _symbol_signal_history.get(pair, []) if t >= window_start]
+        history.append(now)
+        _symbol_signal_history[pair] = history
+
+        if len(history) >= 2:
+            _symbol_cooldown_until[pair] = now + timedelta(minutes=SYMBOL_REPEAT_COOLDOWN_MINUTES)
+            return True, (f"{pair} {SYMBOL_REPEAT_WINDOW_MINUTES}분 내 {len(history)}번째 신호 → 이번엔 허용, "
+                          f"이후 {SYMBOL_REPEAT_COOLDOWN_MINUTES}분간 이 종목만 쉬어감")
+
+    return True, ""
+
 
 def get_alpaca_position_qty(symbol: str) -> float:
     """
