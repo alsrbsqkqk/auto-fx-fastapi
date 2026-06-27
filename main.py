@@ -1947,8 +1947,18 @@ def process_webhook_sync(raw: bytes):
     stoch_rsi_clean = stoch_rsi_series.dropna()
     prev_stoch_rsi = stoch_rsi_clean.iloc[-2] if len(stoch_rsi_clean) >= 2 else 0
     liquidity = estimate_liquidity(candles)
-    news = fetch_forex_news()
-    news_score, news_msg = news_risk_score(pair)
+    # 🟦 버그 수정: 예전엔 fetch_forex_news()(포렉스팩토리 홈페이지를 단순 스크래핑, 거의 항상
+    #    고정값만 반환)를 모든 자산에 공통으로 썼고, 주식은 filter_relevant_news가 항상 []을 반환해서
+    #    뉴스 체크가 사실상 아무 의미가 없었음(항상 "영향 적음"만 나옴).
+    #    주식은 Alpaca News API로 그 종목의 실제 최근 뉴스를 확인하고, FX는 기존 경제캘린더 기반을 유지.
+    if is_stock_pair(pair):
+        news_score, news_msg, news_headlines = get_stock_news_risk(pair)
+        if news_headlines:
+            news_msg += " — " + " / ".join(news_headlines[:2])
+        news = news_msg
+    else:
+        news_score, news_msg = news_risk_score(pair)
+        news = news_msg
     high_low_analysis = analyze_highs_lows(candles)
     atr = float(atr_series.dropna().iloc[-1]) if not atr_series.dropna().empty else 0.0
     fibo_levels = calculate_fibonacci_levels(candles["high"].max(), candles["low"].min())
@@ -2079,7 +2089,7 @@ def process_webhook_sync(raw: bytes):
         "distance_to_resistance_pips": distance_to_resistance_pips,
         "breakout_context": breakout_context,
         "structure_context": structure_context,
-        "news": f"{news} | {news_msg}",
+        "news": news_msg,
         "new_high": bool(high_low_analysis["new_high"]),
         "new_low": bool(high_low_analysis["new_low"]),
         "atr": atr,
@@ -2953,6 +2963,47 @@ def fetch_news_events():
             "published": entry.published,
         })
     return events
+
+def get_stock_news_risk(symbol, within_minutes=90):
+    """
+    Alpaca News API(GET /v1beta1/news)로 해당 종목의 최근 뉴스를 실제로 확인한다.
+    (이전엔 주식은 뉴스 체크 자체를 안 하고 항상 '영향 없음'으로 고정돼있었음)
+    return: (score, message, headlines)
+    """
+    try:
+        end = datetime.now(ZoneInfo("UTC"))
+        start = end - timedelta(minutes=within_minutes)
+        url = "https://data.alpaca.markets/v1beta1/news"
+        params = {
+            "symbols": symbol,
+            "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "end": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "limit": 10,
+        }
+        r = requests.get(url, headers=ALPACA_HEADERS, params=params, timeout=10)
+        r.raise_for_status()
+        articles = r.json().get("news", [])
+    except Exception as e:
+        print(f"❗ [뉴스] {symbol} Alpaca News API 조회 실패: {e}")
+        return 0, "❓ 뉴스 확인 실패", []
+
+    if not articles:
+        return 0, f"🟢 최근 {within_minutes}분 내 뉴스 없음", []
+
+    headlines = [a.get("headline", "") for a in articles[:3]]
+    try:
+        recent_time = datetime.fromisoformat(articles[0]["created_at"].replace("Z", "+00:00"))
+        minutes_ago = (end - recent_time).total_seconds() / 60
+    except Exception:
+        minutes_ago = within_minutes
+
+    # 🟦 뉴스 자체가 나쁜 건 아니다(진짜 호재 뉴스로 돌파가 나올 수도 있음) — 점수는 약하게만 반영하고,
+    #    "이 돌파가 뉴스發일 수 있다"는 맥락을 GPT/로그에 보여주는 게 핵심 목적.
+    if minutes_ago <= 15:
+        return -1, f"⚠️ {symbol} 뉴스 직후({minutes_ago:.0f}분 전, {len(articles)}건) — 뉴스 주도 변동 가능성", headlines
+    else:
+        return 0, f"🟡 {symbol} 최근 {within_minutes}분 내 뉴스 {len(articles)}건", headlines
+
 
 def filter_relevant_news(pair, within_minutes=90):
     # 🟦 주식은 "통화코드" 개념이 없어서(ForexFactory류 경제지표 뉴스는 FX 전용) 매칭 대상이 없음.
