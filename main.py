@@ -2128,6 +2128,7 @@ def process_webhook_sync(raw: bytes):
     print(f"[DEBUG] strategy_name={strategy_name}, threshold={threshold}, score={signal_score}")
     gpt_feedback = "GPT 분석 생략: 점수 미달"
     decision, tp, sl = None, None, None  
+    wait_confidence = None
     final_decision, final_tp, final_sl = None, None, None
     gpt_raw = None
     raw_text = ""  # ✅ 조건문 전에 미리 초기화
@@ -2274,7 +2275,9 @@ def process_webhook_sync(raw: bytes):
     
     # 📌 outcome_analysis 및 suggestion 기본값 세팅
     outcome_analysis = "WAIT 또는 주문 미실행"
-    adjustment_suggestion = ""
+    # 🟦 WAIT일 때 GPT가 보고한 wait_confidence를 같이 남겨둔다 (나중에 "GPT가 80 이상이라고 한
+    #    WAIT들이 진짜로 맞았는지" 보정/검증 분석에 쓰임).
+    adjustment_suggestion = f"wait_confidence={wait_confidence}" if final_decision == "WAIT" and wait_confidence is not None else ""
     price_movements = None
     gpt_feedback_dup = None
     filtered_movement = None
@@ -2352,22 +2355,45 @@ def process_webhook_sync(raw: bytes):
     # 🟦 주식 신호는 TradingView Pine 전략("BUY STOCK PORTFOLIO A2")과 TP/SL을 강제로 일치시킨다.
     #    GPT가 무엇을 계산했든(또는 위 폴백이 무엇을 계산했든) 여기서 최종적으로 덮어써서,
     #    Pine: longTP = close + ATR*tpATR, longSL = close - ATR*slATR 와 100% 동일하게 만든다.
-    if is_stock_pair(pair) and final_decision in ("BUY", "SELL") and price is not None and atr is not None:
+    #    🟦 WAIT인 경우에도 "원래 신호 방향대로 들어갔다면 TP/SL이 얼마였을지"를 계산해서 시트에는
+    #       남긴다(실제 주문은 안 나간다 — 주문 실행 여부는 final_decision/should_execute로만 결정됨).
+    #       이게 없으면 WAIT 행은 시트에 TP/SL이 항상 빈칸으로 남아서, 나중에 결과추적이
+    #       "WAIT 했는데 실제로 TP/SL 중 뭐가 먼저 닿았을지"를 평가할 수가 없었다.
+    _calc_direction = final_decision if final_decision in ("BUY", "SELL") else (signal if signal in ("BUY", "SELL") else None)
+    if is_stock_pair(pair) and _calc_direction and price is not None and atr is not None:
         _stock_atr = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr)
         if _stock_atr and _stock_atr > 0:
             _digits = price_round_digits(pair)
-            if final_decision == "BUY":
-                final_tp = round(price + _stock_atr * STOCK_TP_ATR_MULT, _digits)
-                final_sl = round(price - _stock_atr * STOCK_SL_ATR_MULT, _digits)
+            if _calc_direction == "BUY":
+                _hyp_tp = round(price + _stock_atr * STOCK_TP_ATR_MULT, _digits)
+                _hyp_sl = round(price - _stock_atr * STOCK_SL_ATR_MULT, _digits)
             else:  # SELL
-                final_tp = round(price - _stock_atr * STOCK_TP_ATR_MULT, _digits)
-                final_sl = round(price + _stock_atr * STOCK_SL_ATR_MULT, _digits)
-            tp, sl = final_tp, final_sl  # 아래 검증 블록이 참조하는 tp/sl도 동기화
-            gpt_feedback += (
-                f"\n🟦 주식 TP/SL을 Pine 전략 공식으로 강제 재계산: "
-                f"TP=entry±ATR*{STOCK_TP_ATR_MULT}, SL=entry∓ATR*{STOCK_SL_ATR_MULT} "
-                f"(ATR={_stock_atr:.4f}) → TP={final_tp}, SL={final_sl}"
-            )
+                _hyp_tp = round(price - _stock_atr * STOCK_TP_ATR_MULT, _digits)
+                _hyp_sl = round(price + _stock_atr * STOCK_SL_ATR_MULT, _digits)
+
+            if final_decision in ("BUY", "SELL"):
+                # 실제 체결 방향 — 기존과 동일하게 final_tp/final_sl/tp/sl 전부 갱신
+                final_tp, final_sl = _hyp_tp, _hyp_sl
+                tp, sl = final_tp, final_sl  # 아래 검증 블록이 참조하는 tp/sl도 동기화
+                gpt_feedback += (
+                    f"\n🟦 주식 TP/SL을 Pine 전략 공식으로 강제 재계산: "
+                    f"TP=entry±ATR*{STOCK_TP_ATR_MULT}, SL=entry∓ATR*{STOCK_SL_ATR_MULT} "
+                    f"(ATR={_stock_atr:.4f}) → TP={final_tp}, SL={final_sl}"
+                )
+                # 🟦 log_trade_result()가 이 재계산보다 먼저 호출돼서, GPT가 보고한 값이 공식과
+                #    미묘하게 다른 드문 경우엔 시트에 그 (틀린) 값이 남을 수 있다. 사후 보정으로 확정.
+                correct_sheet_trade_prices(sheet_row_idx, current_price, final_tp, final_sl)
+            else:
+                # WAIT — 실제 final_tp/final_sl(None)은 그대로 두고(주문 로직에 영향 없게),
+                # 시트에는 사후보정으로 가상의 TP/SL을 채워넣는다.
+                gpt_feedback += (
+                    f"\n🟦 [평가용] WAIT이지만 원래 방향({_calc_direction})대로 들어갔다면: "
+                    f"TP={_hyp_tp}, SL={_hyp_sl} (ATR={_stock_atr:.4f}) — 실제 주문은 안 나감"
+                )
+                # 🟦 log_trade_result()는 이미 위(line~2285)에서 이 값들 계산 전에 호출돼서
+                #    시트에 price/tp/sl이 빈칸으로 박혀있다. 같은 행을 사후 보정해서 채워넣는다.
+                #    (price는 로그 당시와 동일한 값을 그대로 다시 써서 다른 컬럼은 안 건드림)
+                correct_sheet_trade_prices(sheet_row_idx, current_price, _hyp_tp, _hyp_sl)
 
     # ✅ 여기서부터 검증 블록 삽입 (FX는 기존과 동일하게 tp/sl 기준으로 계산)
     pip = pip_value_for(pair)
@@ -4793,44 +4819,17 @@ def sync_score_bucket_analysis():
         print(f"❌ [점수구간분석] 시트 쓰기 실패: {e}")
 
 
-def generate_weekly_report():
+def _aggregate_trade_stats(trade_rows, start=None, end=None):
     """
-    매주 토요일 오전, 지난 1주일 데이터를 종합 분석해서 '주간 리포트' 탭에 리포트를 남긴다.
-    - 시간대별/요일별 승률, TP/SL 합리성, WAIT 놓친기회/방어성공 비율, 점수구간 성과, 종목별 성과는
-      전부 코드로 정확히 집계 (숫자는 GPT가 만들지 않음 — 환각 방지).
-    - 그 집계 결과를 GPT에게 줘서, 패턴 해석과 개선 제안을 자연어 리포트로 작성하게 함.
-    - 코드 레벨 버그 진단까지는 이 자동 리포트로 한계가 있다는 점은 리포트 안에도 명시함.
+    'Alpaca 거래내역' 행들을 [start, end) 구간으로 필터링해서 통계 집계.
+    start/end가 둘 다 None이면 전체 기간(누적) 집계.
+    헤더: 주문ID,진입시각,종목,방향,점수,수량,진입가,TP가,SL가,상태,청산가,청산시각,보유시간(분),손익($),손익(%),누적손익($)
     """
-    try:
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
-        client = gspread.authorize(creds)
-        spreadsheet = client.open("민균 FX trading result")
-        main_rows = spreadsheet.sheet1.get_all_values()
-        try:
-            trade_rows = spreadsheet.worksheet("Alpaca 거래내역").get_all_values()
-        except gspread.exceptions.WorksheetNotFound:
-            trade_rows = []
-        try:
-            report_ws = spreadsheet.worksheet("주간 리포트")
-        except gspread.exceptions.WorksheetNotFound:
-            report_ws = spreadsheet.add_worksheet(title="주간 리포트", rows=2000, cols=2)
-            report_ws.append_row(["작성일", "리포트 내용"])
-            print("✅ [주간리포트] 탭이 없어서 새로 생성했습니다.")
-    except Exception as e:
-        print(f"❌ [주간리포트] 시트 연결 실패: {e}")
-        return
-
-    now_ny = datetime.now(ZoneInfo("America/New_York"))
-    week_ago = now_ny - timedelta(days=7)
-
-    # 1) Alpaca 거래내역에서 지난 1주일 거래만 추려서 시간대별/요일별 집계
-    #    헤더: 주문ID,진입시각,종목,방향,점수,수량,진입가,TP가,SL가,상태,청산가,청산시각,보유시간(분),손익($),손익(%),누적손익($)
-    hour_stats = {}   # hour -> {tp, sl}
-    dow_stats = {}    # 요일(0=월) -> {tp, sl}
-    hold_times = []
+    hour_stats, dow_stats = {}, {}
+    hold_times, risk_amounts, pnl_list = [], [], []
     total_trades = 0
-    total_pnl_week = 0.0
+    total_pnl = 0.0
+    intervals = []  # (entry_dt, exit_dt) — 동시노출 계산용
 
     for row in trade_rows[1:]:
         if len(row) < 14 or row[9] not in ("TP청산", "SL청산"):
@@ -4839,7 +4838,9 @@ def generate_weekly_report():
             t = datetime.fromisoformat(row[1].replace("Z", "+00:00")).astimezone(ZoneInfo("America/New_York"))
         except Exception:
             continue
-        if t < week_ago:
+        if start and t < start:
+            continue
+        if end and t >= end:
             continue
         total_trades += 1
         h = hour_stats.setdefault(t.hour, {"tp": 0, "sl": 0})
@@ -4855,71 +4856,146 @@ def generate_weekly_report():
         except Exception:
             pass
         try:
-            total_pnl_week += float(row[13])
+            pnl = float(row[13])
+            pnl_list.append(pnl)
+            total_pnl += pnl
+        except Exception:
+            pass
+        # R-멀티플 계산용 리스크 금액 = |진입가-SL가| × 수량
+        try:
+            entry_p, sl_p, qty = float(row[6]), float(row[8]), float(row[5])
+            risk_amounts.append(abs(entry_p - sl_p) * qty)
+        except Exception:
+            pass
+        # 동시노출 계산용 (진입~청산 구간)
+        try:
+            exit_t = datetime.fromisoformat(row[11].replace("Z", "+00:00")).astimezone(ZoneInfo("America/New_York"))
+            intervals.append((t, exit_t))
         except Exception:
             pass
 
-    hour_table = []
+    hour_table, dow_table = [], []
     for h in sorted(hour_stats):
         s = hour_stats[h]
         t = s["tp"] + s["sl"]
         hour_table.append(f"{h}시: {t}건, 승률 {round(s['tp']/t*100,1)}%" if t else f"{h}시: 0건")
-
     dow_names = ["월", "화", "수", "목", "금", "토", "일"]
-    dow_table = []
     for d in sorted(dow_stats):
         s = dow_stats[d]
         t = s["tp"] + s["sl"]
         dow_table.append(f"{dow_names[d]}: {t}건, 승률 {round(s['tp']/t*100,1)}%" if t else f"{dow_names[d]}: 0건")
 
-    avg_hold = round(sum(hold_times) / len(hold_times), 1) if hold_times else "데이터 없음"
+    avg_hold = round(sum(hold_times) / len(hold_times), 1) if hold_times else None
+    win_rate = None
+    tp_total = sum(s["tp"] for s in hour_stats.values())
+    sl_total = sum(s["sl"] for s in hour_stats.values())
+    if tp_total + sl_total > 0:
+        win_rate = round(tp_total / (tp_total + sl_total) * 100, 1)
 
-    # 2) WAIT인데 결과(result)가 있는 행 → "놓친 기회" vs "방어 성공" 비율 (메인 시트, 지난 1주일)
+    # 🟦 R-멀티플(기대값): 각 거래의 pnl을 그 거래의 리스크금액(R)으로 나눈 평균.
+    #    "승률"만으로는 못 보이는 손익비 효율을 같이 보기 위함.
+    avg_risk = sum(risk_amounts) / len(risk_amounts) if risk_amounts else None
+    expectancy_r = None
+    if avg_risk and avg_risk > 0 and pnl_list:
+        expectancy_r = round(sum(p / avg_risk for p in pnl_list) / len(pnl_list), 3)
+
+    # 🟦 동시노출: 같은 시각에 동시에 열려있던 포지션 수의 최댓값 (스윕 라인 방식)
+    max_concurrent = 0
+    if intervals:
+        events = []
+        for s, e in intervals:
+            events.append((s, 1))
+            events.append((e, -1))
+        events.sort()
+        cur = 0
+        for _, delta in events:
+            cur += delta
+            max_concurrent = max(max_concurrent, cur)
+
+    return {
+        "total_trades": total_trades,
+        "total_pnl": round(total_pnl, 2),
+        "avg_hold": avg_hold,
+        "hour_table": hour_table,
+        "dow_table": dow_table,
+        "win_rate": win_rate,
+        "expectancy_r": expectancy_r,
+        "max_concurrent": max_concurrent,
+    }
+
+
+def _aggregate_wait_calibration(main_rows, start=None, end=None):
+    """
+    메인 시트에서 WAIT 행들의 실제 결과(TP_HIT=놓친기회 / SL_HIT=방어성공)와,
+    GPT가 보고한 wait_confidence(adjustment_suggestion 컬럼에 'wait_confidence=NN' 형식으로 저장됨)를
+    같이 봐서 "GPT가 80 이상이라고 한 WAIT들이 실제로 맞았는지" 보정 정확도를 계산.
+    """
     wait_tp, wait_sl = 0, 0
+    conf_high_correct, conf_high_wrong = 0, 0  # confidence>=80인데 실제로 맞았는지/틀렸는지
     for row in main_rows[1:]:
-        if len(row) < 17:
+        if len(row) < 35:
             continue
         try:
             t = datetime.fromisoformat(row[0])
         except Exception:
             continue
-        if t < week_ago:
+        if start and t < start:
             continue
-        if row[4] not in ("WAIT",) and not row[4].startswith("SKIPPED"):
+        if end and t >= end:
             continue
-        if row[16] == "TP_HIT":
+        if row[4] != "WAIT" and not row[4].startswith("SKIPPED"):
+            continue
+        result = row[16] if len(row) > 16 else ""
+        if result == "TP_HIT":
             wait_tp += 1
-        elif row[16] == "SL_HIT":
+        elif result == "SL_HIT":
             wait_sl += 1
+        else:
+            continue
 
-    # 3) 종목별/점수구간별 요약 텍스트 (이미 있는 탭 데이터 재사용)
-    try:
-        symbol_rows = spreadsheet.worksheet("종목별 성과분석").get_all_values()
-        symbol_summary = "\n".join([",".join(r) for r in symbol_rows[:20]])
-    except Exception:
-        symbol_summary = "데이터 없음"
+        adj = row[34] if len(row) > 34 else ""
+        if adj.startswith("wait_confidence="):
+            try:
+                conf = float(adj.split("=")[1])
+            except Exception:
+                conf = None
+            if conf is not None and conf >= 80:
+                if result == "SL_HIT":  # WAIT이 맞았음(실패를 예측했고 실제로 실패함)
+                    conf_high_correct += 1
+                else:  # TP_HIT인데도 WAIT함 → 확신도는 높았지만 틀림(기회를 놓침)
+                    conf_high_wrong += 1
 
-    try:
-        score_rows = spreadsheet.worksheet("스코어대별 성과분석").get_all_values()
-        score_summary = "\n".join([",".join(r) for r in score_rows])
-    except Exception:
-        score_summary = "데이터 없음"
+    return {
+        "wait_tp": wait_tp, "wait_sl": wait_sl,
+        "conf_high_correct": conf_high_correct, "conf_high_wrong": conf_high_wrong,
+    }
 
-    stats_summary = f"""
-[지난 7일 거래 통계 — 전부 코드로 정확히 집계된 숫자]
-총 체결 거래: {total_trades}건
-주간 총손익: ${round(total_pnl_week, 2)}
-평균 보유시간: {avg_hold}분
+
+def _build_stats_text(label, trade_stats, wait_stats, symbol_summary, score_summary):
+    breakeven_wr = round(1 / (1 + STOCK_TP_ATR_MULT / STOCK_SL_ATR_MULT) * 100, 1)
+    wait_total = wait_stats["wait_tp"] + wait_stats["wait_sl"]
+    conf_total = wait_stats["conf_high_correct"] + wait_stats["conf_high_wrong"]
+    conf_acc = round(wait_stats["conf_high_correct"] / conf_total * 100, 1) if conf_total else None
+
+    return f"""
+[{label} 거래 통계 — 전부 코드로 정확히 집계된 숫자, 환각 없음]
+총 체결 거래: {trade_stats['total_trades']}건
+총손익: ${trade_stats['total_pnl']}
+평균 보유시간: {trade_stats['avg_hold']}분
+전체 승률: {trade_stats['win_rate']}% (TP/SL 비율 0.8:1.0 기준 손익분기 승률 {breakeven_wr}%)
+기대값(R-멀티플, 거래당 평균): {trade_stats['expectancy_r']}  (0보다 크면 장기적으로 이익 구조)
+최대 동시노출 포지션 수: {trade_stats['max_concurrent']}건
 
 시간대별 승률:
-{chr(10).join(hour_table) if hour_table else "데이터 없음"}
+{chr(10).join(trade_stats['hour_table']) if trade_stats['hour_table'] else "데이터 없음"}
 
 요일별 승률:
-{chr(10).join(dow_table) if dow_table else "데이터 없음"}
+{chr(10).join(trade_stats['dow_table']) if trade_stats['dow_table'] else "데이터 없음"}
 
-WAIT/필터된 신호 중 실제 결과:
-- WAIT/SKIPPED인데 나중에 TP_HIT(놓친 기회): {wait_tp}건
-- WAIT/SKIPPED인데 나중에 SL_HIT(방어 성공): {wait_sl}건
+WAIT/필터된 신호 중 실제 결과 ({wait_total}건 평가됨):
+- 놓친 기회(WAIT했는데 TP_HIT): {wait_stats['wait_tp']}건
+- 방어 성공(WAIT했는데 SL_HIT): {wait_stats['wait_sl']}건
+- GPT가 wait_confidence 80 이상이라고 보고한 것 중 실제 정확도: {conf_acc}% ({conf_total}건 중 {wait_stats['conf_high_correct']}건 맞음)
 
 종목별 성과분석 탭(상위 20행):
 {symbol_summary}
@@ -4928,22 +5004,25 @@ WAIT/필터된 신호 중 실제 결과:
 {score_summary}
 """
 
-    prompt = f"""너는 퀀트 트레이딩 시스템 분석가다. 아래는 지난 7일간 자동매매 시스템의 실제 거래 통계다.
-이 숫자들(이미 정확히 집계된 값, 네가 새로 계산하지 마라)을 바탕으로 한국어 주간 리포트를 작성하라.
 
-{stats_summary}
+def _ask_gpt_for_report(stats_text, period_label):
+    prompt = f"""너는 퀀트 트레이딩 시스템 분석가다. 아래는 {period_label} 자동매매 시스템의 실제 거래 통계다.
+이 숫자들(이미 정확히 집계된 값, 네가 새로 계산하지 마라)을 바탕으로 한국어 리포트를 작성하라.
+
+{stats_text}
 
 리포트에 반드시 포함할 것:
-1. 이번 주 전체 요약 (한 줄)
+1. 전체 요약 (한 줄)
 2. 시간대별/요일별 패턴에서 발견된 것 — 특정 시간/요일이 유난히 안 좋으면 짚어라
-3. TP/SL 비율이 합리적인지 (현재 TP=ATR×0.8, SL=ATR×1.0 고정) — 이번 주 데이터 기준으로 손익분기 승률과 실제 승률 비교
-4. WAIT 판단이 합리적이었는지 — 놓친 기회 vs 방어 성공 비율로 판단
-5. 점수구간별 성과를 보고 threshold를 올리거나 내려야 할지 구체적 제안
-6. 제외를 검토할 만한 종목과 그 이유
-7. 마지막에 명시: "이 리포트는 통계 기반이며, 코드 레벨 버그나 로직 오류 진단은 Claude와 직접 데이터를 보며 논의하는 것을 권장함"
+3. TP/SL 비율(0.8:1.0)이 손익분기 승률과 실제 승률 대비 합리적인지, 기대값(R-멀티플)도 같이 평가
+4. WAIT 판단이 합리적이었는지 — 놓친 기회 vs 방어 성공 비율 + GPT 확신도 보정 정확도로 판단
+   (확신도 보정 정확도가 낮으면 "GPT가 자신감만 높고 실제로는 못 맞춘다"는 뜻이니 명확히 짚어라)
+5. 최대 동시노출 포지션 수가 리스크 관리 관점에서 괜찮은지
+6. 점수구간별 성과를 보고 threshold를 올리거나 내려야 할지 구체적 제안
+7. 제외를 검토할 만한 종목과 그 이유
+8. 마지막에 명시: "이 리포트는 통계 기반이며, 코드 레벨 버그나 로직 오류 진단은 Claude와 직접 데이터를 보며 논의하는 것을 권장함"
 
 너무 길게 쓰지 말고, 핵심만 명확하게. 마크다운 헤더(##) 써도 된다."""
-
     try:
         body = {
             "model": "gpt-4o-2024-11-20",
@@ -4959,14 +5038,76 @@ WAIT/필터된 신호 중 실제 결과:
             for c in item.get("content", []):
                 if c.get("type") == "output_text":
                     report_text += c.get("text", "")
-        if not report_text:
-            report_text = stats_summary  # GPT 실패 시 최소한 숫자는 남김
+        return report_text or stats_text
     except Exception as e:
-        print(f"❌ [주간리포트] GPT 호출 실패: {e}")
-        report_text = stats_summary
+        print(f"❌ [리포트] GPT 호출 실패: {e}")
+        return stats_text
+
+
+def generate_weekly_report():
+    """
+    매주 토요일 오전, "이번 주(월~금)" 데이터 + "전체 누적" 데이터를 종합 분석해서
+    '주간 리포트' 탭에 한 행(이번 주 분석 | 누적 분석)으로 남긴다.
+    - 시간대별/요일별 승률, TP/SL 합리성(손익분기 대비), 기대값(R-멀티플), WAIT 놓친기회/방어성공 비율,
+      WAIT 확신도 보정 정확도, 최대 동시노출, 점수구간/종목별 성과 — 전부 코드로 정확히 집계.
+    - 그 집계 결과를 GPT에게 줘서 자연어 리포트로 작성하게 함.
+    - 코드 레벨 버그 진단까지는 이 자동 리포트로 한계가 있다는 점은 리포트 안에도 명시함.
+    """
+    try:
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
+        client = gspread.authorize(creds)
+        spreadsheet = client.open("민균 FX trading result")
+        main_rows = spreadsheet.sheet1.get_all_values()
+        try:
+            trade_rows = spreadsheet.worksheet("Alpaca 거래내역").get_all_values()
+        except gspread.exceptions.WorksheetNotFound:
+            trade_rows = []
+        try:
+            report_ws = spreadsheet.worksheet("주간 리포트")
+            header = report_ws.row_values(1)
+            if header[:3] != ["작성일", "이번 주 분석", "누적 분석"]:
+                report_ws.update_cell(1, 1, "작성일")
+                report_ws.update_cell(1, 2, "이번 주 분석")
+                report_ws.update_cell(1, 3, "누적 분석")
+        except gspread.exceptions.WorksheetNotFound:
+            report_ws = spreadsheet.add_worksheet(title="주간 리포트", rows=2000, cols=3)
+            report_ws.append_row(["작성일", "이번 주 분석", "누적 분석"])
+            print("✅ [주간리포트] 탭이 없어서 새로 생성했습니다.")
+    except Exception as e:
+        print(f"❌ [주간리포트] 시트 연결 실패: {e}")
+        return
+
+    now_ny = datetime.now(ZoneInfo("America/New_York"))
+    # 🟦 "이번 주"를 롤링 7일이 아니라 이번 주의 월요일 00:00 ~ 금요일 24:00(=토요일 00:00 직전)로 한정.
+    monday = (now_ny - timedelta(days=now_ny.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start, week_end = monday, monday + timedelta(days=5)
 
     try:
-        report_ws.append_row([now_ny.strftime("%Y-%m-%d"), report_text])
+        symbol_rows = spreadsheet.worksheet("종목별 성과분석").get_all_values()
+        symbol_summary = "\n".join([",".join(r) for r in symbol_rows[:20]])
+    except Exception:
+        symbol_summary = "데이터 없음"
+    try:
+        score_rows = spreadsheet.worksheet("스코어대별 성과분석").get_all_values()
+        score_summary = "\n".join([",".join(r) for r in score_rows])
+    except Exception:
+        score_summary = "데이터 없음"
+
+    # 1) 이번 주(월~금) 분석
+    week_trade_stats = _aggregate_trade_stats(trade_rows, week_start, week_end)
+    week_wait_stats = _aggregate_wait_calibration(main_rows, week_start, week_end)
+    week_stats_text = _build_stats_text("이번 주(월~금)", week_trade_stats, week_wait_stats, symbol_summary, score_summary)
+    week_report = _ask_gpt_for_report(week_stats_text, f"{week_start.strftime('%Y-%m-%d')}~{(week_end-timedelta(days=1)).strftime('%Y-%m-%d')}(월~금)")
+
+    # 2) 전체 누적 분석 (기간 제한 없음)
+    cum_trade_stats = _aggregate_trade_stats(trade_rows, None, None)
+    cum_wait_stats = _aggregate_wait_calibration(main_rows, None, None)
+    cum_stats_text = _build_stats_text("전체 누적", cum_trade_stats, cum_wait_stats, symbol_summary, score_summary)
+    cum_report = _ask_gpt_for_report(cum_stats_text, "데이터 수집 시작 이후 전체 누적")
+
+    try:
+        report_ws.append_row([now_ny.strftime("%Y-%m-%d"), week_report, cum_report])
         print(f"✅ [주간리포트] {now_ny.strftime('%Y-%m-%d')} 리포트 작성 완료")
     except Exception as e:
         print(f"❌ [주간리포트] 시트 쓰기 실패: {e}")
