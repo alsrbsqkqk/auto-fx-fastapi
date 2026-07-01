@@ -2124,7 +2124,7 @@ def process_webhook_sync(raw: bytes):
     "SELL_ENTRY_BAR_CLOSE": -7.0,
     "기본알림": 3.0,
     "Test Alarm": 0.0,
-    "BUY_STOCK_PORTFOLIO_A2": -2.0
+    "BUY_STOCK_PORTFOLIO_A2": -2.5
     }
 
     alert_data = payload.get("alert_data", {})
@@ -2142,7 +2142,7 @@ def process_webhook_sync(raw: bytes):
     # 🟦 Pine 쪽 alert()는 안 건드리고, 주식 신호인데 strategy_name이 따로 안 와서
     #    "기본알림"(FX 기준 3.0)으로 떨어진 경우만 주식 전용 threshold로 바꿔준다.
     if is_stock_pair(pair) and strategy_name == "기본알림":
-        threshold = strategy_thresholds.get("BUY_STOCK_PORTFOLIO_A2", -2.0)
+        threshold = strategy_thresholds.get("BUY_STOCK_PORTFOLIO_A2", -2.5)
 
     print(f"[DEBUG] strategy_name={strategy_name}, threshold={threshold}, score={signal_score}")
     gpt_feedback = "GPT 분석 생략: 점수 미달"
@@ -2457,15 +2457,30 @@ def process_webhook_sync(raw: bytes):
             )
             should_execute = False
     
-    # 2-1️⃣ 주식 전용: 장마감 임박 시간대 신규 진입 차단
-    #    이 전략은 1~2시간 내 청산을 목표로 하는데, 장마감(16:00 ET) 직전에 들어가면
-    #    실현될 시간이 부족하고, 더 심각하게는 그날 안에 TP/SL이 안 닿으면(이제 GTC로 바꿨지만
-    #    그래도) 청산 안 된 포지션이 다음날까지 시장 노출을 떠안게 된다.
+    # 2-1️⃣ 주식 전용: 장마감 임박 시간대 신규 진입 차단 (15시 이후)
     if should_execute and is_stock_pair(pair):
         _ny_hour = datetime.now(ZoneInfo("America/New_York")).hour
         if _ny_hour >= STOCK_ENTRY_CUTOFF_HOUR:
             reasons.append(
                 f"❌ 장마감 임박({_ny_hour}시 ≥ 컷오프 {STOCK_ENTRY_CUTOFF_HOUR}시) → 신규 진입 차단"
+            )
+            should_execute = False
+
+    # 2-2️⃣ 주식 전용: 점심 변동성 저하 구간 차단 (12~14시 ET)
+    #    데이터 분석 결과:
+    #    - 12시: 승률 46.7%, -$311, SL 평균보유 391분 (가장 위험)
+    #    - 13시: 승률 37.5%, -$142, SL 평균보유 396분 (두 번째로 위험)
+    #    - 14시: 승률 50.0%,  -$54, 상대적으로 덜하지만 여전히 손실
+    #    이 시간대는 "점심 변동성 저하(Lunch Lull)" 구간으로, 오전 모멘텀이 이미 소진됐는데
+    #    Pine이 고점에서 "최근 3봉 고점 돌파" 조건을 계속 충족시켜 알림을 보내는 오탐이 많음.
+    #    90분 이상 물리는 거래의 8/9건이 이 구간 진입이었음.
+    if should_execute and is_stock_pair(pair):
+        _ny_hour = datetime.now(ZoneInfo("America/New_York")).hour
+        _block_start = int(os.getenv("STOCK_BLOCK_HOUR_START", "12"))
+        _block_end = int(os.getenv("STOCK_BLOCK_HOUR_END", "15"))
+        if _block_start <= _ny_hour < _block_end:
+            reasons.append(
+                f"❌ 점심 변동성 저하 구간({_ny_hour}시, {_block_start}~{_block_end}시 ET 차단) → 신규 진입 차단"
             )
             should_execute = False
 
@@ -3218,18 +3233,15 @@ def get_alpaca_account_equity():
 
 def get_tiered_qty(price: float) -> int:
     """
-    가격대별 고정 수량표
-    목표: 한 거래당 약 $3,000 이하
-
-    $1000 이상 : 2주
-    $500~999   : 4주
-    $300~499   : 7주
-    $200~299   : 10주
-    $100~199   : 15주
-    $50~99     : 30주
-    $50 미만   : 60주
+    가격대별 고정 수량표 (목표: 한 거래당 약 $3,000 이하)
+    $1000 이상   : 2주
+    $500~999     : 4주
+    $300~499     : 7주
+    $200~299     : 10주
+    $100~199     : 15주
+    $50~99       : 30주
+    $50 미만      : 60주
     """
-
     if price >= 1000:
         return 2
     elif price >= 500:
@@ -3299,7 +3311,7 @@ def get_alpaca_fill_status(symbol, after_iso):
     못 찾으면 (False, None, None, None) — 보수적으로 "아직 체결 안 됨"으로 취급.
     """
     url = f"{ALPACA_TRADE_BASE_URL}/v2/orders"
-    params = {"symbols": symbol, "status": "all", "after": after_iso, "limit": 20, "direction": "asc"}
+    params = {"symbols": symbol, "status": "all", "after": after_iso, "limit": 50, "direction": "asc"}
     try:
         r = requests.get(url, headers=ALPACA_HEADERS, params=params, timeout=10)
         r.raise_for_status()
@@ -4343,6 +4355,12 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
         if result_col not in ("", "미정"):
             continue  # 이미 평가됨
 
+        # 🟦 decision이 SKIPPED_BY_THRESHOLD이거나 "미실행"으로 표시된 행은
+        #    실제 거래가 안 들어간 것이라 TP/SL 판정 대상이 아님 (NOT_FILLED 오탐 방지).
+        #    WAIT은 "가상 TP/SL"로 평가하도록 허용(의도된 설계).
+        if decision_text in ("SKIPPED_BY_THRESHOLD",):
+            continue
+
         try:
             price_f = float(price_s)
             tp_f = float(tp_s)
@@ -4365,6 +4383,7 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
         # 🟦 거래 수량 — FX는 고정 100,000 units, 주식은 Alpaca 실제 체결 수량을 그대로 사용.
         #    이게 없으면 PNL이 "1주(또는 1단위) 기준" 가격차이로만 계산돼서 실제 손익과 안 맞는다.
         trade_qty = 100000 if not is_stock_pair(pair) else None
+        is_not_filled = False  # NOT_FILLED 여부 추적용
 
         # 🟦 주식은 평가 전에 "진짜 체결됐는지" 먼저 확인한다.
         #    market 주문이 장마감 직후/체결 지연 등으로 아직 'accepted' 상태일 수 있는데,
@@ -4374,16 +4393,23 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
             filled, filled_price, filled_at, filled_qty = get_alpaca_fill_status(pair, entry_time_iso)
             if not filled:
                 if elapsed_minutes > max_window_minutes:
-                    # 너무 오래 기다렸는데도 체결 안 됐으면 더 기다릴 의미 없음 → 정리
-                    try:
-                        sheet.update_cell(i, 17, "NOT_FILLED")
-                        sheet.update_cell(i, 34, "⚠️ 주문이 체결되지 않아 실제 포지션이 없었음 (TP/SL 판정 대상 아님)")
-                        updated += 1
-                    except Exception:
-                        pass
+                    # 🟦 체결 안 됐지만 TP/SL 값이 있으면 가상 평가를 계속 진행한다.
+                    #    실제 거래가 없었다는 사실만 표시하고, 캔들 기반으로 "만약 들어갔다면"을 평가해서
+                    #    나중에 "14시 차단이 잘한 건지, 쿨다운이 너무 빡빡한지" 분석할 수 있게 한다.
+                    if price_f and tp_f and sl_f:
+                        is_not_filled = True  # 이후 캔들 평가는 계속 진행, 결과 앞에 NOT_FILLED_ 붙임
+                        print(f"📊 [결과추적] {pair} NOT_FILLED이지만 TP/SL 있음 → 가상 평가 진행")
+                    else:
+                        try:
+                            sheet.update_cell(i, 17, "NOT_FILLED")
+                            sheet.update_cell(i, 34, "⚠️ 주문 미체결 + TP/SL 없음 → 평가 불가")
+                            updated += 1
+                        except Exception:
+                            pass
+                        continue
                 else:
                     print(f"⏳ [결과추적] {pair} 아직 주문 미체결(accepted/held 등) → 이번엔 스킵, 다음 시간에 재확인")
-                continue
+                    continue
             elif filled_price:
                 # 실제 체결가가 시트에 기록된 price와 다르면, 더 정확한 체결가로 보정해서 판정
                 price_f = filled_price
@@ -4484,14 +4510,20 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
             trade_qty = get_tiered_qty(price_f) if is_stock_pair(pair) else 100000
         total_pnl_value = round(pnl_value * trade_qty, 2)
 
+        # 🟦 NOT_FILLED 가상 평가: 실제 거래(TP_HIT/SL_HIT)와 구분하기 위해 앞에 NOT_FILLED_ 붙임.
+        #    이렇게 하면 나중에 "필터로 막은 거래들이 실제로 어떻게 됐을지" 별도로 집계해서
+        #    14시 차단, 쿨다운 등 각 필터의 효과를 데이터로 검증할 수 있다.
+        display_outcome = f"NOT_FILLED_{outcome}" if is_not_filled else outcome
+        display_note = f"[가상평가-미체결] {note}" if is_not_filled else note
+
         try:
-            sheet.update_cell(i, 17, outcome)        # 'result' 컬럼 (1-indexed 17번째)
-            sheet.update_cell(i, 23, round(pnl_value, 5))  # 'pnl' 컬럼 (1-indexed 23번째, 1주/1단위 기준 그대로 유지)
-            sheet.update_cell(i, 24, trade_qty)       # 기존 'is_new_high' → 'quantity'(수량)로 재사용
-            sheet.update_cell(i, 25, total_pnl_value) # 기존 'is_new_low' → 'total pnl'(총손익)로 재사용
-            sheet.update_cell(i, 34, note)            # 'outcome_analysis' 컬럼 (1-indexed 34번째)
+            sheet.update_cell(i, 17, display_outcome)  # 'result' 컬럼
+            sheet.update_cell(i, 23, round(pnl_value, 5))  # 'pnl' 컬럼 (1주/1단위 기준)
+            sheet.update_cell(i, 24, trade_qty)             # 'quantity' 컬럼
+            sheet.update_cell(i, 25, total_pnl_value)       # 'total pnl' 컬럼
+            sheet.update_cell(i, 34, display_note)          # 'outcome_analysis' 컬럼
             updated += 1
-            print(f"✅ [결과추적] row {i} ({pair}, {signal_dir}) → {outcome} "
+            print(f"✅ [결과추적] row {i} ({pair}, {signal_dir}) → {display_outcome} "
                   f"(1단위pnl={pnl_value:.5f}, 수량={trade_qty}, 총손익={total_pnl_value})")
         except Exception as e:
             print(f"❌ [결과추적] row {i} 시트 업데이트 실패: {e}")
@@ -4555,35 +4587,58 @@ def _find_force_close_fill(symbol, entry_time_iso):
     return None, None
 
 
+def _get_latest_entry_time_for_open_position(symbol, side):
+    """
+    현재 열려있는 포지션(symbol)의 진입 시각을 찾는다.
+    그 종목의 최근 체결된 market 주문(진입 방향과 같은 side) 중 가장 최근 것의 filled_at을 사용.
+    ('Alpaca 거래내역' 탭의 500건 제한과 무관하게, 종목별로 직접 조회해서 안전함)
+    """
+    try:
+        url = f"{ALPACA_TRADE_BASE_URL}/v2/orders"
+        params = {"symbols": symbol, "status": "closed", "direction": "desc", "limit": 10}
+        r = requests.get(url, headers=ALPACA_HEADERS, params=params, timeout=10)
+        r.raise_for_status()
+        want_side = "buy" if side == "long" else "sell"
+        for o in r.json():
+            if o.get("type") == "market" and o.get("side") == want_side and o.get("status") == "filled":
+                return datetime.fromisoformat(o["filled_at"].replace("Z", "+00:00"))
+    except Exception as e:
+        print(f"❗ [강제청산] {symbol} 진입시각 조회 실패: {e}")
+    return None
+
+
 def close_stale_positions(cutoff_minutes=None):
     """
-    'Alpaca 거래내역' 탭에서 상태가 '진행중'인 거래 중, 진입 후 cutoff_minutes
-    (기본 STOCK_TIME_EXIT_MINUTES)가 지났는데도 안 닫힌 것들을 시장가로 강제 청산한다.
-    Alpaca의 DELETE /v2/positions/{symbol}을 쓰면 TP/SL 예약주문도 같이 정리되면서
-    시장가로 청산된다 (공식 문서 기준 동작).
+    Alpaca의 '현재 실시간 보유 포지션'을 직접 조회해서(=구글시트 탭에 의존하지 않음),
+    진입 후 cutoff_minutes(기본 STOCK_TIME_EXIT_MINUTES)가 지났는데도 안 닫힌 것들을
+    시장가로 강제 청산한다. 'Alpaca 거래내역' 탭은 한 번에 최근 500건만 보여주는 한계가 있어서,
+    오래된 미청산 포지션이 그 탭에서 빠질 수 있었음 — 그래서 탭이 아니라 Alpaca 포지션 API를 직접 본다.
+    DELETE /v2/positions/{symbol}을 쓰면 TP/SL 예약주문도 같이 정리되면서 시장가로 청산된다.
     """
     cutoff = cutoff_minutes or STOCK_TIME_EXIT_MINUTES
     try:
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
-        client = gspread.authorize(creds)
-        rows = client.open("민균 FX trading result").worksheet("Alpaca 거래내역").get_all_values()
+        r = requests.get(f"{ALPACA_TRADE_BASE_URL}/v2/positions", headers=ALPACA_HEADERS, timeout=15)
+        r.raise_for_status()
+        positions = r.json()
     except Exception as e:
-        print(f"❌ [강제청산] 시트 읽기 실패: {e}")
+        print(f"❌ [강제청산] 포지션 조회 실패: {e}")
         return {"checked": 0, "closed": 0}
 
     now_utc = datetime.now(ZoneInfo("UTC"))
     checked, closed = 0, 0
 
-    # 헤더: 주문ID,진입시각,종목,방향,점수,수량,진입가,TP가,SL가,상태,청산가,청산시각,보유시간(분),손익($),손익(%),누적손익($)
-    for row in rows[1:]:
-        if len(row) < 10 or row[9] != "진행중":
+    for pos in positions:
+        symbol = pos.get("symbol")
+        qty = abs(float(pos.get("qty", 0) or 0))
+        side = pos.get("side")  # "long" or "short"
+        if not symbol or qty <= 0:
             continue
-        symbol = row[2]
-        try:
-            entry_t = datetime.fromisoformat(row[1].replace("Z", "+00:00"))
-        except Exception:
+
+        entry_t = _get_latest_entry_time_for_open_position(symbol, side)
+        if not entry_t:
+            print(f"⚠️ [강제청산] {symbol} 진입시각을 못 찾아서 이번엔 스킵")
             continue
+
         held_minutes = (now_utc - entry_t).total_seconds() / 60
         if held_minutes < cutoff:
             continue
@@ -4633,10 +4688,24 @@ def sync_alpaca_trade_log():
 
     try:
         url = f"{ALPACA_TRADE_BASE_URL}/v2/orders"
-        params = {"status": "all", "nested": "true", "limit": 500, "direction": "desc"}
-        r = requests.get(url, headers=ALPACA_HEADERS, params=params, timeout=15)
-        r.raise_for_status()
-        orders = r.json()
+        orders = []
+        until_param = None
+        # 🟦 Alpaca API는 한 번에 최대 500건만 주는데, 거래가 많이 쌓이면 오래된 미청산 포지션이
+        #    아예 안 보이게 됨(이게 강제청산이 안 되던 진짜 원인이었음). 최대 5페이지(2500건)까지
+        #    이어서 가져와서, 오래된 것도 이 탭에서 빠지지 않게 한다.
+        for _ in range(5):
+            params = {"status": "all", "nested": "true", "limit": 500, "direction": "desc"}
+            if until_param:
+                params["until"] = until_param
+            r = requests.get(url, headers=ALPACA_HEADERS, params=params, timeout=15)
+            r.raise_for_status()
+            page = r.json()
+            if not page:
+                break
+            orders.extend(page)
+            if len(page) < 500:
+                break  # 마지막 페이지
+            until_param = page[-1].get("submitted_at")
     except Exception as e:
         print(f"❌ [Alpaca거래내역] 주문 내역 조회 실패: {e}")
         return
@@ -4711,6 +4780,17 @@ def sync_alpaca_trade_log():
     rows = [r for r in rows if r["entry_time"]]
     rows.sort(key=lambda r: r["entry_time"])
 
+    def _to_et(iso_str):
+        """UTC ISO 문자열 → ET(America/New_York) 표시 문자열. 사람이 읽기 편하게."""
+        if not iso_str:
+            return ""
+        try:
+            dt_utc = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+            dt_et = dt_utc.astimezone(ZoneInfo("America/New_York"))
+            return dt_et.strftime("%Y-%m-%d %H:%M:%S ET")
+        except Exception:
+            return iso_str  # 변환 실패 시 원본 그대로
+
     sheet_rows = [HEADERS]
     cum_pnl = 0.0
     for r in rows:
@@ -4731,9 +4811,13 @@ def sync_alpaca_trade_log():
             cum_pnl += r["pnl"]
 
         sheet_rows.append([
-            r["order_id"], r["entry_time"], r["symbol"], r["side"], r["score"], r["qty"],
+            r["order_id"],
+            _to_et(r["entry_time"]),   # 🟦 UTC → ET 변환
+            r["symbol"], r["side"], r["score"], r["qty"],
             r["entry_price"], r["tp"], r["sl"], r["status_kr"],
-            r["exit_price"], r["exit_time"], hold_minutes,
+            r["exit_price"],
+            _to_et(r["exit_time"]),    # 🟦 UTC → ET 변환
+            hold_minutes,
             r["pnl"], pnl_pct, round(cum_pnl, 2) if r["pnl"] is not None else ""
         ])
 
@@ -4821,7 +4905,24 @@ def sync_symbol_performance_summary():
         except Exception:
             pass
 
-    all_symbols = sorted(set(list(freq.keys()) + list(stats.keys())))
+    # 🟦 포트폴리오에서 제거된 종목은 성과분석 탭에서도 자동으로 빠지도록:
+    #    "현재 활성 종목" = 최근 30일 이내 메인 시트에 알림이 있는 종목만 포함.
+    #    (제거된 종목의 과거 데이터는 'Alpaca 거래내역' 탭에 남아있지만, 이 탭에서는 안 보이게)
+    from datetime import timezone as _tz
+    cutoff_30d = datetime.now(_tz.utc) - timedelta(days=30)
+    active_symbols = set()
+    for row in main_rows[1:]:
+        if len(row) < 2 or not row[1]:
+            continue
+        try:
+            ts = datetime.fromisoformat(row[0])
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=_tz.utc)
+            if ts >= cutoff_30d:
+                active_symbols.add(row[1])
+        except Exception:
+            pass
+    all_symbols = sorted(active_symbols | set(stats.keys()))
     summary_rows = [HEADERS]
     computed = []
     for sym in all_symbols:
