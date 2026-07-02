@@ -1724,7 +1724,7 @@ STOCK_TIME_EXIT_MINUTES = int(os.getenv("STOCK_TIME_EXIT_MINUTES", "90"))
 # 🟦 주식 TP/SL ATR 배수. TradingView Pine 전략("BUY STOCK PORTFOLIO A2")의
 #    tpATR(기본 0.8) / slATR(기본 1.0) 입력값과 반드시 동일하게 맞춰야 한다.
 #    Pine에서 입력값을 바꾸면 여기 환경변수도 같이 바꿔야 정렬이 유지된다.
-STOCK_TP_ATR_MULT = float(os.getenv("STOCK_TP_ATR_MULT", "0.8"))
+STOCK_TP_ATR_MULT = float(os.getenv("STOCK_TP_ATR_MULT", "1.0"))
 STOCK_SL_ATR_MULT = float(os.getenv("STOCK_SL_ATR_MULT", "1.0"))
 
 ALPACA_HEADERS = {
@@ -2465,6 +2465,11 @@ def process_webhook_sync(raw: bytes):
                 f"❌ 장마감 임박({_ny_hour}시 ≥ 컷오프 {STOCK_ENTRY_CUTOFF_HOUR}시) → 신규 진입 차단"
             )
             should_execute = False
+            if sheet_row_idx:
+                try:
+                    _gsh = _get_sheet()
+                    if _gsh: _gsh.update_cell(sheet_row_idx, 17, f"TIME_BLOCKED_{_ny_hour}h_CUTOFF")
+                except Exception: pass
 
     # 2-2️⃣ 주식 전용: 점심 변동성 저하 구간 차단 (12~14시 ET)
     #    데이터 분석 결과:
@@ -2483,6 +2488,11 @@ def process_webhook_sync(raw: bytes):
                 f"❌ 점심 변동성 저하 구간({_ny_hour}시, {_block_start}~{_block_end}시 ET 차단) → 신규 진입 차단"
             )
             should_execute = False
+            if sheet_row_idx:
+                try:
+                    _gsh = _get_sheet()
+                    if _gsh: _gsh.update_cell(sheet_row_idx, 17, f"TIME_BLOCKED_{_ny_hour}h_LUNCH")
+                except Exception: pass
 
     # 3️⃣ (선택) ATR 보수 필터 – 이미 점수에 반영했으므로 여기선 추가 차단 안 함
     # if should_execute and last_atr < 0.0009:
@@ -2542,7 +2552,7 @@ def process_webhook_sync(raw: bytes):
         print(f"[DEBUG] WILL PLACE ORDER → pair={pair}, side={final_decision}, units={units}, "
               f"price={price}, tp={final_tp}, sl={final_sl}, digits={digits}, score={signal_score}")
     
-        result = place_order(pair_for_order, units, final_tp, final_sl, digits, price=price)
+        result = place_order(pair_for_order, units, final_tp, final_sl, digits, price=price, atr=atr)
 
         # 🟦 주식이고 실제로 가격 재조정이 일어난 경우, 시트에 이미 적힌 옛날 price/tp/sl을
         #    실제 주문에 쓰인 최종값으로 다시 보정한다 (결과추적이 보는 기준값을 일치시키기 위함).
@@ -3348,7 +3358,7 @@ def get_alpaca_latest_price(symbol):
         return None
 
 
-def place_order_alpaca(symbol, side, notional_usd, ref_price, tp, sl, digits=2):
+def place_order_alpaca(symbol, side, notional_usd, ref_price, tp, sl, digits=2, atr=None):
     """
     Alpaca Bracket Order로 시장가 진입 + TP/SL 동시 설정.
     수량(qty)은 calc_alpaca_qty()에서 산출 (기본: 계좌 리스크% 기반, ALPACA_SIZING_MODE로 전환 가능)
@@ -3387,6 +3397,27 @@ def place_order_alpaca(symbol, side, notional_usd, ref_price, tp, sl, digits=2):
             tp = tp + delta
             sl = sl + delta
             ref_price = fresh_price
+
+        # 🟦 2번 수정: TP까지 남은 거리가 너무 짧으면 SKIP
+        #    - 알림→서버→주문 시차 동안 가격이 올라서 이미 TP 근처까지 와버린 경우,
+        #      시장가로 들어가면 TP에 이미 닿았거나 거의 없어서 "TP_HIT인데 손익 마이너스" 케이스가 생김
+        #    - ATR의 30% 미만 거리가 남았으면 진입 의미 없음 → 스킵
+        try:
+            _atr_now = float(atr) if atr else None
+            if _atr_now and _atr_now > 0:
+                _tp_remaining = abs(tp - ref_price)
+                _min_tp_dist = _atr_now * 0.3
+                if _tp_remaining < _min_tp_dist:
+                    print(f"⛔ [Alpaca] {symbol} TP까지 남은 거리({_tp_remaining:.4f})가 "
+                          f"ATR×0.3({_min_tp_dist:.4f}) 미만 → 이미 TP 근처 진입 의미 없음 → 스킵")
+                    return {
+                        "status": "skipped",
+                        "reason": f"tp_too_close: remaining={_tp_remaining:.4f} < ATR×0.3={_min_tp_dist:.4f}",
+                        "ref_price": ref_price,
+                        "fresh_price": fresh_price,
+                    }
+        except Exception as e:
+            print(f"[WARN] TP 근접 체크 실패(무시): {e}")
 
     qty = calc_alpaca_qty(ref_price, sl, notional_usd)
 
@@ -3447,17 +3478,20 @@ def place_order_alpaca(symbol, side, notional_usd, ref_price, tp, sl, digits=2):
         return {"status": "error", "message": str(e)}
 
 
-def place_order(pair, units, tp, sl, digits, price=None):
+def place_order(pair, units, tp, sl, digits, price=None, atr=None):
     # 🟦 주식이면 Alpaca Bracket Order로 분기
     if is_stock_pair(pair):
         side = "BUY" if units > 0 else "SELL"
-        # 🟦 전역 _last_price_cache는 동시에 들어오는 다른 요청이 같은 종목 캐시를 덮어쓸 수 있어서
-        #    (예: GPT 분석 도는 몇 초 사이 같은 종목 알림이 또 들어오면 엉뚱한 가격이 섞임)
-        #    이 요청 자체의 price를 우선 사용. price가 안 넘어온 경우에만 캐시로 폴백.
         ref_price = price if price is not None else (_last_price_cache.get(pair) or tp)
+        _atr_val = None
+        try:
+            if atr is not None:
+                _atr_val = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr)
+        except Exception:
+            pass
         return place_order_alpaca(
             pair, side, ALPACA_FIXED_NOTIONAL_USD, ref_price, tp, sl,
-            digits=price_round_digits(pair)
+            digits=price_round_digits(pair), atr=_atr_val
         )
 
     url = f"https://api-fxpractice.oanda.com/v3/accounts/{ACCOUNT_ID}/orders"
@@ -5042,8 +5076,15 @@ def sync_score_bucket_analysis():
     'Alpaca 거래내역'의 점수 컬럼을 구간별로 나눠서 승률/손익을 분석.
     "threshold를 X로 올리면/내리면 승률·손익이 어떻게 바뀌는지"를 보기 위한 용도.
     탭이 없으면 자동 생성, 매번 전체 재계산해서 덮어쓴다.
+    🟦 SKIPPED 가상 손익도 별도 컬럼으로 추가:
+       "threshold 안쪽 신호들이 실제로 어떻게 됐을지"를 같이 보여줘서
+       threshold 조정 근거를 데이터로 명확히 판단할 수 있게 함.
     """
-    HEADERS = ["점수구간", "거래건수", "승(TP)", "패(SL)", "승률(%)", "총손익($)", "평균손익($)"]
+    HEADERS = [
+        "점수구간",
+        "거래건수", "승(TP)", "패(SL)", "승률(%)", "총손익($)", "평균손익($)",
+        "SKIPPED건수", "SKIPPED_TP", "SKIPPED_SL", "SKIPPED승률(%)", "SKIPPED가상손익($)"
+    ]
     BUCKETS = [
         (-999, -3, "-3 미만"), (-3, -2, "-3~-2"), (-2, -1, "-2~-1"), (-1, 0, "-1~0"),
         (0, 1, "0~1"), (1, 2, "1~2"), (2, 3, "2~3"), (3, 4, "3~4"), (4, 999, "4 이상"),
@@ -5062,6 +5103,12 @@ def sync_score_bucket_analysis():
             print("⚠️ [점수구간분석] 'Alpaca 거래내역' 탭이 아직 없음 → sync_alpaca_trade_log()를 먼저 실행해야 함")
             return
 
+        # 🟦 메인 시트에서 SKIPPED 가상 손익 가져오기
+        try:
+            main_rows = spreadsheet.sheet1.get_all_values()
+        except Exception:
+            main_rows = []
+
         try:
             ws = spreadsheet.worksheet("스코어대별 성과분석")
         except gspread.exceptions.WorksheetNotFound:
@@ -5071,8 +5118,8 @@ def sync_score_bucket_analysis():
         print(f"❌ [점수구간분석] 시트 연결 실패: {e}")
         return
 
+    # 실제 거래 집계
     bucket_stats = {b[2]: {"tp": 0, "sl": 0, "pnl_list": []} for b in BUCKETS}
-    # 헤더: 주문ID,진입시각,종목,방향,점수,수량,진입가,TP가,SL가,상태,청산가,청산시각,보유시간(분),손익($),손익(%),누적손익($)
     for row in trade_rows[1:]:
         if len(row) < 14:
             continue
@@ -5082,7 +5129,7 @@ def sync_score_bucket_analysis():
         try:
             score = float(score_str)
         except Exception:
-            continue  # 점수 매칭이 안 된 옛날 거래(점수 컬럼 추가 전)는 집계에서 제외
+            continue
 
         for lo, hi, label in BUCKETS:
             if lo <= score < hi:
@@ -5102,6 +5149,35 @@ def sync_score_bucket_analysis():
                     pass
                 break
 
+    # 🟦 SKIPPED 가상 손익 집계 (메인 시트의 SKIPPED_BY_THRESHOLD 행들)
+    # 헤더: timestamp(0), symbol(1), strategy(2), signal_type(3), decision(4), score(5), ..., summary(16), ..., total_pnl(24)
+    skip_stats = {b[2]: {"tp": 0, "sl": 0, "pnl_list": []} for b in BUCKETS}
+    for row in main_rows[1:]:
+        if len(row) < 25:
+            continue
+        if row[4] != "SKIPPED_BY_THRESHOLD":
+            continue
+        summary_val = row[16] if len(row) > 16 else ""
+        if summary_val not in ("TP_HIT", "SL_HIT"):
+            continue
+        try:
+            score = float(row[5])
+        except Exception:
+            continue
+        try:
+            pnl_val = float(row[24])
+        except Exception:
+            continue
+        for lo, hi, label in BUCKETS:
+            if lo <= score < hi:
+                s = skip_stats[label]
+                if summary_val == "TP_HIT":
+                    s["tp"] += 1
+                else:
+                    s["sl"] += 1
+                s["pnl_list"].append(pnl_val)
+                break
+
     summary_rows = [HEADERS]
     for lo, hi, label in BUCKETS:
         b = bucket_stats[label]
@@ -5109,12 +5185,22 @@ def sync_score_bucket_analysis():
         win_rate = round(b["tp"] / trades * 100, 1) if trades else ""
         total_pnl = round(sum(b["pnl_list"]), 2) if b["pnl_list"] else ""
         avg_pnl = round(sum(b["pnl_list"]) / len(b["pnl_list"]), 2) if b["pnl_list"] else ""
-        summary_rows.append([label, trades, b["tp"], b["sl"], win_rate, total_pnl, avg_pnl])
+
+        s = skip_stats[label]
+        skip_trades = s["tp"] + s["sl"]
+        skip_wr = round(s["tp"] / skip_trades * 100, 1) if skip_trades else ""
+        skip_pnl = round(sum(s["pnl_list"]), 2) if s["pnl_list"] else ""
+
+        summary_rows.append([
+            label,
+            trades, b["tp"], b["sl"], win_rate, total_pnl, avg_pnl,
+            skip_trades, s["tp"], s["sl"], skip_wr, skip_pnl
+        ])
 
     try:
         ws.clear()
         ws.update("A1", summary_rows)
-        print("✅ [점수구간분석] 갱신 완료")
+        print("✅ [점수구간분석] 갱신 완료 (SKIPPED 가상손익 포함)")
     except Exception as e:
         print(f"❌ [점수구간분석] 시트 쓰기 실패: {e}")
 
