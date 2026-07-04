@@ -5221,7 +5221,15 @@ def _aggregate_trade_stats(trade_rows, start=None, end=None):
         if len(row) < 14 or row[9] not in ("TP청산", "SL청산", "TIME_EXIT"):
             continue
         try:
-            t = datetime.fromisoformat(row[1].replace("Z", "+00:00")).astimezone(ZoneInfo("America/New_York"))
+            raw_ts = str(row[1]).strip()
+            # 🟦 진입시각이 "2026-07-01 09:45:30 ET" 형식(ET 변환 후 저장)이거나
+            #    "2026-06-22T13:15:29.978106Z" 같은 UTC ISO 형식일 수 있음.
+            if raw_ts.endswith(" ET"):
+                # ET 형식 → ET로 직접 파싱
+                dt_naive = datetime.strptime(raw_ts[:-3], "%Y-%m-%d %H:%M:%S")
+                t = dt_naive.replace(tzinfo=ZoneInfo("America/New_York"))
+            else:
+                t = datetime.fromisoformat(raw_ts.replace("Z", "+00:00")).astimezone(ZoneInfo("America/New_York"))
         except Exception:
             continue
         if start and t < start:
@@ -5260,7 +5268,12 @@ def _aggregate_trade_stats(trade_rows, start=None, end=None):
             pass
         # 동시노출 계산용 (진입~청산 구간)
         try:
-            exit_t = datetime.fromisoformat(row[11].replace("Z", "+00:00")).astimezone(ZoneInfo("America/New_York"))
+            raw_exit = str(row[11]).strip()
+            if raw_exit.endswith(" ET"):
+                dt_naive = datetime.strptime(raw_exit[:-3], "%Y-%m-%d %H:%M:%S")
+                exit_t = dt_naive.replace(tzinfo=ZoneInfo("America/New_York"))
+            else:
+                exit_t = datetime.fromisoformat(raw_exit.replace("Z", "+00:00")).astimezone(ZoneInfo("America/New_York"))
             intervals.append((t, exit_t))
         except Exception:
             pass
