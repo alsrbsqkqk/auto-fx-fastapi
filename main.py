@@ -1338,12 +1338,26 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
         ):
     
             if macd_trend[-1] < 0:
-    
-                signal_score += 0.7
-    
-                reasons.append(
-                    "🟢 MACD 음수권 회복중 → 반등 가점 (+0.7)"
-                )
+                # 🟦 MACD 음수권에서 3봉 연속 상승 — 회복 속도를 판단해서 차등 적용
+                #    데이터 분석(6/22~7/8, 48건): 이 패턴 전체 승률 46%, 손익 -$186
+                #    원인: 빠른 수렴(진짜 전환)과 느린 수렴(노이즈)이 섞여있음
+                #    해결: MACD와 시그널선 간 갭이 얼마나 빠르게 줄어드는지로 구분
+                _gap_now  = abs(macd_trend[-1] - (macd_signal if not hasattr(macd_signal, 'iloc') else float(macd_signal.iloc[-1])))
+                _gap_prev = abs(macd_trend[-2] - (macd_signal if not hasattr(macd_signal, 'iloc') else float(macd_signal.iloc[-2])))
+                _recovery_speed = (_gap_prev - _gap_now) / max(_gap_prev, 1e-9)
+
+                if _recovery_speed >= 0.15:
+                    # 갭이 15% 이상 빠르게 줄어듦 → 진짜 전환 신호 → 가점 유지
+                    signal_score += 0.7
+                    reasons.append(
+                        f"🟢 MACD 음수권 빠른 회복(수렴속도 {_recovery_speed*100:.0f}%) → 반등 가점 (+0.7)"
+                    )
+                else:
+                    # 갭이 15% 미만으로 느리게 줄어듦 → 노이즈성 튀기 → 강한 감점
+                    signal_score -= 1.5
+                    reasons.append(
+                        f"🔴 MACD 음수권 느린 회복(수렴속도 {_recovery_speed*100:.0f}%) → 노이즈 의심 강감점 (-1.5)"
+                    )
     
             else:
     
