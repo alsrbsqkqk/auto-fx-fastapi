@@ -2234,25 +2234,24 @@ def process_webhook_sync(raw: bytes):
             )
         elif (
             parsed_decision == "WAIT"
-            and is_stock_pair(pair)
             and signal in ("BUY", "SELL")
-            and (wait_confidence is None or wait_confidence < 80)
         ):
-            # 🟦 GPT가 WAIT을 골랐지만, 확신도(wait_confidence)가 80 미만이거나 안 줬으면
-            #    서버가 강제로 원래 알림 방향(BUY/SELL)으로 되돌린다.
-            #    TP/SL은 None으로 두면 아래 ATR 기반 강제 재계산 단계에서 다시 정확히 채워진다.
-            final_decision = signal
-            final_tp = None
-            final_sl = None
-            print(
-                f"🔁 [WAIT 확신도 부족] GPT가 WAIT 선택했지만 wait_confidence={wait_confidence} "
-                f"(80 미만 또는 누락) → 원래 방향({signal})으로 강제 환원"
-            )
-        else:
-        
-            final_decision = "WAIT"
-            final_tp = None
-            final_sl = None
+            # 🟦 USDJPY: 95 미만이면 강제 거래, 주식: 80 미만이면 강제 거래
+            _is_fx_jpy = not is_stock_pair(pair) and "JPY" in pair
+            _required_conf = 95 if _is_fx_jpy else 80
+            _should_force = (wait_confidence is None or wait_confidence < _required_conf)
+            if (is_stock_pair(pair) or _is_fx_jpy) and _should_force:
+                final_decision = signal
+                final_tp = None
+                final_sl = None
+                print(
+                    f"🔁 [WAIT 확신도 부족] GPT가 WAIT 선택했지만 wait_confidence={wait_confidence} "
+                    f"({_required_conf} 미만 또는 누락, {'JPY' if _is_fx_jpy else '주식'}) → 원래 방향({signal})으로 강제 환원"
+                )
+            else:
+                final_decision = "WAIT"
+                final_tp = None
+                final_sl = None
         
             print(
                 f"⚠️[WAIT] GPT 반환값 무효: "
@@ -2457,44 +2456,50 @@ def process_webhook_sync(raw: bytes):
             )
             should_execute = False
     
-    # 2-1️⃣ 주식 전용: 장마감 임박 시간대 신규 진입 차단 (15시 이후)
+    # 2️⃣ 주식 전용: 요일별 거래 시간 제한
+    #    ┌─────────────────────────────────────────────────────┐
+    #    │  월~목: 12:00~12:59 차단 (점심)                       │
+    #    │         13:00~15:29 허용                             │
+    #    │         15:30 이후 차단 (장마감 임박)                  │
+    #    │  금:    12:00 이후 전체 차단                           │
+    #    └─────────────────────────────────────────────────────┘
     if should_execute and is_stock_pair(pair):
-        _ny_hour = datetime.now(ZoneInfo("America/New_York")).hour
-        if _ny_hour >= STOCK_ENTRY_CUTOFF_HOUR:
-            reasons.append(
-                f"❌ 장마감 임박({_ny_hour}시 ≥ 컷오프 {STOCK_ENTRY_CUTOFF_HOUR}시) → 신규 진입 차단"
-            )
+        _ny_now = datetime.now(ZoneInfo("America/New_York"))
+        _ny_hour = _ny_now.hour
+        _ny_minute = _ny_now.minute
+        _ny_dow = _ny_now.weekday()   # 0=월 1=화 2=수 3=목 4=금
+        _ny_hhmm = _ny_hour * 100 + _ny_minute  # 예: 15:30 → 1530
+
+        _block_reason = None
+
+        if _ny_dow == 4:
+            # 금요일: 12:00 이후 전체 차단
+            if _ny_hhmm >= 1200:
+                _block_reason = f"❌ 금요일 12시 이후 거래 제한({_ny_hour}:{_ny_minute:02d} ET) → 신규 진입 차단"
+        else:
+            # 월~목
+            if 1200 <= _ny_hhmm < 1300:
+                # 12:00~12:59 점심 차단
+                _block_reason = f"❌ 점심 구간 차단({_ny_hour}:{_ny_minute:02d} ET, 12:00~12:59) → 신규 진입 차단"
+            elif _ny_hhmm >= 1530:
+                # 15:30 이후 차단
+                _block_reason = f"❌ 장마감 임박({_ny_hour}:{_ny_minute:02d} ET, 15:30 이후) → 신규 진입 차단"
+
+        if _block_reason:
+            reasons.append(_block_reason)
             should_execute = False
             if sheet_row_idx:
                 try:
                     _gsh = _get_sheet()
-                    if _gsh: _gsh.update_cell(sheet_row_idx, 17, f"TIME_BLOCKED_{_ny_hour}h_CUTOFF")
-                except Exception: pass
+                    if _gsh:
+                        _label = "TIME_BLOCKED_FRIDAY" if _ny_dow == 4 else (
+                            "TIME_BLOCKED_LUNCH" if 1200 <= _ny_hhmm < 1300 else "TIME_BLOCKED_CUTOFF"
+                        )
+                        _gsh.update_cell(sheet_row_idx, 17, f"{_label}_{_ny_hour}h{_ny_minute:02d}m")
+                except Exception:
+                    pass
 
-    # 2-2️⃣ 주식 전용: 점심 변동성 저하 구간 차단 (12~14시 ET)
-    #    데이터 분석 결과:
-    #    - 12시: 승률 46.7%, -$311, SL 평균보유 391분 (가장 위험)
-    #    - 13시: 승률 37.5%, -$142, SL 평균보유 396분 (두 번째로 위험)
-    #    - 14시: 승률 50.0%,  -$54, 상대적으로 덜하지만 여전히 손실
-    #    이 시간대는 "점심 변동성 저하(Lunch Lull)" 구간으로, 오전 모멘텀이 이미 소진됐는데
-    #    Pine이 고점에서 "최근 3봉 고점 돌파" 조건을 계속 충족시켜 알림을 보내는 오탐이 많음.
-    #    90분 이상 물리는 거래의 8/9건이 이 구간 진입이었음.
-    if should_execute and is_stock_pair(pair):
-        _ny_hour = datetime.now(ZoneInfo("America/New_York")).hour
-        _block_start = int(os.getenv("STOCK_BLOCK_HOUR_START", "12"))
-        _block_end = int(os.getenv("STOCK_BLOCK_HOUR_END", "15"))
-        if _block_start <= _ny_hour < _block_end:
-            reasons.append(
-                f"❌ 점심 변동성 저하 구간({_ny_hour}시, {_block_start}~{_block_end}시 ET 차단) → 신규 진입 차단"
-            )
-            should_execute = False
-            if sheet_row_idx:
-                try:
-                    _gsh = _get_sheet()
-                    if _gsh: _gsh.update_cell(sheet_row_idx, 17, f"TIME_BLOCKED_{_ny_hour}h_LUNCH")
-                except Exception: pass
 
-    # 3️⃣ (선택) ATR 보수 필터 – 이미 점수에 반영했으므로 여기선 추가 차단 안 함
     # if should_execute and last_atr < 0.0009:
     #     reasons.append("❌ ATR 너무 낮음 → 진입 차단")
     #     should_execute = False
@@ -3991,7 +3996,25 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
                     if is_stock_pair(pair) else ""
                 )
                 +
-                "(3-4) ⚠️ [뉴스 — 반드시 확인하라] 데이터의 'news' 필드를 꼭 확인해라.\n"
+                (
+                    f"(3-FX) ⚠️ [USD/JPY 전용 판단 규칙 — 반드시 지켜라]\n"
+                    f"USD/JPY는 M30 기준 추세 추종 전략이다. WAIT을 선택하면 거래 기회 자체가 사라지므로, "
+                    f"WAIT 기준을 주식보다 훨씬 엄격하게 적용한다.\n"
+                    f"  ❌ 아래 이유만으로는 절대 WAIT을 고르지 마라:\n"
+                    f"     - RSI 70 이상 '과매수' — FX 추세 추종에서 RSI 70~85는 강한 추세의 증거다\n"
+                    f"     - Stoch RSI 과열 — 주가 아닌 환율에서는 단기 과열이 바로 반전으로 이어지지 않는다\n"
+                    f"     - NEUTRAL 추세 — 지표 지연으로 인해 방향 전환 초기에 NEUTRAL이 뜨는 게 정상이다\n"
+                    f"     - 저항선/지지선 근접 — 돌파하면 강한 모멘텀이 생기므로 오히려 진입 근거다\n"
+                    f"     - 박스권 상단/하단 — 박스권을 뚫고 가는 것이 이 전략의 진입 시그널이다\n"
+                    f"  ✅ WAIT이 허용되는 유일한 조건 (아래 중 최소 2개가 동시에 충족될 때만):\n"
+                    f"     - MACD가 시그널선을 방금 새로 하향 돌파했으며 RSI도 동반 하락 중인 경우\n"
+                    f"     - 직전 봉이 신호 방향과 반대되는 강한 장대음봉/장대양봉인 경우\n"
+                    f"     - 중앙은행(BOJ/FED) 긴급 개입 뉴스가 방금 나온 경우\n"
+                    f"  조건이 충족되지 않으면 무조건 BUY/SELL로 거래를 진행하라.\n"
+                    f"  wait_confidence는 95 이상일 때만 WAIT을 허용하며, 그 미만이면 BUY/SELL을 확정하라.\n\n"
+                    if (not is_stock_pair(pair) and "JPY" in pair) else ""
+                )
+                +
                 "- '🟢 최근 N분 내 뉴스 없음'이면 뉴스 요인은 무시해도 된다.\n"
                 "- '⚠️ ... 뉴스 직후(...) — 뉴스 주도 변동 가능성'이면, 지금 이 돌파/움직임이 순수 기술적 돌파가 아니라 "
                 "특정 뉴스(헤드라인이 같이 제공됨)에 의해 촉발된 것일 수 있다는 뜻이다. 이 경우:\n"
