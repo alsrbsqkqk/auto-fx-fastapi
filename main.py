@@ -1481,8 +1481,10 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
                     if (strategy_name or "").strip().lower() == "balance breakout":
                         reasons.append("ℹ Balance breakout: Stoch RSI 과매도 반등 BUY 가점 미적용")
                     else:
-                        signal_score += 1
-                        reasons.append("Stoch RSI 과매도 → BUY 반등 기대(+1)")
+                        # 🟦 데이터 분석(6/22~7/8): Stoch 과매도 BUY 11건, 승률 45%, 손익 -$25
+                        #    가점을 줘도 승률이 오히려 낮아짐 → 가점 제거, 중립 처리
+                        #    "과매도 = 반등"이라는 가정이 이 전략에서 성립하지 않음
+                        reasons.append("🟡 Stoch RSI 과매도 → BUY 반등 기대 (데이터상 효과 미검증, 가점 0)")
     
         else:
             # SELL은 기존대로 관망
@@ -1611,7 +1613,17 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
             reasons.append(
                 "⚠️ 3봉 연속 양봉이지만 RSI/Stoch 과열 → late BUY 위험, 추가 가점 제외"
             )
-    
+
+        elif rsi is not None and rsi < 70:
+            # 🟦 데이터 분석(6/22~7/8): RSI<70 + 3봉양봉 케이스 15건 승률 20%, 손익 -$215
+            #    모멘텀이 약한 상태에서의 3봉 연속 양봉은 오히려 추격 진입 신호.
+            #    스코어 감점으로는 해결 안 됨(다른 가점들이 상쇄) → 하드 차단
+            reasons.append(
+                "⛔ 3봉 연속 양봉이지만 RSI<70(모멘텀 부족) → 추격 진입 위험, 진입 차단"
+            )
+            # should_execute는 이 함수 밖에서 결정되므로, 강한 감점으로 threshold 이하로 내림
+            signal_score -= 3.0
+
         else:
             signal_score += 0.5
             reasons.append(
