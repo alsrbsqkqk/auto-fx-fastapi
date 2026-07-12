@@ -1375,8 +1375,11 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     
         # 1) BUY 추격 방지 (과열 + MACD 약화)
         if signal == "BUY" and stoch_rsi > 0.8 and macd < macd_signal:
-            signal_score -= 2.0
-            reasons.append("⛔ BUY 차단: Stoch RSI 과열 + MACD 약화(macd<signal) → 추격 매수 위험 감점 -2")
+            # 🟦 4번 수정: -2 → -3으로 강화
+            #    데이터(14건): 이 필터 있어도 실거래 36% 승률 -$85 → 감점이 부족해서 threshold 통과 중
+            #    -3으로 올리면 threshold -2.5 기준 대부분 차단됨
+            signal_score -= 3.0
+            reasons.append("⛔ BUY 차단: Stoch RSI 과열 + MACD 약화(macd<signal) → 추격 매수 위험 강감점 -3")
     
         # 2) SELL 추격 방지 (과매도 + MACD 약화)  ✅ 여기서부터 보완이 핵심
         if signal == "SELL" and stoch_rsi < 0.2 and macd < macd_signal:
@@ -1743,6 +1746,11 @@ ALPACA_SL_BUFFER_ATR_MULT = float(os.getenv("ALPACA_SL_BUFFER_ATR_MULT", "0.15")
 ALPACA_MAX_PRICE_GAP_PCT = float(os.getenv("ALPACA_MAX_PRICE_GAP_PCT", "1.5"))
 # 주식 신규 진입 컷오프 시각(미국 동부시간, 24시간 기준). 이 시각 이후 알림은 진입 안 함.
 STOCK_ENTRY_CUTOFF_HOUR = int(os.getenv("STOCK_ENTRY_CUTOFF_HOUR", "15"))
+
+# 🟦 포트폴리오에서 제거된 종목 — Pine 백테스트 자체가 낮거나 실거래 일관 손실
+# 환경변수로 관리하거나 아래 리스트를 직접 수정
+_EXCLUDED_SYMBOLS_ENV = os.getenv("EXCLUDED_SYMBOLS", "ALAB,CEG,VRT")
+EXCLUDED_SYMBOLS = set(s.strip().upper() for s in _EXCLUDED_SYMBOLS_ENV.split(",") if s.strip())
 # 결과추적/거래내역/성과분석 탭들을 몇 분마다 갱신할지 (기본 30분)
 OUTCOME_TRACKER_INTERVAL_MINUTES = int(os.getenv("OUTCOME_TRACKER_INTERVAL_MINUTES", "30"))
 # 진입 후 이 시간(분)이 지나도 TP/SL 둘 다 안 닿으면 강제로 시장가 청산
@@ -2139,6 +2147,17 @@ def process_webhook_sync(raw: bytes):
     # 🎯 뉴스 리스크 점수 추가 반영
     signal_score += news_score
     reasons.append(f"📰 뉴스 리스크: {news_msg} (점수 {news_score})")
+
+    # 🟦 3번 수정: opportunity_score 역행 + 골든크로스 동시 발생 → 추가 감점
+    #    데이터 분석(6/22~7/10, 44건): 역행+골든크로스 동시 발생 시 55% 승률 -$188
+    #    역행만 있고 골든크로스 없을 때는 68% 승률 +$172로 오히려 좋음
+    #    → 이 두 가지가 같이 오면 "추세와 반대 방향으로 강하게 올라온 것"을 의미
+    #      골든크로스가 실제 추세 전환이 아닌 단기 과열 신호일 가능성이 높음
+    _has_opp_reverse = any("opportunity_score 역행" in r for r in reasons)
+    _has_golden = any("골든크로스(강)" in r for r in reasons)
+    if _has_opp_reverse and _has_golden:
+        signal_score -= 1.5
+        reasons.append("🔴 opportunity_score 역행 + MACD 골든크로스 동시 발생 → 과열 추격 위험 추가감점 (-1.5)")
             
     recent_trade_time = get_last_trade_time()
     time_since_last = datetime.utcnow() - recent_trade_time if recent_trade_time else timedelta(hours=999)
@@ -2482,6 +2501,20 @@ def process_webhook_sync(raw: bytes):
             )
             should_execute = False
     
+    # 1-1️⃣ 포트폴리오 제외 종목 차단
+    #    데이터 분석 결과 Pine 백테스트 자체가 낮거나 실거래 일관 손실인 종목
+    #    ALAB(Pine 30%), CEG(Pine 53% + 실거래 14%), VRT(Pine 40% + 실거래 17%)
+    if is_stock_pair(pair) and pair.upper() in EXCLUDED_SYMBOLS:
+        reasons.append(f"🚫 포트폴리오 제외 종목({pair}) → 진입 차단")
+        should_execute = False
+        if sheet_row_idx:
+            try:
+                _gsh = _get_sheet()
+                if _gsh:
+                    _gsh.update_cell(sheet_row_idx, 17, f"EXCLUDED_SYMBOL")
+            except Exception:
+                pass
+
     # 2️⃣ 주식 전용: 요일별 거래 시간 제한
     #    ┌─────────────────────────────────────────────────────┐
     #    │  월~목: 12:00~12:59 차단 (점심)                       │
@@ -4673,17 +4706,21 @@ def _find_force_close_fill(symbol, entry_time_iso):
 def _get_latest_entry_time_for_open_position(symbol, side):
     """
     현재 열려있는 포지션(symbol)의 진입 시각을 찾는다.
-    그 종목의 최근 체결된 market 주문(진입 방향과 같은 side) 중 가장 최근 것의 filled_at을 사용.
-    ('Alpaca 거래내역' 탭의 500건 제한과 무관하게, 종목별로 직접 조회해서 안전함)
+    🟦 버그 수정: status="closed"는 Alpaca에서 취소/만료된 주문 기준이라
+       실제 체결된 진입 주문을 못 찾는 문제가 있었음.
+       → status="all"로 전체 조회 후 filled 상태인 것 중 진입 방향만 필터링.
     """
     try:
         url = f"{ALPACA_TRADE_BASE_URL}/v2/orders"
-        params = {"symbols": symbol, "status": "closed", "direction": "desc", "limit": 10}
+        params = {"symbols": symbol, "status": "all", "direction": "desc", "limit": 20}
         r = requests.get(url, headers=ALPACA_HEADERS, params=params, timeout=10)
         r.raise_for_status()
         want_side = "buy" if side == "long" else "sell"
         for o in r.json():
-            if o.get("type") == "market" and o.get("side") == want_side and o.get("status") == "filled":
+            # market 주문이면서 진입 방향이고 체결 완료된 것
+            if (o.get("side") == want_side
+                    and o.get("status") == "filled"
+                    and o.get("filled_at")):
                 return datetime.fromisoformat(o["filled_at"].replace("Z", "+00:00"))
     except Exception as e:
         print(f"❗ [강제청산] {symbol} 진입시각 조회 실패: {e}")
