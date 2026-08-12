@@ -2467,7 +2467,11 @@ def process_webhook_sync(raw: bytes):
     "SELL_ENTRY_BAR_CLOSE": -7.0,
     "기본알림": 3.0,
     "Test Alarm": 0.0,
-    "BUY_STOCK_PORTFOLIO_A2": -2.5
+    "BUY_STOCK_PORTFOLIO_A2": -2.5,
+    # 🟥 [FIX-F2] Pine 전략을 A5로 이름 바꿨으므로 같은 threshold로 등록.
+    #    (등록 안 하면 '미등록 전략명' 경로로 빠진다 — 이제는 경고+기본값이지만, 명시가 낫다)
+    "BUY_STOCK_PORTFOLIO_A5": -2.5,
+    "BUY STOCK PORTFOLIO A5": -2.5,
     }
 
     # 🟥 [FIX-B1] strategy_name은 위(웹훅 앞부분)에서 이미 확정했다. 여기서 다시 계산하지 않는다.
@@ -2485,7 +2489,7 @@ def process_webhook_sync(raw: bytes):
 
     # 🟦 Pine 쪽 alert()는 안 건드리고, 주식 신호인데 strategy_name이 따로 안 와서
     #    "기본알림"(FX 기준 3.0)으로 떨어진 경우만 주식 전용 threshold로 바꿔준다.
-    if is_stock_pair(pair) and strategy_name == "기본알림":
+    if is_stock_pair(pair) and strategy_name in ("기본알림", ""):   # 🟥 [FIX-F2]
         threshold = strategy_thresholds.get("BUY_STOCK_PORTFOLIO_A2", -2.5)
 
     print(f"[DEBUG] strategy_name={strategy_name}, threshold={threshold}, score={signal_score}")
@@ -3852,6 +3856,7 @@ def _finalize_sheet_row(row_idx, effective_decision=None, gpt_decision=None, not
         if quantity:
             updates.append({"range": f"X{row_idx}", "values": [[abs(int(quantity))]]})
         if updates:
+            _sheets_write_throttle()      # 🟥 [FIX-F1]
             sh.batch_update(updates)
     except Exception as e:
         print(f"⚠️ [시트] row {row_idx} 최종결과 기록 실패: {e}")
@@ -3879,6 +3884,77 @@ def _log_blocked_alert(pair, signal, alert_name, reason):
         print(f"⚠️ [시트] 조기차단 기록 실패({pair}/{reason}): {e}")
 
 
+# ============================================================
+# 🟥 [FIX-F1] Google Sheets 쓰기 배치화 + 레이트리밋 대응
+# ------------------------------------------------------------
+#  배포 실패의 직접 원인:
+#    APIError [429] Quota exceeded ... 'Write requests per minute per user'
+#  Google Sheets는 사용자당 분당 60회 쓰기가 한도인데,
+#  evaluate_pending_outcomes()가 행 1개당 update_cell()을 최대 5번 호출했다.
+#  미평가 행이 수백 개면 수천 번의 개별 쓰기가 발생해 즉시 한도를 넘긴다.
+#  → 셀 단위 쓰기를 모두 모아 한 번의 batch_update로 보낸다(수천 회 → 수 회).
+#    남는 호출에도 토큰버킷 스로틀을 걸어 한도 자체를 넘지 않게 한다.
+# ============================================================
+SHEETS_WRITES_PER_MIN = int(os.getenv("SHEETS_WRITES_PER_MIN", "50"))   # 한도 60에서 안전마진
+_sheets_write_lock = threading.Lock()
+_sheets_write_times: list = []
+
+
+def _sheets_write_throttle():
+    """분당 쓰기 횟수를 SHEETS_WRITES_PER_MIN 이하로 유지한다(필요하면 대기)."""
+    while True:
+        with _sheets_write_lock:
+            now = _t.time()
+            _sheets_write_times[:] = [t for t in _sheets_write_times if now - t < 60.0]
+            if len(_sheets_write_times) < SHEETS_WRITES_PER_MIN:
+                _sheets_write_times.append(now)
+                return
+            wait = 60.0 - (now - _sheets_write_times[0]) + 0.2
+        print(f"⏳ [시트] 쓰기 한도 근접 → {wait:.1f}초 대기")
+        _t.sleep(max(0.2, wait))
+
+
+def _col_letter(idx: int) -> str:
+    """1-indexed 컬럼 번호 → A1 표기 문자(1→A, 27→AA)."""
+    out = ""
+    while idx > 0:
+        idx, rem = divmod(idx - 1, 26)
+        out = chr(65 + rem) + out
+    return out
+
+
+def _flush_sheet_updates(sheet, updates, chunk=400, label="시트"):
+    """
+    모아둔 셀 업데이트를 batch_update로 한 번에 보낸다.
+    updates: [(row, col, value), ...]
+    반환: 실제로 반영된 셀 개수
+    """
+    if not sheet or not updates:
+        return 0
+    done = 0
+    for start in range(0, len(updates), chunk):
+        part = updates[start:start + chunk]
+        body = [{"range": f"{_col_letter(c)}{r}", "values": [[v]]} for r, c, v in part]
+        for attempt in range(4):
+            try:
+                _sheets_write_throttle()
+                sheet.batch_update(body)
+                done += len(part)
+                break
+            except Exception as e:
+                msg = str(e)
+                if "429" in msg or "Quota exceeded" in msg:
+                    wait = 15 * (attempt + 1)
+                    print(f"⏳ [{label}] 429 → {wait}초 후 재시도 ({attempt+1}/4)")
+                    _t.sleep(wait)
+                    continue
+                print(f"❌ [{label}] batch_update 실패: {e}")
+                break
+    print(f"📝 [{label}] {done}/{len(updates)}개 셀 일괄 반영 완료 "
+          f"(개별 쓰기였다면 API 호출 {len(updates)}회 → 실제 {max(1, (len(updates)+chunk-1)//chunk)}회)")
+    return done
+
+
 def _mark_sheet_result(row_idx, label):
     """
     [FIX-D2] 특정 행의 result 컬럼에 차단/스킵 사유를 기록한다.
@@ -3893,6 +3969,7 @@ def _mark_sheet_result(row_idx, label):
             #    `result_col not in ("", "미정")` 조건으로 그 행을 영영 건너뛴다.
             #    그러면 "이 차단이 옳았는지"를 가상평가로 검증할 수 없다.
             #    → result는 미정으로 두고 outcome_analysis(34열)에 사유만 남긴다.
+            _sheets_write_throttle()      # 🟥 [FIX-F1]
             sh.update_cell(row_idx, COL_OUTCOME_ANALYSIS, str(label))
             print(f"🏷️ [시트] row {row_idx} outcome_analysis ← {label}")
     except Exception as e:
@@ -3917,6 +3994,7 @@ def correct_sheet_trade_prices(row_idx, price, tp, sl):
         if sh is None:
             return
         digits = 5
+        _sheets_write_throttle()          # 🟥 [FIX-F1]
         sh.update(
             f"T{row_idx}:V{row_idx}",   # T=20(price), U=21(tp), V=22(sl)
             [[round(float(price), digits), round(float(tp), digits), round(float(sl), digits)]],
@@ -5181,6 +5259,7 @@ def log_trade_result(
         #    USER_ENTERED로 바꾸면 Sheets가 문자열을 파싱해서 A열 timestamp가
         #    날짜형으로 강제 변환되고, 이후 datetime.fromisoformat(row[0])가
         #    전부 실패하며 결과추적/집계가 조용히 행을 건너뛴다.
+        _sheets_write_throttle()          # 🟥 [FIX-F1]
         resp = sheet.append_row(clean_row, insert_data_option="INSERT_ROWS", table_range="A1")
         row_idx = None
         try:
@@ -5272,18 +5351,20 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
     (1시간마다 백그라운드로 호출됨. 수동으로도 /run_outcome_tracker 로 트리거 가능)
     """
     try:
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
-        client = gspread.authorize(creds)
-        sheet = client.open("민균 FX trading result").sheet1
+        sheet = _get_sheet()                      # 🟥 [FIX-F1] 캐시된 클라이언트 재사용
+        if sheet is None:
+            return {"checked": 0, "updated": 0, "error": "sheet_unavailable"}
         all_rows = sheet.get_all_values()
         # 🟦 기존 is_new_high/is_new_low 컬럼을 quantity/total pnl로 재사용 — 헤더 라벨도 같이 갱신
         try:
             header_row = all_rows[0] if all_rows else []
+            _hdr = []
             if len(header_row) > 23 and header_row[23] != "quantity":
-                sheet.update_cell(1, 24, "quantity")
+                _hdr.append((1, COL_QUANTITY, "quantity"))
             if len(header_row) > 24 and header_row[24] != "total_pnl":
-                sheet.update_cell(1, 25, "total_pnl")
+                _hdr.append((1, COL_TOTAL_PNL, "total_pnl"))
+            if _hdr:
+                _flush_sheet_updates(sheet, _hdr, label="결과추적:헤더")   # 🟥 [FIX-F1]
         except Exception as e:
             print(f"⚠️ [결과추적] 헤더 라벨 갱신 실패(무시): {e}")
     except Exception as e:
@@ -5292,6 +5373,9 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
 
     checked = 0
     updated = 0
+    # 🟥 [FIX-F1] 셀 쓰기를 즉시 보내지 않고 여기에 모았다가 마지막에 한 번에 flush 한다.
+    #    (행마다 update_cell 5회 → 429 Quota exceeded 로 배포가 실패했다)
+    pending: list = []
 
     for i, row in enumerate(all_rows[1:], start=2):  # 1번째 줄은 헤더, 시트 row는 1-indexed
         try:
@@ -5373,8 +5457,8 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
                         print(f"📊 [결과추적] {pair} NOT_FILLED이지만 TP/SL 있음 → 가상 평가 진행")
                     else:
                         try:
-                            sheet.update_cell(i, 17, "NOT_FILLED")
-                            sheet.update_cell(i, 34, "⚠️ 주문 미체결 + TP/SL 없음 → 평가 불가")
+                            pending.append((i, COL_RESULT, "NOT_FILLED"))                      # 🟥 [FIX-F1]
+                            pending.append((i, COL_OUTCOME_ANALYSIS, "⚠️ 주문 미체결 + TP/SL 없음 → 평가 불가"))
                             updated += 1
                         except Exception:
                             pass
@@ -5405,8 +5489,8 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
                 was_executed = _was_sent   # 🟥 [FIX-D8]
                 note = _generate_outcome_note("TIMEOUT_NO_HIT", reasons_text, decision_text, was_executed)
                 try:
-                    sheet.update_cell(i, 17, "TIMEOUT_NO_HIT")
-                    sheet.update_cell(i, 34, note + " (캔들 조회 실패로 판정 불가)")
+                    pending.append((i, COL_RESULT, "TIMEOUT_NO_HIT"))                          # 🟥 [FIX-F1]
+                    pending.append((i, COL_OUTCOME_ANALYSIS, note + " (캔들 조회 실패로 판정 불가)"))
                     updated += 1
                 except Exception:
                     pass
@@ -5429,8 +5513,8 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
                     # 너무 오래된 신호라 캡에 걸려 영영 못 덮는 경우 → 시간초과로 정리하고 끝
                     was_executed = _was_sent   # 🟥 [FIX-D8]
                     note = _generate_outcome_note("TIMEOUT_NO_HIT", reasons_text, decision_text, was_executed)
-                    sheet.update_cell(i, 17, "TIMEOUT_NO_HIT")
-                    sheet.update_cell(i, 34, note + " (데이터가 너무 오래돼 정밀 판정 불가)")
+                    pending.append((i, COL_RESULT, "TIMEOUT_NO_HIT"))                          # 🟥 [FIX-F1]
+                    pending.append((i, COL_OUTCOME_ANALYSIS, note + " (데이터가 너무 오래돼 정밀 판정 불가)"))
                     updated += 1
                 else:
                     print(f"⚠️ [결과추적] {pair} 캔들이 진입시점을 충분히 못 덮음 "
@@ -5491,19 +5575,23 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
         display_note = f"[가상평가-미체결] {note}" if is_not_filled else note
 
         try:
-            sheet.update_cell(i, 17, display_outcome)  # 'result' 컬럼
-            sheet.update_cell(i, 23, round(pnl_value, 5))  # 'pnl' 컬럼 (1주/1단위 기준)
-            sheet.update_cell(i, 24, trade_qty)             # 'quantity' 컬럼
-            sheet.update_cell(i, 25, total_pnl_value)       # 'total pnl' 컬럼
-            sheet.update_cell(i, 34, display_note)          # 'outcome_analysis' 컬럼
+            # 🟥 [FIX-F1] 5회 즉시 쓰기 → 배치 누적
+            pending.append((i, COL_RESULT, display_outcome))
+            pending.append((i, COL_PNL, round(pnl_value, 5)))
+            pending.append((i, COL_QUANTITY, trade_qty))
+            pending.append((i, COL_TOTAL_PNL, total_pnl_value))
+            pending.append((i, COL_OUTCOME_ANALYSIS, display_note))
             updated += 1
             print(f"✅ [결과추적] row {i} ({pair}, {signal_dir}) → {display_outcome} "
                   f"(1단위pnl={pnl_value:.5f}, 수량={trade_qty}, 총손익={total_pnl_value})")
         except Exception as e:
             print(f"❌ [결과추적] row {i} 시트 업데이트 실패: {e}")
 
-    print(f"📊 [결과추적] 체크 {checked}건 / 업데이트 {updated}건")
-    return {"checked": checked, "updated": updated}
+    # 🟥 [FIX-F1] 루프 동안 모아둔 셀 업데이트를 여기서 한 번에 flush.
+    #    행 300개 × 5셀 = 1,500번의 개별 쓰기가 batch_update 4회로 줄어든다.
+    written = _flush_sheet_updates(sheet, pending, label="결과추적")
+    print(f"📊 [결과추적] 체크 {checked}건 / 업데이트 {updated}건 / 반영 셀 {written}개")
+    return {"checked": checked, "updated": updated, "cells_written": written}
 
 
 def _build_score_lookup(main_rows):
