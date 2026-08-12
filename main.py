@@ -1,4 +1,4 @@
-    # ⚠️ V2 업그레이드된 자동 트레이딩 스크립트 (학습 강화, 트렌드 보강, 시트 시간 보정 포함)
+# ⚠️ V2 업그레이드된 자동 트레이딩 스크립트 (학습 강화, 트렌드 보강, 시트 시간 보정 포함)
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from zoneinfo import ZoneInfo
@@ -21,7 +21,16 @@ import asyncio
 from playwright.sync_api import sync_playwright
 import time
 import time as _t
-print("🔥 CURRENT OPENAI KEY:", os.getenv("OPENAI_API_KEY"))
+# 🟥 [FIX-E1] API 키 전문을 stdout에 출력하던 줄을 제거.
+#    Render/Docker 로그에 그대로 남아 유출 위험이 있었다.
+#    키가 로드됐는지만 확인할 수 있게 마스킹해서 찍는다.
+def _mask_secret(v: str | None) -> str:
+    if not v:
+        return "(없음)"
+    return f"{v[:6]}…{v[-4:]} (len={len(v)})"
+
+
+print("🔑 OPENAI KEY 로드:", _mask_secret(os.getenv("OPENAI_API_KEY")))
 _gpt_lock = threading.Lock()
 _gpt_last_ts = 0.0
 _gpt_cooldown_until = 0.0
@@ -29,12 +38,60 @@ _gpt_rate_lock = threading.Lock()
 # 🟦 같은 종목 반복신호 감지용 — 1시간 내 같은 종목에서 2번째 신호가 나오면,
 #    그 신호까지는 허용하고 그 다음(3번째)부터는 그 종목만 1시간 쉬게 한다.
 _symbol_signal_lock = threading.Lock()
+# ============================================================
+# 🟥 [FIX-E5] 심볼별 주문 락 + 알림 중복 제거
+# ------------------------------------------------------------
+#  기존엔 "포지션 확인 → 주문" 사이에 아무 락이 없어서, 같은 종목 알림이
+#  거의 동시에 2건 들어오면 둘 다 "보유 없음"을 보고 둘 다 주문할 수 있었다
+#  (웹훅이 스레드풀에서 병렬 처리되므로 실제로 가능한 시나리오다).
+#  또 TradingView가 같은 봉에 대해 알림을 재전송해도 걸러낼 키가 없었다.
+# ============================================================
+_order_locks: dict[str, threading.Lock] = {}
+_order_locks_guard = threading.Lock()
+_recent_alert_keys: dict[str, float] = {}
+_recent_alert_guard = threading.Lock()
+# 같은 (종목·방향·봉시각) 알림이 이 시간 안에 다시 오면 중복으로 보고 버린다.
+ALERT_DEDUP_SECONDS = int(os.getenv("ALERT_DEDUP_SECONDS", "60"))
+
+
+def _get_order_lock(symbol: str) -> threading.Lock:
+    """심볼별 주문 락을 가져온다(없으면 생성)."""
+    key = (symbol or "").upper()
+    with _order_locks_guard:
+        lk = _order_locks.get(key)
+        if lk is None:
+            lk = threading.Lock()
+            _order_locks[key] = lk
+        return lk
+
+
+def _is_duplicate_alert(symbol: str, signal: str, bar_time=None) -> bool:
+    """
+    같은 알림이 짧은 시간 안에 중복 도착했는지 판정.
+    bar_time(봉 시각)이 오면 그것까지 키에 포함해 '같은 봉 재전송'을 정확히 잡는다.
+    """
+    if not symbol or not signal:
+        return False
+    key = f"{symbol.upper()}:{signal}:{bar_time or ''}"
+    now = _t.time()
+    with _recent_alert_guard:
+        # 오래된 항목 정리
+        for k in [k for k, v in _recent_alert_keys.items() if now - v > ALERT_DEDUP_SECONDS * 3]:
+            _recent_alert_keys.pop(k, None)
+        prev = _recent_alert_keys.get(key)
+        if prev is not None and (now - prev) < ALERT_DEDUP_SECONDS:
+            return True
+        _recent_alert_keys[key] = now
+    return False
 _symbol_signal_history = {}   # symbol -> [datetime, ...] (최근 1시간 이내 신호만 유지)
 _symbol_cooldown_until = {}   # symbol -> datetime (이 시각까지 신규진입 차단)
 SYMBOL_REPEAT_WINDOW_MINUTES = int(os.getenv("SYMBOL_REPEAT_WINDOW_MINUTES", "60"))
 SYMBOL_REPEAT_COOLDOWN_MINUTES = int(os.getenv("SYMBOL_REPEAT_COOLDOWN_MINUTES", "60"))
 _gpt_next_slot = 0.0
 _last_execution_time = 0.0  # 마지막 실행 시간을 저장할 변수
+# 🟥 [FIX-E3] 전역(전 종목 공통) 쿨다운 초. 0이면 비활성(기본).
+#    종목별 쿨다운은 SYMBOL_REPEAT_* 로 따로 관리한다.
+GLOBAL_COOLDOWN_SECONDS = int(os.getenv("GLOBAL_COOLDOWN_SECONDS", "0"))
 # 🟦 OpenAI Tier 3 기준 gpt-4o 한도가 5,000 RPM이라 20은 너무 낮았음(슬롯 대기가 불필요한 지연의 큰 원인).
 #    안전마진 두고 3000으로 상향. 필요시 환경변수로 재조정 가능.
 GPT_RPM = int(os.getenv("GPT_RPM", "3000"))
@@ -595,12 +652,14 @@ def conflict_check(rsi, pattern, trend, signal):
     if rsi < 15 and pattern in ["HAMMER", "BULLISH_ENGULFING"] and trend == "DOWNTREND":
         return True
 
-    # 2️⃣ 캔들패턴이 없는데 시그널과 추세가 역방향이면 관망
+    # 2️⃣ 🟥 [FIX-B7] 주석과 코드가 정반대였다.
+    #    주석은 "역방향이면 관망"인데 코드는 '같은 방향'일 때 return False(충돌 없음)였다.
+    #    코드 쪽이 의도상 맞다(패턴이 없어도 신호와 추세가 같으면 충돌 아님).
+    #    → 주석을 실제 동작에 맞게 고치고, 조기 return이 아래 3️⃣ 규칙을 건너뛰지 않도록
+    #      정리한다(현재 조건상 겹치지는 않지만, 나중에 규칙을 추가할 때 함정이 된다).
     if pattern == "NEUTRAL":
-        if signal == "BUY" and trend == "UPTREND":
-            return False
-        if signal == "SELL" and trend == "DOWNTREND":
-            return False
+        if (signal == "BUY" and trend == "UPTREND") or (signal == "SELL" and trend == "DOWNTREND"):
+            return False   # 패턴은 없지만 신호와 추세가 일치 → 충돌 아님
 
     # 3️⃣ 기타 보수적 예외 추가
     if trend == "UPTREND" and signal == "SELL" and rsi > 80:
@@ -621,7 +680,7 @@ def check_recent_opposite_signal(pair, current_signal, within_minutes=30, *,
     # 키를 넓히려면 전략/타프 포함
     key = f"{pair}:{strategy or 'ANY'}:{timeframe or 'ANY'}".replace(":", "_")
     log_path = f"/tmp/{key}_last_signal.json"
-    now = datetime.utcnow()
+    now = datetime.now(ZoneInfo("UTC"))   # 🟥 [FIX-E9] naive utcnow() → aware UTC (3.12+ deprecated)
 
     last_signal = None
     last_time = None
@@ -663,17 +722,50 @@ def check_recent_opposite_signal(pair, current_signal, within_minutes=30, *,
 
 
 def calculate_structured_sl_tp(entry_price, direction, symbol, support, resistance, pip_size, atr=None):
-    buffer = get_buffer_by_symbol(symbol, atr=atr)
-    
-    if direction == 'BUY':
-        sl = support - buffer
-        tp = entry_price + abs(entry_price - sl) * 1.8
-    else:
-        sl = resistance + buffer
-        tp = entry_price - abs(entry_price - sl) * 1.8
+    """
+    🟥 [FIX-B8] 구조적(지지/저항 기반) SL/TP.
 
-    r_ratio = abs(tp - entry_price) / abs(sl - entry_price)
-    
+    기존 구현은 TP를 항상 `SL거리 × 1.8`로 만들었기 때문에 r_ratio가 수학적으로
+    언제나 정확히 1.8이었다. 그런데 호출부에서는 `if r_ratio < 1.4: -4.0점` 감점을
+    걸어놨다 — 절대 발동할 수 없는 죽은 감점이었다.
+    → r_ratio를 "구조상 실제로 얻을 수 있는 손익비"로 계산하도록 바꾼다.
+       즉 TP는 저항(BUY)/지지(SELL)라는 실제 구조 목표에 두고, 그 목표까지의 거리와
+       SL 거리의 비율을 r_ratio로 본다. 구조 목표가 없으면 기존 1.8 폴백을 쓴다.
+    """
+    buffer = get_buffer_by_symbol(symbol, atr=atr)
+
+    if direction == 'BUY':
+        sl = support - buffer if support is not None else None
+        structural_tp = resistance
+    else:
+        sl = resistance + buffer if resistance is not None else None
+        structural_tp = support
+
+    # SL을 못 구하면 (지지/저항 없음) 판정 불가 — 중립값 반환
+    if sl is None or entry_price is None or abs(sl - entry_price) < 1e-12:
+        print(f"[SL/TP 계산] {symbol} 구조 SL 산출 불가(support={support}, resistance={resistance}) → r_ratio 중립(1.8) 처리")
+        return sl, None, 1.8
+
+    risk = abs(entry_price - sl)
+
+    if structural_tp is not None:
+        reward = abs(structural_tp - entry_price)
+        # 🟥 [FIX-B8b] "반대편에 있으면 폴백"이라고 써놓고 실제 방향 체크가 없었다.
+        #    BUY인데 저항이 이미 진입가 아래(=돌파 후 낡은 값)면 tp가 진입가보다 낮아지고,
+        #    abs() 때문에 r_ratio는 오히려 커져서 감점을 우회한다.
+        wrong_side = (
+            (direction == 'BUY' and structural_tp <= entry_price)
+            or (direction != 'BUY' and structural_tp >= entry_price)
+        )
+        if wrong_side or reward < risk * 0.1:
+            tp = entry_price + risk * 1.8 if direction == 'BUY' else entry_price - risk * 1.8
+        else:
+            tp = structural_tp
+    else:
+        tp = entry_price + risk * 1.8 if direction == 'BUY' else entry_price - risk * 1.8
+
+    r_ratio = abs(tp - entry_price) / risk
+
     # ✅ 로그 출력
     print(f"[SL/TP 계산 로그] symbol={symbol}, direction={direction}")
     print(f" - entry_price: {entry_price}")
@@ -819,9 +911,15 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
 
     sl, tp, r_ratio = calculate_structured_sl_tp(entry_price, direction, symbol, support, resistance, pv, atr=atr)
 
-    if r_ratio < 1.4:
-        signal_score -= 4.0
-        reasons.append("📉 손익비 낮음 (%.2f) → -4.0점 감점" % r_ratio)
+    # 🟥 [FIX-B8] 이제 r_ratio가 실제 구조 손익비를 반영하므로 이 감점이 살아난다.
+    #    다만 -4.0은 다른 항목(대부분 ±1~2)에 비해 과도해서 단독으로 점수를 지배한다.
+    #    → -2.0으로 낮추고, 구간을 나눠 완만하게 적용한다.
+    if r_ratio < 1.0:
+        signal_score -= 2.0
+        reasons.append("📉 구조 손익비 매우 낮음 (%.2f < 1.0) → 감점 -2.0" % r_ratio)
+    elif r_ratio < 1.4:
+        signal_score -= 1.0
+        reasons.append("📉 구조 손익비 낮음 (%.2f < 1.4) → 감점 -1.0" % r_ratio)
 
     from datetime import datetime
     from zoneinfo import ZoneInfo
@@ -829,9 +927,13 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     now_atlanta = datetime.now(ZoneInfo("America/New_York"))
     atlanta_hour = now_atlanta.hour
     
-    if 19 <= atlanta_hour < 23:
+    # 🟥 [FIX-B9] 19~23시(ET) 감점은 FX 전용이다.
+    #    미국 주식 정규장은 09:30~16:00 ET라 이 시간대에 주식 알림이 올 수 없고,
+    #    프리/애프터 알림이 들어오면 -3점이 통째로 붙어버린다.
+    #    주식엔 이미 별도의 시간대 게이트(점심/15:30/금요일)가 있으므로 여기선 FX만 적용한다.
+    if (not is_stock_pair(pair)) and 19 <= atlanta_hour < 23:
         signal_score -= 3
-        reasons.append("🌙 애틀랜타 19~23시 거래 감점 (-3)")
+        reasons.append("🌙 FX 19~23시(ET) 유동성 저하 구간 감점 (-3)")
         
     # ====================================
     # 🟦 -0.02는 FX 스케일(가격 1.0~1.5대) 전용 절대값이라, 주식(가격 수십~수천)에서는
@@ -917,23 +1019,17 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
                 "⚠ 최근 강세 흐름 지속 → SELL continuation 약화 (-0.5)"
             )
 
-    # 트렌드 전환 직후 경계 구간 감점
+    # 🟥 [FIX-B4] 추세 전환 직후 감점 — 중복 제거.
+    #    기존엔 완전히 동일한 조건(UPTREND & prev DOWNTREND & BUY)에 -0.5와 -1.0이
+    #    연달아 적용돼 합계 -1.5가 걸렸다. SELL 미러 조건도 마찬가지.
+    #    조건이 같은데 블록만 두 개였던 것이라 하나로 합친다.
     if trend == "UPTREND" and prev_trend == "DOWNTREND" and signal == "BUY":
-        score -= 0.5
-        reasons.append("⚠️ 하락 추세 직후 상승 반전 → BUY 시그널 신뢰도 낮음 (감점 -0.5)")
+        score -= 1.0
+        reasons.append("🔄 하락→상승 추세 전환 직후 BUY → 조기 진입 경고 (감점 -1.0)")
 
     if trend == "DOWNTREND" and prev_trend == "UPTREND" and signal == "SELL":
-        score -= 0.5
-        reasons.append("⚠️ 상승 추세 직후 하락 반전 → SELL 시그널 신뢰도 낮음 (감점 -0.5)")
-
-    # 🔄 추세 전환 직후 진입 위험
-    if signal == "BUY" and trend == "UPTREND" and prev_trend == "DOWNTREND":
         score -= 1.0
-        reasons.append("🔄 이전 추세가 DOWN → 추세 전환 직후 BUY → 조기 진입 경고 (감점 -1.0)")
-
-    if signal == "SELL" and trend == "DOWNTREND" and prev_trend == "UPTREND":
-        score -= 1.0
-        reasons.append("🔄 이전 추세가 UP → 추세 전환 직후 SELL → 조기 진입 경고 (감점 -1.0)")
+        reasons.append("🔄 상승→하락 추세 전환 직후 SELL → 조기 진입 경고 (감점 -1.0)")
     
 
     
@@ -1264,9 +1360,23 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     # ==================================================
     # 1️⃣1️⃣ 장대 바디 캔들 (과도 점수 축소)
     # ==================================================
-    if pattern in ["LONG_BODY_BULL", "LONG_BODY_BEAR"]:
-        signal_score += 1.5
-        reasons.append(f"📊 장대 바디 캔들 → 추세 지속 가능성 (+1.5)")
+    # 🟥 [FIX-B6b] 기존엔 방향을 안 봤다. FIX-B6로 LONG_BODY_* 라벨이 처음 생성되기
+    #    시작하면, 큰 "음봉"이 BUY 신호에 +1.5를 주는 정반대 동작이 실제로 발생한다.
+    #    → 캔들 방향과 신호 방향이 일치할 때만 가점하고, 역방향이면 감점한다.
+    if pattern == "LONG_BODY_BULL":
+        if signal == "BUY":
+            signal_score += 1.5
+            reasons.append("📊 장대 양봉 + BUY → 추세 지속 가능성 (+1.5)")
+        elif signal == "SELL":
+            signal_score -= 1.0
+            reasons.append("⚠️ 장대 양봉인데 SELL → 역방향 진입 위험 (-1.0)")
+    elif pattern == "LONG_BODY_BEAR":
+        if signal == "SELL":
+            signal_score += 1.5
+            reasons.append("📊 장대 음봉 + SELL → 추세 지속 가능성 (+1.5)")
+        elif signal == "BUY":
+            signal_score -= 1.0
+            reasons.append("⚠️ 장대 음봉인데 BUY → 역방향 진입 위험 (-1.0)")
 
     box_info = detect_box_breakout(candles, pair)
     
@@ -1405,7 +1515,14 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     _res_val_early = resistance if resistance is not None else None
     _near_resistance_early = False
     if _res_val_early is not None and price is not None:
-        _near_resistance_early = (_res_val_early - price) <= max(10 * pv, _atr_val_early * 0.6)
+        # 🟥 [FIX-B2] 방향 조건(_res_val_early > price)이 빠져 있었다.
+        #    가격이 저항을 뚫고 위로 올라가면 (저항 - 가격)이 음수라 이 식은 항상 True가 됐고,
+        #    그 결과 아래 "돌파확정 + 저항 안 가까움" 조건이 수학적으로 성립 불가였다.
+        #    → 모멘텀 가점(+2/+1.5)은 한 번도 안 나가고 항상 -2 감점만 적용됐다.
+        _near_resistance_early = (
+            _res_val_early > price
+            and (_res_val_early - price) <= max(10 * pv, _atr_val_early * 0.6)
+        )
     _buffer_early = max(2 * pv, _atr_val_early * 0.10)
     _breakout_confirmed_early = False
     if _res_val_early is not None and close is not None:
@@ -1438,7 +1555,11 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     
     near_resistance = False
     if res_val is not None and price is not None:
-        near_resistance = (res_val - price) <= max(10 * pip, atr_val * 0.6)
+        # 🟥 [FIX-B2] 위와 동일한 부호 버그. 저항이 "위에 있을 때"만 근접으로 본다.
+        near_resistance = (
+            res_val > price
+            and (res_val - price) <= max(10 * pip, atr_val * 0.6)
+        )
     
     buffer = max(2 * pip, atr_val * 0.10)
     breakout_confirmed = False
@@ -1634,8 +1755,12 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
             )
 
         # 1) 패턴 그룹 먼저 정의
-    bullish_patterns = ["BULLISH_ENGULFING", "HAMMER", "MORNING_STAR"]
-    bearish_patterns = ["SHOOTING_STAR", "BEARISH_ENGULFING", "HANGING_MAN", "EVENING_STAR"]
+    # 🟥 [FIX-B6d] detect_candle_pattern()이 실제로 반환하는 라벨과 목록을 일치시킨다.
+    #    PIERCING_LINE / DARK_CLOUD_COVER가 빠져 있어서, 같은 성격의 반전 패턴인데
+    #    BULLISH_ENGULFING만 ±2를 받고 이 둘은 0점이 되는 비대칭이 있었다.
+    #    반대로 MORNING_STAR / EVENING_STAR / HANGING_MAN은 생성되지 않으므로 제거.
+    bullish_patterns = ["BULLISH_ENGULFING", "HAMMER", "PIERCING_LINE"]
+    bearish_patterns = ["SHOOTING_STAR", "BEARISH_ENGULFING", "DARK_CLOUD_COVER"]
         # 2) 방향에 따라 가점/감점 다르게 적용
     if pattern in bullish_patterns:
         if is_buy:
@@ -1653,10 +1778,13 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
             signal_score -= 1.5
             reasons.append(f"⚠️ 매도 반전 패턴 ({pattern}) ➜ BUY 신뢰도 하락 (-1.5)")
     # 교과서적 기회 포착 보조 점수
-    op_score, op_reasons = must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles, trend, atr, price, bollinger_upper, bollinger_lower, support, resistance, support_distance, resistance_distance, pip_size, expected_direction=None)
-    if op_score > 0:
-        signal_score += op_score
-        reasons += op_reasons
+    # 🟥 [FIX-B5] 이 블록은 그대로 두면 이중 계산이 된다.
+    #    must_capture_opportunity()는 이미 함수 맨 위(L757)에서 expected_direction=signal로
+    #    호출돼 score에 반영됐다. 여기서 또 부르면 같은 점수를 두 번 더하게 된다.
+    #    (기존엔 expected_direction=None이라 op_score가 0 이하로만 나와서 `if op_score > 0`이
+    #     절대 참이 되지 않았고, 그래서 이중 계산이 우연히 안 일어났을 뿐이다.
+    #     B1 수정으로 방향이 제대로 전달되기 시작하면 이 블록이 실제 버그가 된다.)
+    #    → 계산 자체를 제거한다.
 
     try:
         # 하락 추세 말기: 과매도 + 지지선 근접에서 SELL은 숏스퀴즈 위험 → 감점
@@ -1685,26 +1813,34 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
 
         # 상승 추세 말기: 과매수 + 저항선 근접에서 BUY는 고점 물림 위험 → 감점
         if trend == "UPTREND" and signal == "BUY":
-        
+
+            # 🟥 [FIX-B2] 여기도 방향 조건 추가. 이미 저항 위로 뚫고 올라간 상태는
+            #    "저항 근접(돌파 실패 위험)"이 아니라 "돌파 성공"이다.
             near_resistance = (
                 resistance is not None and
                 price is not None and
                 atr is not None and
-                abs(resistance - price) <= atr * 0.25
+                resistance > price and
+                (resistance - price) <= atr * 0.25
             )
-        
+
             if (rsi is not None) and (rsi > 68) and near_resistance:
-        
+
                 signal_score -= 3.0
                 reasons.append(
                     "🔴 과매수 + 저항선 매우 근접(ATR 기준) → late BUY / 돌파 실패 위험 (-3.0)"
                 )
-        
+
+            # 🟥 [FIX-B3] "과매수면 무조건 감점" 로직 제거.
+            #    실거래 665건 분석 결과 RSI 구간별 승률이 정반대였다:
+            #      RSI 50~60 → 42.6% / 70~80 → 53.0% / 80~100 → 53.6%
+            #    이 봇은 돌파·모멘텀 지속 전략인데, 반전(reversal) 매매용 과열 페널티를
+            #    붙여놓아서 가장 잘 맞는 구간을 스스로 깎아내리고 있었다.
+            #    → 저항 근접(위 조건)일 때만 감점하고, 단순 과매수는 감점하지 않는다.
             elif (rsi is not None) and (rsi > 68):
-        
-                signal_score -= 1.0
                 reasons.append(
-                    "🟠 과매수 구간 BUY → 조정 위험 (-1.0)"
+                    "🟢 과매수 구간 BUY — 모멘텀 전략에서는 오히려 승률이 높은 구간 "
+                    "(실거래 RSI 70~80: 53.0%, 80~100: 53.6%) → 감점 없음"
                 )
 
     except Exception as e:
@@ -1718,6 +1854,16 @@ app = FastAPI()
 
 OANDA_API_KEY = os.getenv("OANDA_API_KEY")
 ACCOUNT_ID = os.getenv("ACCOUNT_ID")
+# ============================================================
+# 🟥 [FIX-E2] OANDA 엔드포인트 하드코딩 제거.
+#  기존엔 세 곳 모두 api-fxpractice(데모)로 박혀 있어서, 환경변수로 실계좌를
+#  가리켜도 항상 데모로 나갔다. 반대로 누가 무심코 이 문자열만 바꾸면
+#  나머지 두 곳과 어긋나 계좌가 섞이는 사고가 난다.
+#  기본값은 안전하게 데모(practice) 유지. 실계좌는 OANDA_LIVE=true 로만 전환.
+# ============================================================
+OANDA_LIVE = os.getenv("OANDA_LIVE", "false").strip().lower() == "true"
+OANDA_BASE_URL = "https://api-fxtrade.oanda.com" if OANDA_LIVE else "https://api-fxpractice.oanda.com"
+print(f"🏦 OANDA 엔드포인트: {OANDA_BASE_URL} ({'실계좌' if OANDA_LIVE else '데모'})")
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 # ============================================================
@@ -1755,11 +1901,87 @@ EXCLUDED_SYMBOLS = set(s.strip().upper() for s in _EXCLUDED_SYMBOLS_ENV.split(",
 OUTCOME_TRACKER_INTERVAL_MINUTES = int(os.getenv("OUTCOME_TRACKER_INTERVAL_MINUTES", "30"))
 # 진입 후 이 시간(분)이 지나도 TP/SL 둘 다 안 닿으면 강제로 시장가 청산
 STOCK_TIME_EXIT_MINUTES = int(os.getenv("STOCK_TIME_EXIT_MINUTES", "90"))
-# 🟦 주식 TP/SL ATR 배수. TradingView Pine 전략("BUY STOCK PORTFOLIO A2")의
-#    tpATR(기본 0.8) / slATR(기본 1.0) 입력값과 반드시 동일하게 맞춰야 한다.
-#    Pine에서 입력값을 바꾸면 여기 환경변수도 같이 바꿔야 정렬이 유지된다.
-STOCK_TP_ATR_MULT = float(os.getenv("STOCK_TP_ATR_MULT", "1.0"))
-STOCK_SL_ATR_MULT = float(os.getenv("STOCK_SL_ATR_MULT", "1.0"))
+# 🟥 [FIX-A3] 시간청산 전용 루프 주기(분). 기존엔 30분짜리 시트 동기화 체인의
+#    3번째 순서로 묶여 있어서, 앞 단계(수백 행 gspread 업데이트)가 느리면
+#    시간청산 차례가 아예 안 왔다. 독립 루프로 분리하고 주기도 짧게 가져간다.
+TIME_EXIT_CHECK_MINUTES = int(os.getenv("TIME_EXIT_CHECK_MINUTES", "5"))
+# 🟥 [FIX-A3] 장마감 전 전량청산. 실거래 최대 손실이 전부 오버나이트 갭에서 나왔다.
+#    1550 = 15:50 ET. 0 또는 STOCK_EOD_FLATTEN_ENABLED=false 로 끌 수 있다.
+STOCK_EOD_FLATTEN_ENABLED = os.getenv("STOCK_EOD_FLATTEN_ENABLED", "true").strip().lower() != "false"
+STOCK_EOD_FLATTEN_HHMM = int(os.getenv("STOCK_EOD_FLATTEN_HHMM", "1550"))
+
+# ============================================================
+# 🟥 [FIX-A1/A2] TP/SL 구조 전면 개편 (2026-08 실거래 166건 분석 결과 반영)
+# ------------------------------------------------------------
+#  문제 진단:
+#   · 기존 SL = ATR × 1.0 은 15분봉 ATR 중앙값(0.689%)의 1.07배에 불과해
+#     "정상 노이즈" 안에 손절선이 들어가 있었다. 실제로 5분 이내 청산 26건의
+#     승률이 23.1%(-$264)로 전체 손실의 72%를 만들었다.
+#   · 기존 TP = ATR × 1.0 → 설계 손익비 1.0. 여기에 진입 슬리피지(거래의 74%가
+#     불리 체결)와 청산 슬리피지가 겹쳐 실현 손익비가 0.804까지 떨어졌고,
+#     손익분기 필요 승률이 55.4%가 됐다(실제 승률 44.0%).
+#
+#  수정 방향:
+#   · SL 을 ATR × 1.5 로 넓혀 손절선을 노이즈 밖으로 뺀다.
+#   · TP 는 더 이상 ATR 배수로 "독립" 지정하지 않는다. 반드시 SL 거리 × 손익비로
+#     파생시켜, 어떤 파라미터를 만져도 손익비가 절대 무너지지 않게 한다.
+#     (기존 구조는 TP/SL 배수를 따로 두어 손익비가 조용히 1.0으로 붕괴했다.)
+#
+#  기본값: SL 1.5×ATR, RR 1.6 → TP 2.4×ATR. 손익분기 필요 승률 38.5%.
+#  ⚠️ TradingView Pine 전략의 tpATR/slATR 입력값도 같이 맞춰야 정렬이 유지된다.
+# ============================================================
+STOCK_SL_ATR_MULT = float(os.getenv("STOCK_SL_ATR_MULT", "1.5"))
+# 목표 손익비(Reward:Risk). TP 거리 = SL 거리 × 이 값.
+STOCK_RR_RATIO = float(os.getenv("STOCK_RR_RATIO", "1.6"))
+# TP 배수는 파생값 — 직접 설정하지 말 것. (하위호환용으로 이름만 유지)
+STOCK_TP_ATR_MULT = STOCK_SL_ATR_MULT * STOCK_RR_RATIO
+
+# FX(OANDA)측 최소 손익비. adjust_tp_sl_for_structure 에서 강제한다.
+FX_MIN_RR_RATIO = float(os.getenv("FX_MIN_RR_RATIO", "1.8"))
+
+# ============================================================
+# 🟥 [FIX-A4] 레버리지/인버스 ETF · 페니주 진입 차단
+# ------------------------------------------------------------
+#  TZA(3배 인버스 소형주 ETF)를 상승장에서 롱으로 26회 매수해 -$86 손실.
+#  레버리지 ETF는 일간 리밸런싱 구조상 변동성 감쇠가 있어 이 전략의 대상이 아니다.
+#  '오늘의 추천 후보' 스캐너가 거래량만 보고 SOXS·페니주를 공급하던 것도 같이 막는다.
+# ============================================================
+_LEVERAGED_ETF_DEFAULT = (
+    "TZA,TNA,SOXL,SOXS,SPXL,SPXS,TQQQ,SQQQ,UPRO,SPXU,UDOW,SDOW,"
+    "LABU,LABD,FAS,FAZ,YINN,YANG,NUGT,DUST,JNUG,JDST,BOIL,KOLD,"
+    "UVXY,SVXY,VXX,VIXY,UVIX,SVIX,BITO,BITX,ETHU,TSLL,TSLQ,NVDL,NVD,"
+    "AGQ,ZSL,UCO,SCO,ERX,ERY,DRN,DRV,CURE,WEBL,WEBS,BULZ,FNGD,FNGU"
+)
+_LEVERAGED_ETF_ENV = os.getenv("LEVERAGED_ETF_BLOCKLIST", _LEVERAGED_ETF_DEFAULT)
+LEVERAGED_ETFS = set(s.strip().upper() for s in _LEVERAGED_ETF_ENV.split(",") if s.strip())
+# 이 가격 미만 종목은 진입 금지(페니주 배제). 스프레드·슬리피지가 엣지를 삼킨다.
+MIN_STOCK_PRICE = float(os.getenv("MIN_STOCK_PRICE", "5.0"))
+# 진입 허용 최대 가격(0이면 무제한). 초고가주는 티어 수량 2주로 노출이 과도해진다.
+MAX_STOCK_PRICE = float(os.getenv("MAX_STOCK_PRICE", "0"))
+
+
+def is_blocked_instrument(pair: str, price: float | None = None) -> tuple[bool, str]:
+    """
+    [FIX-A4] 진입 자체를 막아야 하는 종목인지 판정.
+    반환: (차단여부, 사유). FX는 항상 통과.
+    """
+    if not is_stock_pair(pair):
+        return False, ""
+    sym = (pair or "").upper().strip()
+    if sym in EXCLUDED_SYMBOLS:
+        return True, "EXCLUDED_SYMBOL"
+    if sym in LEVERAGED_ETFS:
+        return True, "LEVERAGED_ETF"
+    try:
+        p = float(price) if price is not None else None
+    except (TypeError, ValueError):
+        p = None
+    if p is not None:
+        if MIN_STOCK_PRICE > 0 and p < MIN_STOCK_PRICE:
+            return True, f"PENNY_STOCK(<{MIN_STOCK_PRICE:g})"
+        if MAX_STOCK_PRICE > 0 and p > MAX_STOCK_PRICE:
+            return True, f"PRICE_TOO_HIGH(>{MAX_STOCK_PRICE:g})"
+    return False, ""
 
 ALPACA_HEADERS = {
     "APCA-API-KEY-ID": ALPACA_API_KEY or "",
@@ -1847,10 +2069,17 @@ async def webhook(request: Request):
 
 def process_webhook_sync(raw: bytes):
     print("✅ STEP 1: 웹훅 진입")
+    # 🟥 [FIX-E3] 전역 10분 쿨다운은 완전히 죽은 코드였다.
+    #    _last_execution_time이 0.0으로 선언된 뒤 어디서도 갱신되지 않아서
+    #    (current_time - 0)이 항상 600보다 커 한 번도 차단된 적이 없다.
+    #    그리고 애초에 "전 종목 공통 10분 쿨다운"은 이 전략(여러 종목 동시 운용)과
+    #    맞지 않는다. 종목별 쿨다운(check_symbol_repeat_cooldown)이 이미 있으므로
+    #    전역 쿨다운은 기본 비활성으로 두되, 필요하면 env로 켤 수 있게 한다.
     global _last_execution_time
     current_time = _t.time()
-    if current_time - _last_execution_time < 600:  # 600초 = 10분
-        print(f"⚠️ [차단] 10분 쿨다운 중입니다. (경과: {int(current_time - _last_execution_time)}초)")
+    if GLOBAL_COOLDOWN_SECONDS > 0 and (current_time - _last_execution_time) < GLOBAL_COOLDOWN_SECONDS:
+        print(f"⚠️ [차단] 전역 쿨다운 중 (경과: {int(current_time - _last_execution_time)}초 "
+              f"/ 설정 {GLOBAL_COOLDOWN_SECONDS}초)")
         return JSONResponse(content={"status": "ignored", "reason": "cooldown_active"})
     try:
         data = json.loads(raw.decode("utf-8") or "{}")
@@ -1866,6 +2095,38 @@ def process_webhook_sync(raw: bytes):
     print(f"✅ STEP 2: 데이터 수신 완료 | pair: {pair}")
 
     _ = check_recent_opposite_signal(pair, signal)  # 소프트 OFF: 기록만, 차단 안 함
+
+    # ============================================================
+    # 🟥 [FIX-D6] 진입 금지 종목은 여기서 바로 끊는다.
+    # ------------------------------------------------------------
+    #  기존엔 제외 종목 체크가 웹훅 거의 끝(실행 게이트)에 있어서,
+    #  CEG 89건 + ALAB 50건 + VRT 12건 = 151건(전체의 14%)이
+    #  캔들 조회 → 지표 계산 → 뉴스 조회 → GPT 호출까지 전부 태운 뒤에야 버려졌다.
+    #  비용과 레이트리밋을 그대로 낭비한 것.
+    #  (가격을 아직 모르므로 여기선 심볼 기반 차단만. 페니주 필터는 가격을 안 뒤 다시 본다.)
+    # ============================================================
+    _early_blocked, _early_reason = is_blocked_instrument(pair, None)
+    if _early_blocked:
+        print(f"🚫 [조기차단] {pair} — {_early_reason} (지표·GPT 호출 없이 즉시 종료)")
+        # 🟥 [FIX-D6b] 조기 종료하더라도 감사 흔적은 남긴다.
+        #    그냥 return하면 이 알림이 왔다는 사실 자체가 시트에서 사라져서
+        #    "제외 종목에 알림이 몇 건이나 낭비되는지"를 나중에 셀 수 없다.
+        _log_blocked_alert(pair, data.get("signal"), data.get("alert_name"), _early_reason)
+        return JSONResponse(content={
+            "status": "blocked", "reason": _early_reason, "pair": pair
+        })
+
+    # 🟥 [FIX-E5] 같은 봉에 대한 알림 재전송 차단.
+    #    TradingView가 재시도하거나 여러 알림이 겹치면 같은 신호로 2번 진입할 수 있었다.
+    # 🟥 [FIX-E5b] {{timenow}}는 "알림 발사 시각"이라 재전송마다 값이 달라진다.
+    #    그걸 키에 넣으면 중복 판정이 절대 성립하지 않아 dedup이 무의미해진다.
+    #    봉 시각(bar_time/time)만 쓰고, 없으면 심볼+방향만으로 판정한다.
+    _bar_time = data.get("bar_time") or data.get("bar_close_time") or data.get("time") or ""
+    if _is_duplicate_alert(pair, signal, _bar_time):
+        print(f"🔁 [중복알림] {pair} {signal} (bar={_bar_time}) — {ALERT_DEDUP_SECONDS}초 내 재수신 → 무시")
+        return JSONResponse(content={
+            "status": "ignored", "reason": "duplicate_alert", "pair": pair
+        })
         
     price_raw = data.get("price")
     try:
@@ -1895,6 +2156,20 @@ def process_webhook_sync(raw: bytes):
         )
 
     alert_name = data.get("alert_name", "기본알림")
+
+    # 🟥 [FIX-B1] 전략명을 여기서 한 번만 확정해서 아래 전부(스코어 함수 인자 / threshold 조회)가
+    #    같은 값을 보게 한다. 기존엔 threshold 조회용 strategy_name이 스코어 계산보다
+    #    한참 뒤(웹훅 중반)에 따로 계산돼서, 스코어 함수는 전략명을 아예 못 받았다.
+    _alert_data_raw = data.get("alert_data", {}) or {}
+    strategy_name = (
+        (_alert_data_raw.get("strategy_name") if isinstance(_alert_data_raw, dict) else None)
+        or (_alert_data_raw.get("alert_name") if isinstance(_alert_data_raw, dict) else None)
+        or data.get("strategy_name")
+        or data.get("alert_name")
+        or data.get("strategy")
+        or "기본알림"
+    )
+    strategy_name = str(strategy_name).strip() or "기본알림"
 
     candles = get_candles(pair, base_granularity_for(pair), 200)
     # ✅ 캔들 방어 로직 — ATR(14) 계산 가능한 최소 개수(14개)로 강화
@@ -1998,7 +2273,15 @@ def process_webhook_sync(raw: bytes):
     fibo_levels = calculate_fibonacci_levels(candles["high"].max(), candles["low"].min())
     # 📌 현재가 계산
     price = current_price
-    price_digits = int(abs(np.log10(pip_value_for(pair))))  # EURUSD=4, JPY계열=2
+    # 🟥 [FIX-E8] 주식에서 자릿수가 뭉개지던 버그.
+    #    pip_value_for(주식) = max(0.01, 가격×0.0001)이라 $500짜리 주식은 pip=0.05가 되고
+    #    log10(0.05)≈-1.3 → int(abs(...))=1 → GPT payload의 지지/저항·OHLC가
+    #    소수 1자리로 반올림돼 정밀도가 통째로 날아갔다.
+    #    → 주식은 항상 센트 단위(2자리)를 쓴다.
+    if is_stock_pair(pair):
+        price_digits = 2
+    else:
+        price_digits = int(abs(np.log10(pip_value_for(pair))))  # EURUSD=4, JPY계열=2
     signal_score, reasons = score_signal_with_filters(
         rsi.iloc[-1],
         macd.iloc[-1],
@@ -2021,7 +2304,18 @@ def process_webhook_sync(raw: bytes):
         support_distance,
         resistance_distance,
         pip_size,
-        macd_trend
+        macd_trend,
+        # 🟥 [FIX-B1] 여기가 이 파일 최대의 버그였다.
+        #    기존 호출은 위치인자 22개까지만 넘기고 expected_direction / strategy_name 을
+        #    빠뜨렸다. 그래서 함수 안의 is_buy / is_sell 이 항상 False가 되어
+        #      · BUY/SELL 전용 감점 블록
+        #      · 패턴 그룹 가·감점(+2 / -1.5)
+        #      · balance breakout 전용 분기
+        #      · 두 번째 must_capture_opportunity 블록
+        #    이 전부 죽은 코드였다. 실거래 665건에서 점수-결과 상관이 r=0.039(p=0.31)로
+        #    사실상 0이었던 직접 원인.
+        expected_direction=signal,
+        strategy_name=strategy_name,
     )
     # ===== GPT 입력 업그레이드용 안전한 추가 정보 =====
     try:
@@ -2160,7 +2454,11 @@ def process_webhook_sync(raw: bytes):
         reasons.append("🔴 opportunity_score 역행 + MACD 골든크로스 동시 발생 → 과열 추격 위험 추가감점 (-1.5)")
             
     recent_trade_time = get_last_trade_time()
-    time_since_last = datetime.utcnow() - recent_trade_time if recent_trade_time else timedelta(hours=999)
+    # 🟥 [FIX-E9] naive/aware 혼용으로 TypeError가 날 수 있어 양쪽을 aware UTC로 맞춘다.
+    _now_utc = datetime.now(ZoneInfo("UTC"))
+    if recent_trade_time is not None and recent_trade_time.tzinfo is None:
+        recent_trade_time = recent_trade_time.replace(tzinfo=ZoneInfo("UTC"))
+    time_since_last = (_now_utc - recent_trade_time) if recent_trade_time else timedelta(hours=999)
     allow_conditional_trade = time_since_last > timedelta(hours=2)
 
     strategy_thresholds = {
@@ -2172,17 +2470,18 @@ def process_webhook_sync(raw: bytes):
     "BUY_STOCK_PORTFOLIO_A2": -2.5
     }
 
+    # 🟥 [FIX-B1] strategy_name은 위(웹훅 앞부분)에서 이미 확정했다. 여기서 다시 계산하지 않는다.
+    #    (기존엔 여기서만 계산해서 스코어 함수는 전략명을 못 받았고, 마지막 `or ""`는 도달 불가 코드였다)
     alert_data = payload.get("alert_data", {})
-    strategy_name = (
-        alert_data.get("strategy_name")
-        or alert_data.get("alert_name")
-        or payload.get("strategy_name")
-        or payload.get("alert_name")
-        or payload.get("strategy")
-        or "기본알림" 
-        or ""
-    ).strip()
-    threshold = strategy_thresholds.get(strategy_name, 999)
+    threshold = strategy_thresholds.get(strategy_name, None)
+    if threshold is None:
+        # 🟥 [FIX-B1] 미등록 전략명이면 기존엔 threshold=999로 영구 차단되면서 로그도 없이 사라졌다.
+        #    이제는 명시적으로 경고를 남기고 기본값으로 떨어뜨린다.
+        _fallback = strategy_thresholds["BUY_STOCK_PORTFOLIO_A2"] if is_stock_pair(pair) else strategy_thresholds["기본알림"]
+        print(f"⚠️ [threshold] 등록되지 않은 전략명 '{strategy_name}' → 기본값 {_fallback} 적용 "
+              f"(strategy_thresholds에 추가하는 것을 권장)")
+        reasons.append(f"⚠️ 미등록 전략명 '{strategy_name}' → 기본 threshold {_fallback} 사용")
+        threshold = _fallback
 
     # 🟦 Pine 쪽 alert()는 안 건드리고, 주식 신호인데 strategy_name이 따로 안 와서
     #    "기본알림"(FX 기준 3.0)으로 떨어진 경우만 주식 전용 threshold로 바꿔준다.
@@ -2191,7 +2490,11 @@ def process_webhook_sync(raw: bytes):
 
     print(f"[DEBUG] strategy_name={strategy_name}, threshold={threshold}, score={signal_score}")
     gpt_feedback = "GPT 분석 생략: 점수 미달"
-    decision, tp, sl = None, None, None  
+    decision, tp, sl = None, None, None
+    # 🟥 [FIX-D4] GPT가 실제로 무엇을 판단했는지 별도 변수로 보관한다.
+    #    기존엔 `decision`이 None으로 초기화된 뒤 한 번도 갱신되지 않는데
+    #    그대로 시트 14번 열(final_decision)에 기록돼서 1,048행이 전부 공백이었다.
+    gpt_parsed_decision = None
     wait_confidence = None
     final_decision, final_tp, final_sl = None, None, None
     gpt_raw = None
@@ -2249,14 +2552,41 @@ def process_webhook_sync(raw: bytes):
         
                 _t.sleep(2)
         
-        if (
-            not gpt_raw
-            or "GPT_ERROR" in str(gpt_raw)
-        ):
-            print(
-                "❌ GPT 3회 재시도 실패"
-            )
-            
+        # ============================================================
+        # 🟥 [FIX-C1] GPT 실패 = 진입 차단
+        # ------------------------------------------------------------
+        #  기존 동작: GPT가 타임아웃/429/에러/시간제한으로 실패하면 그 문자열이
+        #  parse_gpt_feedback()에서 "WAIT"으로 파싱되고, 바로 아래 "WAIT 확신도 부족"
+        #  로직이 주식·JPY를 원래 알림 방향으로 강제 환원시켰다.
+        #  → 결과적으로 GPT가 죽어 있어도 무검증으로 주문이 나갔고,
+        #    GPT 내부의 롤오버/금요일 시간제한도 이 경로로 전부 무력화됐다.
+        #  이제는 GPT가 유효한 판단을 못 주면 그 신호를 버린다.
+        # ============================================================
+        _gpt_failed = False
+        _gpt_fail_reason = ""
+        _raw_probe = str(gpt_raw) if gpt_raw is not None else ""
+        if not gpt_raw:
+            _gpt_failed, _gpt_fail_reason = True, "GPT_NO_RESPONSE"
+        elif "GPT_ERROR" in _raw_probe:
+            _gpt_failed, _gpt_fail_reason = True, "GPT_ERROR"
+        elif "GPT_TIMEOUT" in _raw_probe or "타임아웃" in _raw_probe:
+            _gpt_failed, _gpt_fail_reason = True, "GPT_TIMEOUT"
+        elif "⛔ 거래 제한" in _raw_probe:
+            # analyze_with_gpt() 내부의 롤오버/주말 시간제한 — 원래 의도대로 '차단'으로 처리
+            _gpt_failed, _gpt_fail_reason = True, "GPT_TIME_RESTRICTED"
+        elif "쿨다운" in _raw_probe or "429" in _raw_probe:
+            _gpt_failed, _gpt_fail_reason = True, "GPT_RATE_LIMITED"
+
+        if _gpt_failed:
+            print(f"❌ GPT 검증 실패({_gpt_fail_reason}) → 이 신호는 진입하지 않는다 (무검증 진입 금지)")
+            gpt_feedback = f"{_gpt_fail_reason}: {_raw_probe[:500]}"
+            final_decision = f"BLOCKED_{_gpt_fail_reason}"
+            final_tp, final_sl = None, None
+            gpt_parsed_decision = _gpt_fail_reason
+            _skip_gpt_parse = True
+        else:
+            _skip_gpt_parse = False
+
         print("✅ STEP 6: GPT 응답 수신 완료 (이미지 분석 포함)")
         # ✅ 추가: 파싱 결과 강제 정규화 (대/소문자/공백/이상값 방지)
         raw_text = (
@@ -2265,44 +2595,38 @@ def process_webhook_sync(raw: bytes):
             if isinstance(gpt_raw, dict) else str(gpt_raw)
         )
         print(f"📄 GPT Raw Response: {raw_text!r}")
-        gpt_feedback = raw_text
-        parsed_decision, tp, sl, wait_confidence = parse_gpt_feedback(raw_text) if raw_text else ("WAIT", None, None, None)
-        
-        if parsed_decision in ["BUY", "SELL"]:
-            final_decision = parsed_decision
-            final_tp = tp
-            final_sl = sl
-        
-            print(
-                f"[✔️UPDATE] GPT 결정 적용: "
-                f"{final_decision}, tp={final_tp}, sl={final_sl}"
-            )
-        elif (
-            parsed_decision == "WAIT"
-            and signal in ("BUY", "SELL")
-        ):
-            # 🟦 USDJPY: 95 미만이면 강제 거래, 주식: 80 미만이면 강제 거래
-            _is_fx_jpy = not is_stock_pair(pair) and "JPY" in pair
-            _required_conf = 95 if _is_fx_jpy else 80
-            _should_force = (wait_confidence is None or wait_confidence < _required_conf)
-            if (is_stock_pair(pair) or _is_fx_jpy) and _should_force:
-                final_decision = signal
-                final_tp = None
-                final_sl = None
-                print(
-                    f"🔁 [WAIT 확신도 부족] GPT가 WAIT 선택했지만 wait_confidence={wait_confidence} "
-                    f"({_required_conf} 미만 또는 누락, {'JPY' if _is_fx_jpy else '주식'}) → 원래 방향({signal})으로 강제 환원"
-                )
+        if not _skip_gpt_parse:
+            gpt_feedback = raw_text
+            parsed_decision, tp, sl, wait_confidence = parse_gpt_feedback(raw_text) if raw_text else ("WAIT", None, None, None)
+            gpt_parsed_decision = parsed_decision   # 🟥 [FIX-D4] 시트 14번 열에 기록될 값
+
+            if parsed_decision in ["BUY", "SELL"]:
+                # 🟥 [FIX-C1b] GPT가 알림과 반대 방향을 말하면 따라가지 않고 버린다.
+                #    기존엔 GPT 방향을 그대로 채택해서, BUY 알림에 GPT가 SELL이라고 하면
+                #    반대 포지션이 나갈 수 있었다.
+                if signal in ("BUY", "SELL") and parsed_decision != signal:
+                    print(f"⛔ GPT 판단({parsed_decision})이 알림 방향({signal})과 반대 → 진입 취소")
+                    final_decision = "BLOCKED_GPT_DIRECTION_CONFLICT"
+                    final_tp, final_sl = None, None
+                else:
+                    final_decision = parsed_decision
+                    final_tp = tp
+                    final_sl = sl
+                    print(
+                        f"[✔️UPDATE] GPT 결정 적용: "
+                        f"{final_decision}, tp={final_tp}, sl={final_sl}"
+                    )
             else:
+                # 🟥 [FIX-C1] WAIT 강제 환원 로직 제거.
+                #    기존엔 주식/JPY에서 wait_confidence가 80/95 미만이거나 아예 없으면
+                #    GPT의 WAIT을 무시하고 원래 방향으로 되돌렸다. GPT가 wait_confidence를
+                #    거의 안 돌려줬기 때문에(실거래 80건 중 기록 0건) 사실상 "WAIT은 항상 무시"였다.
+                #    → GPT의 WAIT을 그대로 존중한다. 검증 레이어가 검증을 하려면 이래야 한다.
                 final_decision = "WAIT"
                 final_tp = None
                 final_sl = None
-        
-            print(
-                f"⚠️[WAIT] GPT 반환값 무효: "
-                f"{parsed_decision}"
-            )
-       
+                print(f"⏸️ [WAIT] GPT 관망 판단 존중 (wait_confidence={wait_confidence}) → 진입하지 않음")
+
     else:
         print("🚫 GPT 분석 생략: 점수 2.0점 미만")
         print("🔎 GPT 분석 상세 로그")
@@ -2315,6 +2639,7 @@ def process_webhook_sync(raw: bytes):
             final_decision = "SKIPPED_BY_THRESHOLD"
             final_tp = None
             final_sl = None
+        gpt_parsed_decision = "NOT_CALLED_BELOW_THRESHOLD"   # 🟥 [FIX-D4]
 
     result = gpt_raw or ""
 
@@ -2332,6 +2657,10 @@ def process_webhook_sync(raw: bytes):
 
     if not gpt_feedback or not str(gpt_feedback).strip():
         gpt_feedback = "GPT 응답 없음"
+    # 🟥 [FIX-C1c] GPT 실패로 차단된 경우, 위의 재추출이 실패 사유를 덮어쓴다.
+    #    시트에 왜 막혔는지가 남아야 하므로 사유를 다시 앞에 붙인다.
+    if str(final_decision or "").startswith("BLOCKED_"):
+        gpt_feedback = f"[{final_decision}] {str(gpt_feedback)[:800]}"
     
     print(f"✅ STEP 7: GPT 해석 완료 | decision: {final_decision}, TP: {final_tp}, SL: {final_sl}")
    
@@ -2340,7 +2669,15 @@ def process_webhook_sync(raw: bytes):
     outcome_analysis = "WAIT 또는 주문 미실행"
     # 🟦 WAIT일 때 GPT가 보고한 wait_confidence를 같이 남겨둔다 (나중에 "GPT가 80 이상이라고 한
     #    WAIT들이 진짜로 맞았는지" 보정/검증 분석에 쓰임).
-    adjustment_suggestion = f"wait_confidence={wait_confidence}" if final_decision == "WAIT" and wait_confidence is not None else ""
+    # 🟥 [FIX-C5] wait_confidence가 None일 때도 기록한다.
+    #    기존엔 `is not None` 조건 때문에 실거래 WAIT 80건 중 단 1건도 기록되지 않았고,
+    #    "GPT의 관망 판단이 실제로 맞았는지"를 사후 검증할 방법이 아예 없었다.
+    if final_decision == "WAIT":
+        adjustment_suggestion = f"wait_confidence={wait_confidence if wait_confidence is not None else 'NONE'}"
+    elif str(final_decision or "").startswith("BLOCKED_"):
+        adjustment_suggestion = str(final_decision)
+    else:
+        adjustment_suggestion = ""
     price_movements = None
     gpt_feedback_dup = None
     filtered_movement = None
@@ -2360,7 +2697,8 @@ def process_webhook_sync(raw: bytes):
         stoch_rsi=stoch_rsi,
         pattern=pattern,
         trend=trend,
-        gpt_decision=decision,
+        # 🟥 [FIX-D4] `decision`(항상 None) → `gpt_parsed_decision`으로 교체.
+        gpt_decision=gpt_parsed_decision,
         gpt_feedback=gpt_feedback,
         news=news,
         alert_name=alert_name,
@@ -2427,20 +2765,24 @@ def process_webhook_sync(raw: bytes):
         _stock_atr = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr)
         if _stock_atr and _stock_atr > 0:
             _digits = price_round_digits(pair)
+            # 🟥 [FIX-A2] SL 거리를 먼저 정하고, TP는 반드시 SL거리 × 손익비로 파생시킨다.
+            #    (기존처럼 TP/SL 배수를 따로 두면 손익비가 조용히 1.0으로 무너진다 — 실제로 그랬다.)
+            _sl_dist = _stock_atr * STOCK_SL_ATR_MULT
+            _tp_dist = _sl_dist * STOCK_RR_RATIO
             if _calc_direction == "BUY":
-                _hyp_tp = round(price + _stock_atr * STOCK_TP_ATR_MULT, _digits)
-                _hyp_sl = round(price - _stock_atr * STOCK_SL_ATR_MULT, _digits)
+                _hyp_tp = round(price + _tp_dist, _digits)
+                _hyp_sl = round(price - _sl_dist, _digits)
             else:  # SELL
-                _hyp_tp = round(price - _stock_atr * STOCK_TP_ATR_MULT, _digits)
-                _hyp_sl = round(price + _stock_atr * STOCK_SL_ATR_MULT, _digits)
+                _hyp_tp = round(price - _tp_dist, _digits)
+                _hyp_sl = round(price + _sl_dist, _digits)
 
             if final_decision in ("BUY", "SELL"):
                 # 실제 체결 방향 — 기존과 동일하게 final_tp/final_sl/tp/sl 전부 갱신
                 final_tp, final_sl = _hyp_tp, _hyp_sl
                 tp, sl = final_tp, final_sl  # 아래 검증 블록이 참조하는 tp/sl도 동기화
                 gpt_feedback += (
-                    f"\n🟦 주식 TP/SL을 Pine 전략 공식으로 강제 재계산: "
-                    f"TP=entry±ATR*{STOCK_TP_ATR_MULT}, SL=entry∓ATR*{STOCK_SL_ATR_MULT} "
+                    f"\n🟦 주식 TP/SL 재계산: SL=ATR×{STOCK_SL_ATR_MULT}, "
+                    f"TP=SL거리×RR{STOCK_RR_RATIO} (=ATR×{STOCK_TP_ATR_MULT:.2f}) "
                     f"(ATR={_stock_atr:.4f}) → TP={final_tp}, SL={final_sl}"
                 )
                 # 🟦 log_trade_result()가 이 재계산보다 먼저 호출돼서, GPT가 보고한 값이 공식과
@@ -2460,8 +2802,21 @@ def process_webhook_sync(raw: bytes):
 
     # ✅ 여기서부터 검증 블록 삽입 (FX는 기존과 동일하게 tp/sl 기준으로 계산)
     pip = pip_value_for(pair)
-    min_pip = 5 * pip
-    tp_sl_ratio = abs(tp - price) / max(1e-9, abs(price - sl))
+    # 🟥 [FIX-E4] tp/sl이 ""(safe_float 실패값)이나 None이면 아래 산술에서 TypeError로
+    #    500이 났다. 계산 전에 숫자로 정규화한다.
+    def _as_num(v):
+        try:
+            if v is None or v == "":
+                return None
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    tp = _as_num(tp)
+    sl = _as_num(sl)
+    final_tp = _as_num(final_tp)
+    final_sl = _as_num(final_sl)
+    # min_pip / tp_sl_ratio는 계산만 하고 어디서도 쓰이지 않던 죽은 변수라 제거했다.
 
 
     # ✅ ATR 조건 강화 (보완)
@@ -2476,6 +2831,8 @@ def process_webhook_sync(raw: bytes):
     price_movements = []
     pnl = None
     should_execute = False
+    _block_label = ""      # 🟥 [FIX-D2c] 진입이 막힌 구체적 사유(마지막에 시트로)
+    _executed_units = None  # 🟥 [FIX-D9] 실제 주문 수량(주식=주, FX=units)
     
     
     # 1️⃣ 기본 진입 조건
@@ -2501,19 +2858,16 @@ def process_webhook_sync(raw: bytes):
             )
             should_execute = False
     
-    # 1-1️⃣ 포트폴리오 제외 종목 차단
-    #    데이터 분석 결과 Pine 백테스트 자체가 낮거나 실거래 일관 손실인 종목
-    #    ALAB(Pine 30%), CEG(Pine 53% + 실거래 14%), VRT(Pine 40% + 실거래 17%)
-    if is_stock_pair(pair) and pair.upper() in EXCLUDED_SYMBOLS:
-        reasons.append(f"🚫 포트폴리오 제외 종목({pair}) → 진입 차단")
+    # 1-1️⃣ 진입 금지 종목 차단
+    #    🟥 [FIX-A4] 기존의 EXCLUDED_SYMBOLS 단독 체크를 is_blocked_instrument()로 통합.
+    #    제외종목 + 레버리지/인버스 ETF(TZA·SOXS 등) + 페니주를 한 번에 막는다.
+    _blocked, _instr_block_reason = is_blocked_instrument(pair, price)
+    if _blocked:
+        reasons.append(f"🚫 진입 금지 종목({pair}) → 차단 [{_instr_block_reason}]")
         should_execute = False
-        if sheet_row_idx:
-            try:
-                _gsh = _get_sheet()
-                if _gsh:
-                    _gsh.update_cell(sheet_row_idx, 17, f"EXCLUDED_SYMBOL")
-            except Exception:
-                pass
+        # 🟥 [FIX-D2c] 사유를 로컬에 보관했다가 마지막 _finalize_sheet_row()에 넘긴다.
+        #    여기서 시트에 바로 쓰면, 웹훅 끝의 finalize가 같은 칸(AH)을 일반 메시지로 덮어썼다.
+        _block_label = _instr_block_reason
 
     # 2️⃣ 주식 전용: 요일별 거래 시간 제한
     #    ┌─────────────────────────────────────────────────────┐
@@ -2547,16 +2901,12 @@ def process_webhook_sync(raw: bytes):
         if _block_reason:
             reasons.append(_block_reason)
             should_execute = False
-            if sheet_row_idx:
-                try:
-                    _gsh = _get_sheet()
-                    if _gsh:
-                        _label = "TIME_BLOCKED_FRIDAY" if _ny_dow == 4 else (
-                            "TIME_BLOCKED_LUNCH" if 1200 <= _ny_hhmm < 1300 else "TIME_BLOCKED_CUTOFF"
-                        )
-                        _gsh.update_cell(sheet_row_idx, 17, f"{_label}_{_ny_hour}h{_ny_minute:02d}m")
-                except Exception:
-                    pass
+            # 🟥 [FIX-D2] 기존엔 미정의 함수 _get_sheet()를 호출해 NameError가 except에 삼켜지고
+            #    차단 사유가 시트에 전혀 안 남았다. _mark_sheet_result()로 교체.
+            _label = "TIME_BLOCKED_FRIDAY" if _ny_dow == 4 else (
+                "TIME_BLOCKED_LUNCH" if 1200 <= _ny_hhmm < 1300 else "TIME_BLOCKED_CUTOFF"
+            )
+            _block_label = f"{_label}_{_ny_hour}h{_ny_minute:02d}m"   # 🟥 [FIX-D2c]
 
 
     # if should_execute and last_atr < 0.0009:
@@ -2569,76 +2919,100 @@ def process_webhook_sync(raw: bytes):
         f"score={signal_score:.2f}, threshold={threshold}, "
         f"execute={should_execute}"
     )
-    if should_execute:
-        pair_for_order = pair.replace("/", "_")
-    
-        if is_stock_pair(pair_for_order):
-            # 🟦 같은 종목 반복신호 쿨다운 — 1시간 내 2번째 신호까지는 허용, 3번째부터 그 종목만 1시간 휴식.
-            allowed, reason = check_symbol_repeat_cooldown(pair_for_order)
-            if not allowed:
-                print(f"[SKIP] {reason}")
-                should_execute = False
-            elif reason:
-                print(f"[INFO] {reason}")
+    # 🟥 [FIX-E5] pair_for_order를 락 획득 전에 확정한다.
+    pair_for_order = pair.replace("/", "_")
+    # ============================================================
+    # 🟥 [FIX-E5] "보유 확인 → 한도 확인 → 주문 전송"을 심볼별 락으로 원자화.
+    #  기존엔 이 구간에 락이 없어서, 같은 종목 알림이 거의 동시에 2건 들어오면
+    #  둘 다 "보유 없음"을 보고 둘 다 주문할 수 있었다(웹훅이 스레드풀에서 병렬 처리됨).
+    #  락은 심볼 단위라 서로 다른 종목의 처리는 그대로 병렬로 돈다.
+    # ============================================================
+    with _get_order_lock(pair_for_order):
+        if should_execute:
 
-        if should_execute and is_stock_pair(pair_for_order):
-            # 🟦 주식: FX의 FIFO 완전차단 대신, "가격대별 정상 1회 거래수량의 2배"를
-            #    누적 보유 한도로 둔다. 이미 그 한도까지 채워져 있으면 추가 진입 스킵.
-            #    (FIFO 완전차단은 NFA 규정상 FX에만 강제되는 룰이라 주식에 그대로 가져올 필요는 없음.
-            #     다만 한 종목에 무제한 집중되는 것은 막기 위해 한도를 둠.)
-            existing_qty = get_alpaca_position_qty(pair_for_order)
-            intended_qty = get_tiered_qty(price)
-            max_total_qty = intended_qty * 2
-            if existing_qty + intended_qty > max_total_qty:
-                print(f"[SKIP] {pair_for_order} 기존 보유 {existing_qty}주 + 신규 {intended_qty}주 "
-                      f"= 한도({max_total_qty}주, 정상수량×2) 초과 → 신규진입 스킵")
-                should_execute = False
+            if is_stock_pair(pair_for_order):
+                # 🟦 같은 종목 반복신호 쿨다운 — 1시간 내 2번째 신호까지는 허용, 3번째부터 그 종목만 1시간 휴식.
+                allowed, reason = check_symbol_repeat_cooldown(pair_for_order)
+                if not allowed:
+                    print(f"[SKIP] {reason}")
+                    should_execute = False
+                    _block_label = "SYMBOL_REPEAT_COOLDOWN"   # 🟥 [FIX-D2c]
+                elif reason:
+                    print(f"[INFO] {reason}")
+
+            if should_execute and is_stock_pair(pair_for_order):
+                # 🟦 주식: FX의 FIFO 완전차단 대신, "가격대별 정상 1회 거래수량의 2배"를
+                #    누적 보유 한도로 둔다. 이미 그 한도까지 채워져 있으면 추가 진입 스킵.
+                #    (FIFO 완전차단은 NFA 규정상 FX에만 강제되는 룰이라 주식에 그대로 가져올 필요는 없음.
+                #     다만 한 종목에 무제한 집중되는 것은 막기 위해 한도를 둠.)
+                existing_qty = get_alpaca_position_qty(pair_for_order)
+                # 🟥 [FIX-E6b] 한도 계산도 실제 주문 수량 산출기(calc_alpaca_qty)와 같은 값을 써야 한다.
+                #    기존엔 캡이 적용되지 않은 get_tiered_qty()를 쓰다 보니, 캡으로 수량이 줄어든
+                #    고가주에서 한도가 실제 주문 4회분이 되어 의도(2회분)보다 느슨해졌다.
+                intended_qty = calc_alpaca_qty(price, final_sl, ALPACA_FIXED_NOTIONAL_USD)
+                max_total_qty = intended_qty * 2
+                if existing_qty + intended_qty > max_total_qty:
+                    print(f"[SKIP] {pair_for_order} 기존 보유 {existing_qty}주 + 신규 {intended_qty}주 "
+                          f"= 한도({max_total_qty}주, 정상수량×2) 초과 → 신규진입 스킵")
+                    should_execute = False
+                    _block_label = "POSITION_LIMIT"   # 🟥 [FIX-D2c]
+                else:
+                    print(f"[OK] {pair_for_order} 기존 보유 {existing_qty}주 + 신규 {intended_qty}주 "
+                          f"≤ 한도({max_total_qty}주) → 진입 허용")
+            elif should_execute and not is_stock_pair(pair_for_order):
+                # ✅ FX: 이미 열린 트레이드가 있으면 신규 진입 스킵 (FIFO 방지, NFA 규정 준수)
+                opened, cnt = has_open_trade(pair_for_order)
+                if opened:
+                    print(f"[SKIP] {pair_for_order} openTrades={cnt} → FIFO 방지로 신규진입 스킵")
+                    should_execute = False
+                    _block_label = "FX_FIFO_OPEN_TRADE"   # 🟥 [FIX-D2c]
+    
+        if should_execute:
+            if is_stock_pair(pair_for_order):
+                # 🟦 주식: 실제 수량은 place_order_alpaca 내부에서 고정금액(ALPACA_FIXED_NOTIONAL_USD)
+                #         ÷ 현재가로 산출되므로, 여기서는 매수/매도 방향만 표시
+                units = 1 if final_decision == "BUY" else -1
+                digits = price_round_digits(pair_for_order)
             else:
-                print(f"[OK] {pair_for_order} 기존 보유 {existing_qty}주 + 신규 {intended_qty}주 "
-                      f"≤ 한도({max_total_qty}주) → 진입 허용")
-        elif should_execute and not is_stock_pair(pair_for_order):
-            # ✅ FX: 이미 열린 트레이드가 있으면 신규 진입 스킵 (FIFO 방지, NFA 규정 준수)
-            opened, cnt = has_open_trade(pair_for_order)
-            if opened:
-                print(f"[SKIP] {pair_for_order} openTrades={cnt} → FIFO 방지로 신규진입 스킵")
-                should_execute = False
+                # 🟥 [FIX-E7] FX 고정 100,000 units(1랩) 제거.
+                #    계좌 규모·변동성과 무관한 고정 랏이라 리스크 관리가 사실상 없었다.
+                #    (OANDA 데모 계좌 150건에서 거래손익 -$1,566 + 스왑 -$1,094가 나온 배경)
+                #    → SL 거리 기준 리스크 사이징으로 바꾸고, FX_UNITS_FIXED로 옛 동작 복원 가능.
+                units = calc_fx_units(pair, price, final_sl, final_decision)
+                digits = 3 if pair.endswith("JPY") else 5
     
-    if should_execute:
-        if is_stock_pair(pair_for_order):
-            # 🟦 주식: 실제 수량은 place_order_alpaca 내부에서 고정금액(ALPACA_FIXED_NOTIONAL_USD)
-            #         ÷ 현재가로 산출되므로, 여기서는 매수/매도 방향만 표시
-            units = 1 if final_decision == "BUY" else -1
-            digits = price_round_digits(pair_for_order)
-        else:
-            units = 100000 if final_decision == "BUY" else -100000
-            digits = 3 if pair.endswith("JPY") else 5
+            print(f"[DEBUG] WILL PLACE ORDER → pair={pair}, side={final_decision}, units={units}, "
+                  f"price={price}, tp={final_tp}, sl={final_sl}, digits={digits}, score={signal_score}")
     
-        print(f"[DEBUG] WILL PLACE ORDER → pair={pair}, side={final_decision}, units={units}, "
-              f"price={price}, tp={final_tp}, sl={final_sl}, digits={digits}, score={signal_score}")
-    
-        result = place_order(pair_for_order, units, final_tp, final_sl, digits, price=price, atr=atr)
+            result = place_order(pair_for_order, units, final_tp, final_sl, digits, price=price, atr=atr)
+            # 🟥 [FIX-E3b] 전역 쿨다운 타이머를 실제로 갱신한다.
+            #    이 값이 한 번도 갱신되지 않아 GLOBAL_COOLDOWN_SECONDS 설정이 무의미했다.
+            if isinstance(result, dict) and result.get("status") == "order_placed":
+                _last_execution_time = _t.time()
+                # 🟥 [FIX-D9] 실제 체결 수량 보관 (주식은 Alpaca가 산출한 qty, FX는 units)
+                _executed_units = result.get("qty") or abs(units)
 
-        # 🟦 주식이고 실제로 가격 재조정이 일어난 경우, 시트에 이미 적힌 옛날 price/tp/sl을
-        #    실제 주문에 쓰인 최종값으로 다시 보정한다 (결과추적이 보는 기준값을 일치시키기 위함).
-        if is_stock_pair(pair_for_order) and isinstance(result, dict) and "final_tp" in result:
-            correct_sheet_trade_prices(
-                sheet_row_idx,
-                result.get("final_price", price),
-                result.get("final_tp"),
-                result.get("final_sl"),
-            )
-    else:
-        print(f"[DEBUG] SKIP ORDER → should_execute={should_execute}, decision={final_decision}, score={signal_score}")
-        result = {"status": "skipped"}
+            # 🟦 주식이고 실제로 가격 재조정이 일어난 경우, 시트에 이미 적힌 옛날 price/tp/sl을
+            #    실제 주문에 쓰인 최종값으로 다시 보정한다 (결과추적이 보는 기준값을 일치시키기 위함).
+            if is_stock_pair(pair_for_order) and isinstance(result, dict) and "final_tp" in result:
+                correct_sheet_trade_prices(
+                    sheet_row_idx,
+                    result.get("final_price", price),
+                    result.get("final_tp"),
+                    result.get("final_sl"),
+                )
+        else:
+            print(f"[DEBUG] SKIP ORDER → should_execute={should_execute}, decision={final_decision}, score={signal_score}")
+            result = {"status": "skipped"}
     
-    executed_time = datetime.utcnow()
+    executed_time = datetime.now(ZoneInfo("UTC"))   # 🟥 [FIX-E9]
     candles_post = get_candles(pair, base_granularity_for(pair), 8)
     price_movements = candles_post[["high", "low"]].to_dict("records")
 
     if final_decision in ("BUY", "SELL") and isinstance(result, dict) and result.get("status") == "order_placed":
 
         print("[DEBUG] ORDER RESULT:", result)
-        if pnl is not None:
+        if pnl is not None and None not in (tp, sl, price):   # 🟥 [FIX-E4] None 방어
             if pnl > 0:
                 if abs(tp - price) < abs(sl - price):
                     outcome_analysis = "성공: TP 우선 도달"
@@ -2657,11 +3031,50 @@ def process_webhook_sync(raw: bytes):
         outcome_analysis = "WAIT 또는 주문 미실행"
 
     adjustment_suggestion = ""
-    if outcome_analysis.startswith("실패"):
+    # 🟥 [FIX-E4] tp/sl/price가 None일 수 있으므로 산술 전에 방어한다.
+    if outcome_analysis.startswith("실패") and None not in (tp, sl, price):
         if abs(sl - price) < abs(tp - price):
             adjustment_suggestion = "SL 터치 → SL 너무 타이트했을 수 있음, 다음 전략에서 완화 필요"
         elif abs(tp - price) < abs(sl - price):
             adjustment_suggestion = "TP 거의 닿았으나 실패 → TP 약간 보수적일 필요 있음"
+
+    # ============================================================
+    # 🟥 [FIX-D1] 실행 결과를 시트에 되써넣는다.
+    # ------------------------------------------------------------
+    #  구조상 log_trade_result()는 sheet_row_idx가 필요해서 실행 게이트보다
+    #  먼저 호출될 수밖에 없다. 그래서 기존엔 이후 게이트(가격괴리·반복쿨다운·
+    #  수량한도·시간대)에서 스킵돼도 시트에는 BUY/SELL로 남았고,
+    #  실거래 1,048건 중 295건이 실제로는 체결되지 않았는데 시트만 보면
+    #  구분할 수 없었다(메인 시트 승률 48.8% vs 실체결 44.0%).
+    #  → 여기서 "실제로 무슨 일이 있었는지"를 확정해 덮어쓴다.
+    # ============================================================
+    _order_status = result.get("status") if isinstance(result, dict) else str(result)
+    if str(final_decision or "").startswith("BLOCKED_"):
+        _effective = final_decision
+    elif final_decision == "SKIPPED_BY_THRESHOLD":
+        _effective = "SKIPPED_BY_THRESHOLD"
+    elif final_decision == "WAIT":
+        _effective = "WAIT"
+    elif _order_status == "order_placed":
+        _effective = f"EXECUTED_{final_decision}"
+    elif _order_status == "skipped":
+        _reason = (result.get("reason") if isinstance(result, dict) else "") or _block_label
+        _effective = f"SKIPPED_{_reason}" if _reason else "SKIPPED_BY_GATE"
+    else:
+        _effective = f"ORDER_FAILED_{_order_status}"
+    # 🟥 [FIX-D2c] 게이트에서 막혔으면 그 사유가 decision 칸에도 드러나게 한다.
+    if _block_label and not str(_effective).startswith("EXECUTED_"):
+        _effective = f"SKIPPED_{_block_label}"
+
+    _finalize_sheet_row(
+        sheet_row_idx,
+        effective_decision=_effective,
+        gpt_decision=gpt_parsed_decision,
+        # 🟥 [FIX-D2c] 구체적 차단 사유가 있으면 그것을 우선 기록한다.
+        note=_block_label or adjustment_suggestion or outcome_analysis,
+        quantity=_executed_units,
+    )
+    print(f"🧾 [최종] {pair} decision={final_decision} / 실제결과={_effective}")
 
     # 🟦 버그 수정: 이 함수가 끝까지 정상 처리됐을 때 명시적인 return이 없어서
     #    FastAPI가 암묵적으로 None을 받아 응답 바디가 그냥 "null"이 되고 있었음.
@@ -2785,7 +3198,7 @@ def get_alpaca_candles(symbol, granularity, count):
     bars_per_day = _ALPACA_BARS_PER_TRADING_DAY.get(timeframe, 26)
     needed_trading_days = max(5, (count // max(1, bars_per_day)) + 5)
     # 주말/공휴일 버퍼로 1.6배 캘린더일로 환산
-    start_dt = datetime.utcnow() - timedelta(days=int(needed_trading_days * 1.6))
+    start_dt = datetime.now(ZoneInfo("UTC")) - timedelta(days=int(needed_trading_days * 1.6))   # 🟥 [FIX-E9]
 
     url = f"{ALPACA_DATA_BASE_URL}/v2/stocks/{symbol}/bars"
     params = {
@@ -2837,7 +3250,7 @@ def get_candles(pair, granularity, count):
     if is_stock_pair(pair):
         return get_alpaca_candles(pair, granularity, count)
 
-    url = f"https://api-fxpractice.oanda.com/v3/instruments/{pair}/candles"
+    url = f"{OANDA_BASE_URL}/v3/instruments/{pair}/candles"   # 🟥 [FIX-E2] 하드코딩 제거
     headers = {"Authorization": f"Bearer {OANDA_API_KEY}"}
     params = {"granularity": granularity, "count": count, "price": "M"}
     
@@ -2985,21 +3398,90 @@ def detect_trend(candles, rsi, mid_band, pair=None):
     return "NEUTRAL"
 
 def detect_candle_pattern(candles):
+    """
+    🟥 [FIX-B6] 캔들 패턴 인식 확장.
+
+    기존 구현은 HAMMER / SHOOTING_STAR / NEUTRAL 세 가지만 반환했다.
+    그런데 score_signal_with_filters()는
+      BULLISH_ENGULFING, BEARISH_ENGULFING, PIERCING_LINE, DARK_CLOUD_COVER,
+      LONG_BODY_BULL, LONG_BODY_BEAR
+    같은 이름들을 참조하며 가·감점을 준다. 그 이름들이 절대 생성되지 않았으므로
+    관련 로직 전체가 죽어 있었다(실거래 데이터에서도 pattern 값이 사실상
+    NEUTRAL/HAMMER/SHOOTING_STAR뿐이었다).
+    → 스코어 로직이 참조하는 패턴들을 실제로 판정하도록 구현한다.
+
+    판정 우선순위: 2봉 패턴(신뢰도 높음) → 장대바디 → 1봉 꼬리 패턴 → NEUTRAL
+    """
     if candles is None or candles.empty:
         return "NEUTRAL"
 
     last = candles.iloc[-1]
-    if pd.isna(last['open']) or pd.isna(last['close']) or pd.isna(last['high']) or pd.isna(last['low']):
+    for c in ("open", "high", "low", "close"):
+        if c not in candles.columns or pd.isna(last[c]):
+            return "NEUTRAL"
+
+    o, h, l, c_ = float(last["open"]), float(last["high"]), float(last["low"]), float(last["close"])
+    body = abs(c_ - o)
+    rng = h - l
+    if rng <= 0:
         return "NEUTRAL"
 
-    body = abs(last['close'] - last['open'])
-    upper_wick = last['high'] - max(last['close'], last['open'])
-    lower_wick = min(last['close'], last['open']) - last['low']
+    upper_wick = h - max(c_, o)
+    lower_wick = min(c_, o) - l
+    bull = c_ > o
+    bear = c_ < o
 
-    if lower_wick > 2 * body and upper_wick < body:
-        return "HAMMER"
-    elif upper_wick > 2 * body and lower_wick < body:
-        return "SHOOTING_STAR"
+    # 최근 바디 평균(직전 10봉) — "장대"의 기준을 종목/변동성에 맞춰 상대화한다.
+    try:
+        prev = candles.iloc[-11:-1]
+        avg_body = float((prev["close"] - prev["open"]).abs().mean())
+    except Exception:
+        avg_body = 0.0
+    if not avg_body or pd.isna(avg_body) or avg_body <= 0:
+        # 직전 봉들이 전부 도지라 평균 바디가 0인 경우 — 현재 바디를 기준으로 쓰면
+        # (body >= body*1.8)이 절대 성립하지 않아 장대봉 판정이 영원히 막힌다.
+        avg_body = rng * 0.3
+
+    # ---------- 2봉 패턴 ----------
+    if len(candles) >= 2:
+        p = candles.iloc[-2]
+        if not any(pd.isna(p[c]) for c in ("open", "high", "low", "close")):
+            po, pc = float(p["open"]), float(p["close"])
+            p_body = abs(pc - po)
+            p_bull, p_bear = pc > po, pc < po
+            p_mid = (po + pc) / 2.0
+
+            # 상승 장악형: 직전 음봉을 현재 양봉이 완전히 감쌈
+            if bull and p_bear and c_ >= po and o <= pc and body > p_body:
+                return "BULLISH_ENGULFING"
+            # 하락 장악형
+            if bear and p_bull and c_ <= po and o >= pc and body > p_body:
+                return "BEARISH_ENGULFING"
+            # 관통형: 음봉 뒤 양봉이 직전 몸통 중간 이상까지 회복(단 완전 장악은 아님)
+            if bull and p_bear and o < pc and c_ > p_mid and c_ < po:
+                return "PIERCING_LINE"
+            # 흑운형: 양봉 뒤 음봉이 직전 몸통 중간 아래까지 하락
+            if bear and p_bull and o > pc and c_ < p_mid and c_ > po:
+                return "DARK_CLOUD_COVER"
+
+    # ---------- 장대 바디 ----------
+    #  바디가 최근 평균의 1.8배 이상이고, 전체 범위의 60% 이상을 차지 = 방향성 강한 봉
+    if body >= avg_body * 1.8 and body >= rng * 0.6:
+        return "LONG_BODY_BULL" if bull else "LONG_BODY_BEAR"
+
+    # ---------- 1봉 꼬리 패턴 ----------
+    if body > 0:
+        # 🟥 [FIX-B6c] 아래꼬리/위꼬리 패턴은 기존 동작(HAMMER / SHOOTING_STAR)을 그대로 유지한다.
+        #    한때 "상승 흐름 뒤 아래꼬리 = HANGING_MAN(약세)"으로 세분화했으나,
+        #    HANGING_MAN은 bearish_patterns에 들어 있어서 BUY 신호에 -1.5가 붙는다.
+        #    즉 상승추세 중 망치형(원래 +2)이 갑자기 -1.5가 되는 3.5점짜리 역전이 생긴다.
+        #    이 전략은 실거래에서 "과열/추세지속 구간이 더 잘 맞는" 것으로 확인됐으므로,
+        #    검증되지 않은 반전 신호를 새로 도입하지 않는다.
+        if lower_wick > 2 * body and upper_wick < body:
+            return "HAMMER"
+        if upper_wick > 2 * body and lower_wick < body:
+            return "SHOOTING_STAR"
+
     return "NEUTRAL"
 
 def calculate_candle_psychology_score(candles, signal):
@@ -3101,7 +3583,7 @@ def filter_relevant_news(pair, within_minutes=90):
         return []
 
     currency = pair.split("_")[0] if pair.startswith("USD") else pair.split("_")[1]
-    now_utc = datetime.utcnow().replace(tzinfo=pytz.UTC)
+    now_utc = datetime.now(ZoneInfo("UTC"))   # 🟥 [FIX-E9] utcnow()+replace 대신 직접 aware 생성
     events = fetch_news_events()
     relevant = []
 
@@ -3245,7 +3727,7 @@ def has_open_trade(pair_for_order: str) -> tuple[bool, int]:
     if is_stock_pair(pair_for_order):
         return has_open_position_alpaca(pair_for_order)
 
-    url = f"https://api-fxpractice.oanda.com/v3/accounts/{ACCOUNT_ID}/openTrades"
+    url = f"{OANDA_BASE_URL}/v3/accounts/{ACCOUNT_ID}/openTrades"   # 🟥 [FIX-E2]
     headers = {
         "Authorization": f"Bearer {OANDA_API_KEY}",
         "Content-Type": "application/json"
@@ -3269,23 +3751,176 @@ def has_open_trade(pair_for_order: str) -> tuple[bool, int]:
         return True, -1
 
 
+# ============================================================
+# 🟥 [FIX-D2] 시트 접근 공통 헬퍼
+# ------------------------------------------------------------
+#  기존 코드는 _get_sheet()를 두 곳에서 호출했지만 정의가 어디에도 없었다.
+#  NameError가 `except: pass`에 삼켜져서 EXCLUDED_SYMBOL / TIME_BLOCKED 표시가
+#  시트에 조용히 안 찍혔고, 그래서 "왜 이 알림이 실행 안 됐는지"를 추적할 수 없었다.
+#  여기서 정식으로 정의하고, 인증 객체는 캐싱해 매 호출마다 재인증하지 않게 한다.
+# ============================================================
+GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "민균 FX trading result")
+GOOGLE_CREDS_PATH = os.getenv("GOOGLE_CREDS_PATH", "/etc/secrets/google_credentials.json")
+_gs_client = None
+_gs_client_lock = threading.Lock()
+
+
+def _get_gspread_client():
+    """gspread 클라이언트를 한 번만 인증해서 재사용. 실패 시 None."""
+    global _gs_client
+    if _gs_client is not None:
+        return _gs_client
+    with _gs_client_lock:
+        if _gs_client is not None:
+            return _gs_client
+        try:
+            scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+            creds = ServiceAccountCredentials.from_json_keyfile_name(GOOGLE_CREDS_PATH, scope)
+            _gs_client = gspread.authorize(creds)
+        except Exception as e:
+            print(f"❌ [시트] 인증 실패: {e}")
+            _gs_client = None
+        return _gs_client
+
+
+def _get_spreadsheet():
+    """메인 스프레드시트 핸들. 실패 시 None."""
+    c = _get_gspread_client()
+    if c is None:
+        return None
+    try:
+        return c.open(GOOGLE_SHEET_NAME)
+    except Exception as e:
+        print(f"❌ [시트] '{GOOGLE_SHEET_NAME}' 열기 실패: {e}")
+        return None
+
+
+def _get_sheet():
+    """메인 탭(sheet1) 핸들. 실패 시 None. (기존 코드가 호출하던 이름 그대로 정의)"""
+    ss = _get_spreadsheet()
+    if ss is None:
+        return None
+    try:
+        return ss.sheet1
+    except Exception as e:
+        print(f"❌ [시트] sheet1 접근 실패: {e}")
+        return None
+
+
+# 메인 시트 컬럼 번호(1-indexed) — 매직넘버를 한 곳에 모아둔다.
+COL_DECISION = 5
+COL_SCORE = 6
+COL_FINAL_DECISION = 14
+COL_RESULT = 17
+COL_PRICE = 20
+COL_TP = 21
+COL_SL = 22
+COL_PNL = 23
+COL_QUANTITY = 24
+COL_TOTAL_PNL = 25
+COL_OUTCOME_ANALYSIS = 34
+
+
+def _finalize_sheet_row(row_idx, effective_decision=None, gpt_decision=None, note=None, quantity=None):
+    """
+    🟥 [FIX-D1 / FIX-D4] 웹훅 처리가 끝난 뒤, 그 행에 "실제로 무슨 일이 있었는지"를 확정 기록.
+
+    · COL_DECISION(5)      ← EXECUTED_BUY / SKIPPED_xxx / WAIT / BLOCKED_xxx
+      기존엔 실행 게이트 이전 값(BUY/SELL)이 그대로 남아서 시트 승률이 실체결과 달랐다.
+    · COL_FINAL_DECISION(14) ← GPT가 실제로 뭐라고 했는지
+      기존엔 항상 None인 `decision` 변수를 써서 1,048행 전부 공백이었다.
+    · COL_OUTCOME_ANALYSIS(34) ← 보조 메모
+
+    셀 단위 3회 호출 대신 한 번의 batch_update로 처리해 API 호출과 경쟁 창을 줄인다.
+    """
+    if not row_idx:
+        return
+    try:
+        sh = _get_sheet()
+        if sh is None:
+            return
+        updates = []
+        if effective_decision is not None:
+            updates.append({"range": f"E{row_idx}", "values": [[str(effective_decision)]]})
+        if gpt_decision is not None:
+            updates.append({"range": f"N{row_idx}", "values": [[str(gpt_decision)]]})
+        if note:
+            updates.append({"range": f"AH{row_idx}", "values": [[str(note)[:400]]]})
+        # 🟥 [FIX-D9] 실제 주문 수량(주식=주, FX=units)을 quantity(24열, X)에 남긴다.
+        #    이게 없으면 결과추적이 FX 수량을 100,000으로 하드코딩할 수밖에 없고,
+        #    리스크 기반 사이징(FIX-E7) 도입 후 total_pnl이 최대 100배 부풀려진다.
+        if quantity:
+            updates.append({"range": f"X{row_idx}", "values": [[abs(int(quantity))]]})
+        if updates:
+            sh.batch_update(updates)
+    except Exception as e:
+        print(f"⚠️ [시트] row {row_idx} 최종결과 기록 실패: {e}")
+
+
+def _log_blocked_alert(pair, signal, alert_name, reason):
+    """
+    🟥 [FIX-D6b] 조기 차단된 알림을 메인 시트에 가볍게 한 줄 남긴다.
+    지표·GPT를 전혀 태우지 않으므로 채울 수 있는 칸만 채운다.
+    """
+    try:
+        sh = _get_sheet()
+        if sh is None:
+            return
+        row = [""] * 37
+        row[0] = str(datetime.now(ZoneInfo("America/New_York")))   # timestamp
+        row[1] = pair or ""                                        # symbol
+        row[2] = alert_name or ""                                  # strategy
+        row[3] = signal or ""                                      # signal_type
+        row[4] = f"BLOCKED_{reason}"                               # decision
+        row[15] = f"진입 금지 종목 — {reason} (지표/GPT 호출 없이 조기 차단)"   # reason
+        row[16] = "미정"                                            # result(가상평가 대상으로 남겨둠)
+        sh.append_row(row, insert_data_option="INSERT_ROWS", table_range="A1")
+    except Exception as e:
+        print(f"⚠️ [시트] 조기차단 기록 실패({pair}/{reason}): {e}")
+
+
+def _mark_sheet_result(row_idx, label):
+    """
+    [FIX-D2] 특정 행의 result 컬럼에 차단/스킵 사유를 기록한다.
+    기존에 _get_sheet() 미정의로 실패하던 자리를 대체한다.
+    """
+    if not row_idx or not label:
+        return
+    try:
+        sh = _get_sheet()
+        if sh:
+            # 🟥 [FIX-D2b] 차단 사유를 result(17열)에 쓰면 evaluate_pending_outcomes()가
+            #    `result_col not in ("", "미정")` 조건으로 그 행을 영영 건너뛴다.
+            #    그러면 "이 차단이 옳았는지"를 가상평가로 검증할 수 없다.
+            #    → result는 미정으로 두고 outcome_analysis(34열)에 사유만 남긴다.
+            sh.update_cell(row_idx, COL_OUTCOME_ANALYSIS, str(label))
+            print(f"🏷️ [시트] row {row_idx} outcome_analysis ← {label}")
+    except Exception as e:
+        print(f"⚠️ [시트] row {row_idx} result 기록 실패({label}): {e}")
+
+
 def correct_sheet_trade_prices(row_idx, price, tp, sl):
     """
     place_order_alpaca()가 주문 직전 실시간가로 TP/SL을 다시 맞춘 뒤에는,
     이미 log_trade_result()로 시트에 기록해둔 (옛날) price/tp/sl이 실제 주문값과 달라진다.
     이 함수가 해당 행의 price/tp/sl 컬럼을 실제 사용된 최종값으로 다시 덮어써서
     시트와 Alpaca가 항상 같은 숫자를 보게 한다. (결과추적도 이 보정된 값을 기준으로 판정하게 됨)
+
+    🟥 [FIX-D3] 3번의 update_cell을 1번의 batch update로 합쳤다.
+       기존엔 셀 단위로 3번 쓰면서 동시 웹훅 시 다른 행을 덮어쓸 창이 넓었고
+       API 호출도 3배였다.
     """
     if row_idx is None:
         return
     try:
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
-        client = gspread.authorize(creds)
-        sheet = client.open("민균 FX trading result").sheet1
-        sheet.update_cell(row_idx, 20, round(float(price), 5))  # price (1-indexed 20번째)
-        sheet.update_cell(row_idx, 21, round(float(tp), 5))     # tp
-        sheet.update_cell(row_idx, 22, round(float(sl), 5))     # sl
+        sh = _get_sheet()
+        if sh is None:
+            return
+        digits = 5
+        sh.update(
+            f"T{row_idx}:V{row_idx}",   # T=20(price), U=21(tp), V=22(sl)
+            [[round(float(price), digits), round(float(tp), digits), round(float(sl), digits)]],
+        )
         print(f"✅ [시트보정] row {row_idx} price/tp/sl을 실제 주문값으로 갱신 "
               f"(price={price}, tp={tp}, sl={sl})")
     except Exception as e:
@@ -3353,8 +3988,16 @@ def calc_alpaca_qty(ref_price: float, sl: float, notional_usd: float) -> int:
 
     if ALPACA_SIZING_MODE == "tiered":
         qty = get_tiered_qty(ref_price)
-        print(f"[Alpaca][tiered-sizing] price={ref_price}, qty={qty}")
-        return qty
+        # 🟥 [FIX-E6] tiered 모드만 notional 캡을 건너뛰고 조기 return 하고 있었다.
+        #    그래서 $5,000짜리 주식 2주 = $10,000로 ALPACA_MAX_NOTIONAL_USD(5,000)를
+        #    두 배 초과하는 노출이 나갈 수 있었다. 다른 모드와 동일하게 캡을 적용한다.
+        capped = max(1, min(qty, max_qty_by_notional))
+        if capped != qty:
+            print(f"[Alpaca][tiered-sizing] price={ref_price}, 표준수량={qty}주 → "
+                  f"notional 캡(${ALPACA_MAX_NOTIONAL_USD:g}) 적용 {capped}주로 축소")
+        else:
+            print(f"[Alpaca][tiered-sizing] price={ref_price}, qty={qty}")
+        return capped
 
     if ALPACA_SIZING_MODE == "risk":
         equity = get_alpaca_account_equity()
@@ -3376,6 +4019,96 @@ def calc_alpaca_qty(ref_price: float, sl: float, notional_usd: float) -> int:
     # fixed 모드 또는 risk 계산 실패시 폴백
     qty_by_fixed = int(notional_usd // ref_price)
     return max(1, min(qty_by_fixed, max_qty_by_notional))
+
+
+def calc_fx_units(pair: str, price, sl, direction: str) -> int:
+    """
+    🟥 [FIX-E7] FX 주문 수량(units) 산출.
+
+    기존: `units = 100000 if BUY else -100000` — 계좌 크기·변동성과 무관한 고정 1랩.
+          USD/JPY 1랩은 1pip ≈ $6.7이라, SL 20pip이면 한 번에 $134가 왔다 갔다 한다.
+          데모 계좌 150건에서 스왑만 -$1,094가 쌓인 것도 이 크기 때문이다.
+    수정: 계좌 잔고 × FX_RISK_PCT 를 SL 거리로 나눠 units를 역산한다.
+          잔고 조회가 안 되면 FX_FALLBACK_UNITS(기본 10,000 = 0.1랩)로 보수적 폴백.
+          FX_UNITS_FIXED에 값을 넣으면 그 값으로 고정(옛 동작 복원용).
+    """
+    sign = 1 if direction == "BUY" else -1
+
+    fixed = os.getenv("FX_UNITS_FIXED", "").strip()
+    if fixed:
+        try:
+            return sign * abs(int(float(fixed)))
+        except ValueError:
+            pass
+
+    fallback = int(os.getenv("FX_FALLBACK_UNITS", "10000"))
+    try:
+        p = float(price)
+        s = float(sl)
+    except (TypeError, ValueError):
+        print(f"[FX sizing] {pair} price/sl 불명 → 폴백 {fallback} units")
+        return sign * fallback
+
+    stop_dist = abs(p - s)
+    if stop_dist <= 0:
+        print(f"[FX sizing] {pair} SL 거리 0 → 폴백 {fallback} units")
+        return sign * fallback
+
+    balance = get_oanda_account_balance()
+    if not balance or balance <= 0:
+        print(f"[FX sizing] {pair} 잔고 조회 실패 → 폴백 {fallback} units")
+        return sign * fallback
+
+    risk_pct = float(os.getenv("FX_RISK_PCT", "0.5"))
+    risk_amount = balance * (risk_pct / 100.0)
+
+    # units당 손실 = SL 거리(가격 단위) × (계정통화 환산계수)
+    # 계정통화가 USD이고 XXX_USD 페어면 손실 = stop_dist × units.
+    # USD_JPY처럼 USD가 base면 손실(USD) = stop_dist × units / price.
+    # 🟥 [FIX-E7b] 'EUR/USD'처럼 슬래시로 오는 경우 split("_")가 통째로 잡혀
+    #    quote 판정이 틀린다. 구분자를 먼저 정규화한다.
+    _pair_norm = (pair or "").upper().replace("/", "_").replace("-", "_")
+    parts = [x for x in _pair_norm.split("_") if x]
+    base = parts[0] if parts else ""
+    quote = parts[-1] if len(parts) > 1 else ""
+    if quote == "USD":
+        # XXX_USD: 손익이 곧 USD (예: EUR_USD)
+        loss_per_unit = stop_dist
+    elif base == "USD":
+        # USD_XXX: 손익(USD) = 거리 / 현재가 (예: USD_JPY)
+        loss_per_unit = stop_dist / p if p else stop_dist
+    else:
+        # 🟥 크로스 페어(EUR_GBP 등)는 정확한 USD 환산에 제3의 환율이 필요하다.
+        #    여기서 근사하면 리스크%가 틀어지므로, 안전하게 폴백 수량을 쓴다.
+        print(f"[FX sizing] {pair} 크로스 페어(USD 미포함) → 정확한 환산 불가, 폴백 {fallback} units")
+        return sign * fallback
+
+    if loss_per_unit <= 0:
+        return sign * fallback
+
+    units = int(risk_amount / loss_per_unit)
+    max_units = int(os.getenv("FX_MAX_UNITS", "100000"))
+    units = max(1000, min(units, max_units))   # 최소 1,000 / 최대 FX_MAX_UNITS
+    print(f"[FX sizing] {pair} 잔고={balance:.2f}, 리스크{risk_pct}%=${risk_amount:.2f}, "
+          f"SL거리={stop_dist:.5f}, units={units} (기존 고정값 100000 → 리스크 기반)")
+    return sign * units
+
+
+def get_oanda_account_balance():
+    """OANDA 계좌 잔고 조회. 실패 시 None. (🟥 [FIX-E7] FX 리스크 사이징용)"""
+    if not (OANDA_API_KEY and ACCOUNT_ID):
+        return None
+    try:
+        r = requests.get(
+            f"{OANDA_BASE_URL}/v3/accounts/{ACCOUNT_ID}/summary",
+            headers={"Authorization": f"Bearer {OANDA_API_KEY}"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        return float(r.json()["account"]["balance"])
+    except Exception as e:
+        print(f"[OANDA] 잔고 조회 실패: {e}")
+        return None
 
 
 def get_alpaca_fill_status(symbol, after_iso):
@@ -3518,6 +4251,12 @@ def place_order_alpaca(symbol, side, notional_usd, ref_price, tp, sl, digits=2, 
         # 🟦 실제 주문에 쓰인 최종 가격들(실시간가로 보정된 값)을 항상 같이 반환.
         #    호출부에서 이 값으로 구글시트의 price/tp/sl을 다시 보정해서, 시트와 Alpaca가 항상 일치하게 한다.
         if 200 <= response.status_code < 300:
+            # 🟥 [FIX-A3] 진입 시각을 메모리에 기록해둔다.
+            #    기존 close_stale_positions()는 Alpaca 주문내역을 최근 20건만 뒤져서
+            #    진입시각을 찾았는데, 같은 종목에 알림이 여러 번 오면 브래킷 자식주문들이
+            #    그 20칸을 다 잡아먹어 진입 주문을 못 찾고 "이번엔 스킵"으로 빠졌다.
+            #    → 90분 시간청산이 사실상 한 번도 실행되지 않은 직접 원인.
+            _record_position_entry(symbol, "long" if side == "BUY" else "short")
             return {
                 "status": "order_placed",
                 "status_code": response.status_code,
@@ -3558,7 +4297,7 @@ def place_order(pair, units, tp, sl, digits, price=None, atr=None):
             digits=price_round_digits(pair), atr=_atr_val
         )
 
-    url = f"https://api-fxpractice.oanda.com/v3/accounts/{ACCOUNT_ID}/orders"
+    url = f"{OANDA_BASE_URL}/v3/accounts/{ACCOUNT_ID}/orders"   # 🟥 [FIX-E2]
     headers = {
         "Authorization": f"Bearer {OANDA_API_KEY}",
         "Content-Type": "application/json"
@@ -3832,12 +4571,13 @@ def adjust_tp_sl_for_structure(pair, entry, tp, sl, support, resistance, atr):
         tp = min(tp, entry - min_dist)
         sl = max(sl, entry + min_dist)
 
-    # RR ≥ 1.8 강제
+    # 🟥 [FIX-E10] RR 하한을 하드코딩 1.8 → FX_MIN_RR_RATIO(env, 기본 1.8)로.
+    #    기존엔 FX_MIN_RR_RATIO 상수를 선언만 하고 아무 데서도 안 썼다.
     if is_buy and (entry - sl) > 0:
-        desired_tp = entry + 1.8 * (entry - sl)
+        desired_tp = entry + FX_MIN_RR_RATIO * (entry - sl)
         tp = max(tp, desired_tp)
     if is_sell and (sl - entry) > 0:
-        desired_tp = entry - 1.8 * (sl - entry)
+        desired_tp = entry - FX_MIN_RR_RATIO * (sl - entry)
         tp = min(tp, desired_tp)
 
     # ATR 과욕 방지(±1.5*ATR)
@@ -4127,10 +4867,14 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
         
     # 2-c) 요청 바이트 수 로깅 (선택)
     body = {
-        "model": "gpt-4o-2024-11-20",  # 또는 "gpt-4o-2024-11-20"
+        "model": os.getenv("GPT_MODEL", "gpt-4o-2024-11-20"),
         "input": messages,
         "temperature": 0.3,
-        "max_output_tokens": 1000,
+        # 🟥 [FIX-C4] 1000 → 1800.
+        #    프롬프트가 4단계 리포트 + 마지막 줄 JSON을 요구하는데 1000토큰으로는
+        #    긴 분석이 나올 때 JSON 블록이 잘린다. 잘리면 파싱 실패 → WAIT →
+        #    (기존엔) 강제 환원으로 무검증 진입까지 이어졌다.
+        "max_output_tokens": int(os.getenv("GPT_MAX_OUTPUT_TOKENS", "1800")),
     }
     need_tokens = _approx_tokens(messages)
     _preflight_gate(need_tokens)   # 요청 직전 선대기
@@ -4139,29 +4883,62 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
         _bytes = len(json.dumps(payload, ensure_ascii=False))
     except Exception:
         _bytes = -1
-    
-    dbg("gpt.body", bytes=_bytes, max_tokens=body.get("max_tokens"))
-    print("🔍 FULL BODY DEBUG:", json.dumps(body, indent=2, ensure_ascii=False))
 
+    dbg("gpt.body", bytes=_bytes, max_tokens=body.get("max_output_tokens"))
+    # 🟥 [FIX-E1b] 프롬프트 전문을 매번 stdout에 찍으면 로그가 비대해지고
+    #    민감 정보가 남는다. 길이만 남긴다. (전문이 필요하면 GPT_DEBUG_BODY=true)
+    if os.getenv("GPT_DEBUG_BODY", "false").strip().lower() == "true":
+        print("🔍 FULL BODY DEBUG:", json.dumps(body, indent=2, ensure_ascii=False))
+    else:
+        print(f"🔍 GPT 요청 준비 완료 (model={body['model']}, prompt≈{need_tokens}tok, payload={_bytes}B)")
 
-    # 2-d) 최소 스로틀: 같은 프로세스에서 1.2초(또는 네가 정한 값) 간격 보장
+    # ============================================================
+    # 🟥 [FIX-C2] 최소 스로틀 — 락을 잡은 채로 sleep 하지 않는다.
+    # ------------------------------------------------------------
+    #  기존 코드는 `with _gpt_lock:` 안에서 최대 12초를 sleep 했다.
+    #  알림이 N건 동시에 오면 12×N초가 직렬로 쌓여서, 스캘핑 신호가
+    #  체결 시점에는 이미 무의미해지는 상태였다(진입 슬리피지의 큰 원인).
+    #  → 락 안에서는 "내가 언제 쏠지" 슬롯만 예약하고, 실제 대기는 락 밖에서 한다.
+    #    이러면 대기가 병렬로 겹쳐서 총 지연이 12×N이 아니라 12초 수준으로 줄어든다.
+    #  기본 간격도 12초 → 1.5초로 낮춘다(GPT_RPM 3000이면 12초는 과도한 보수 설정).
+    # ============================================================
+    _min_gap = float(os.getenv("GPT_MIN_INTERVAL_SEC", "1.5"))
     with _gpt_lock:
-        global _gpt_last_ts
-        now = _t.time()
-        gap = now - _gpt_last_ts
-        min_gap = 12.0  
-        if gap < min_gap:
-            _t.sleep(min_gap - gap)
-        _gpt_last_ts = _t.time()
+        # (global _gpt_last_ts 선언은 이 함수 상단에 이미 있다)
+        _slot_at = max(_t.time(), _gpt_last_ts + _min_gap)
+        _gpt_last_ts = _slot_at
+    _wait = _slot_at - _t.time()
+    if _wait > 0:
+        dbg("gpt.throttle", wait=round(_wait, 2))
+        _t.sleep(_wait)
+
     try:
         dbg("gpt.call")
         r = requests.post(
             OPENAI_URL,
             headers=OPENAI_HEADERS,
             json=body,
-            timeout=90,
+            timeout=int(os.getenv("GPT_TIMEOUT_SEC", "60")),
         )
         print("GPT STATUS:", r.status_code)
+        # 🟥 [FIX-C3] 응답 헤더의 레이트리밋 정보를 실제로 저장한다.
+        #    _save_rate_headers()는 정의만 되어 있고 호출하는 곳이 없어서
+        #    _preflight_gate()가 항상 no-op이었고 429 백오프도 작동하지 않았다.
+        try:
+            _save_rate_headers(r.headers)
+        except Exception as _e:
+            dbg("gpt.rate_headers.fail", err=str(_e))
+        if r.status_code == 429:
+            # 429는 재시도해도 소용없으니 쿨다운을 걸고 즉시 실패로 반환
+            # (global 선언은 이 함수 상단에 이미 있다)
+            _retry_after = 30.0
+            try:
+                _retry_after = float(r.headers.get("retry-after") or 30.0)
+            except Exception:
+                pass
+            _gpt_cooldown_until = _t.time() + _retry_after
+            print(f"⛔ GPT 429 레이트리밋 → {_retry_after:.0f}초 쿨다운 설정")
+            return f"GPT_ERROR: 429 rate limited, cooldown {_retry_after:.0f}s"
         r.raise_for_status()  # HTTP 에러 체크
         data = r.json()
         
@@ -4240,10 +5017,11 @@ def log_trade_result(
     filtered_movement=None
 ):
     
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
-    client = gspread.authorize(creds)
-    sheet = client.open("민균 FX trading result").sheet1
+    # 🟥 [FIX-D3] 매번 재인증하던 것을 캐시된 헬퍼로 교체.
+    sheet = _get_sheet()
+    if sheet is None:
+        print("❌ [기록] 시트 연결 실패 → 이번 행 기록 건너뜀")
+        return None
     now_atlanta = datetime.now(ZoneInfo("America/New_York"))
     if isinstance(price_movements, list):
         try:
@@ -4337,8 +5115,15 @@ def log_trade_result(
         safe_float(sl),                   # sl
         safe_float(pnl),                  # pnl
 
-        is_new_high,                      # is_new_high
-        is_new_low,                       # is_new_low
+        # 🟥 [FIX-D5] 이 두 칸(24·25열)은 evaluate_pending_outcomes()가 나중에
+        #    quantity / total_pnl 숫자로 덮어쓰는 자리다. 그런데 여기서 신규 기록 시
+        #    "신고점"/"신저점" 문자열을 넣고 있어서, 같은 열에 문자열과 숫자가 섞였다.
+        #    그 결과 sync_score_bucket_analysis()의 float(row[24]) 캐스팅이 조용히
+        #    실패하면서 SKIPPED 가상손익 집계가 통째로 누락됐다.
+        #    → 신규 기록 시에는 빈칸으로 두고, 숫자 전용 열로 유지한다.
+        #    (신고점/신저점 정보는 아래 reason/filtered_movement 쪽에 이미 남는다)
+        "",                               # quantity (결과추적이 채움)
+        "",                               # total_pnl (결과추적이 채움)
         safe_float(atr),                  # atr
         liquidity,
         macd_signal,
@@ -4382,12 +5167,39 @@ def log_trade_result(
             print(f"❌ [디버그] clean_row[{idx}]는 dict 또는 list → {val}")
     print(f"🧪 최종 clean_row 길이: {len(clean_row)}")
 
+    # ============================================================
+    # 🟥 [FIX-D3] 방금 추가한 행 번호를 append 응답에서 직접 읽는다.
+    # ------------------------------------------------------------
+    #  기존: append_row() 후 len(sheet.get_all_values())로 행 번호를 "추정"했다.
+    #  웹훅 2건이 동시에 들어오면 두 스레드가 같은 길이를 읽어 같은 행 번호를 받고,
+    #  이후 correct_sheet_trade_prices()가 다른 종목 행의 price/tp/sl을 덮어썼다.
+    #  → Google Sheets API가 돌려주는 updatedRange("'시트명'!A123:AK123")를 파싱해
+    #    실제로 내가 쓴 행 번호를 확정한다. 추정이 아니라 사실이다.
+    # ============================================================
     try:
-        sheet.append_row(clean_row)
+        # 🟥 [FIX-D3b] value_input_option은 기존 기본값(RAW)을 유지한다.
+        #    USER_ENTERED로 바꾸면 Sheets가 문자열을 파싱해서 A열 timestamp가
+        #    날짜형으로 강제 변환되고, 이후 datetime.fromisoformat(row[0])가
+        #    전부 실패하며 결과추적/집계가 조용히 행을 건너뛴다.
+        resp = sheet.append_row(clean_row, insert_data_option="INSERT_ROWS", table_range="A1")
+        row_idx = None
         try:
-            return len(sheet.get_all_values())  # 방금 추가된 행의 번호(1-indexed) 반환
-        except Exception:
-            return None
+            updated_range = (resp or {}).get("updates", {}).get("updatedRange", "")
+            # 예: "'1. 알람 스프레드'!A1049:AK1049"
+            m = _re.search(r"![A-Z]+(\d+)", updated_range or "")
+            if m:
+                row_idx = int(m.group(1))
+        except Exception as e:
+            print(f"⚠️ [기록] updatedRange 파싱 실패({e}) → 폴백 사용")
+        if row_idx is None:
+            # 폴백: 예전 방식(추정). 동시성 위험이 있으므로 경고를 남긴다.
+            try:
+                row_idx = len(sheet.get_all_values())
+                print(f"⚠️ [기록] 행 번호를 길이로 추정함(row={row_idx}) — 동시 요청 시 부정확할 수 있음")
+            except Exception:
+                row_idx = None
+        print(f"✅ [기록] row {row_idx} 저장 완료")
+        return row_idx
     except Exception as e:
         print("❌ Google Sheet append_row 실패:", e)
         print("🧨 clean_row 전체 내용:\n", clean_row)
@@ -4397,6 +5209,35 @@ def log_trade_result(
 # ============================================================
 # 🟦 결과 자동 추적 (백테스트 보조) — 1시간마다 미정 행들을 채워준다
 # ============================================================
+
+def _normalize_decision(decision_text: str) -> tuple[str, bool]:
+    """
+    🟥 [FIX-D8] 시트 decision 컬럼(E)의 값을 (방향, 실제체결여부)로 정규화한다.
+
+    FIX-D1으로 이 컬럼이 "BUY" 대신 "EXECUTED_BUY" / "SKIPPED_price_gap_2.1pct" /
+    "BLOCKED_GPT_TIMEOUT" 같은 값을 갖게 됐다. 그런데 evaluate_pending_outcomes()는
+    여전히 `decision_text in ("BUY","SELL")`로 비교하고 있어서, 수정 후에는
+    실제 체결된 거래가 전부 "미실행"으로 취급되는 심각한 회귀가 생긴다.
+    (체결가 보정·수량 반영·NOT_FILLED 판정이 통째로 죽는다)
+    → 옛 값과 새 값을 모두 이해하는 정규화 함수를 두고, 판정부는 이것만 쓴다.
+
+    반환: (방향 "BUY"|"SELL"|"", 실제_주문전송_여부)
+    """
+    t = (decision_text or "").strip().upper()
+    if not t:
+        return "", False
+    # 구버전 호환: 그냥 BUY / SELL
+    if t in ("BUY", "SELL"):
+        return t, True
+    if t.startswith("EXECUTED_"):
+        d = t[len("EXECUTED_"):]
+        return (d if d in ("BUY", "SELL") else ""), True
+    # SKIPPED_* / BLOCKED_* / ORDER_FAILED_* / WAIT → 주문 안 나감
+    for direction in ("BUY", "SELL"):
+        if direction in t:
+            return direction, False
+    return "", False
+
 
 def _generate_outcome_note(outcome: str, reasons_text: str, decision_text: str, was_executed: bool) -> str:
     """
@@ -4474,8 +5315,14 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
         # 🟦 decision이 SKIPPED_BY_THRESHOLD이거나 "미실행"으로 표시된 행은
         #    실제 거래가 안 들어간 것이라 TP/SL 판정 대상이 아님 (NOT_FILLED 오탐 방지).
         #    WAIT은 "가상 TP/SL"로 평가하도록 허용(의도된 설계).
-        if decision_text in ("SKIPPED_BY_THRESHOLD",):
-            continue
+        # 🟥 [FIX-D8] 새 decision 포맷(EXECUTED_/SKIPPED_/BLOCKED_)을 정규화해서 판정한다.
+        _dir_norm, _was_sent = _normalize_decision(decision_text)
+        # 🟥 [FIX-D10] SKIPPED_BY_THRESHOLD 행의 가상평가를 허용한다.
+        #    기존엔 여기서 continue 해버려서 result/total_pnl이 영영 안 채워졌고,
+        #    그 결과 '스코어대별 성과분석' 탭의 SKIPPED 컬럼(threshold 조정 근거)이
+        #    구조적으로 항상 빈칸이었다. NOT_FILLED 오탐 우려는 이제 _was_sent 판정으로
+        #    따로 막히므로(FIX-D8), 여기서 걸러낼 이유가 없다.
+        #    (TP/SL이 없는 행은 아래 float 변환에서 자연스럽게 스킵된다)
 
         try:
             price_f = float(price_s)
@@ -4498,13 +5345,22 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
 
         # 🟦 거래 수량 — FX는 고정 100,000 units, 주식은 Alpaca 실제 체결 수량을 그대로 사용.
         #    이게 없으면 PNL이 "1주(또는 1단위) 기준" 가격차이로만 계산돼서 실제 손익과 안 맞는다.
-        trade_qty = 100000 if not is_stock_pair(pair) else None
+        # 🟥 [FIX-D9] FX 수량을 100,000으로 하드코딩하지 않는다.
+        #    FIX-E7로 FX가 리스크 기반 가변 units가 됐기 때문에, 시트에 기록된
+        #    실제 수량(24열)을 우선 사용하고, 없을 때만 보수적 폴백을 쓴다.
+        trade_qty = None
+        if not is_stock_pair(pair):
+            try:
+                _q = float(row[23]) if len(row) > 23 and str(row[23]).strip() else 0.0
+            except (TypeError, ValueError):
+                _q = 0.0
+            trade_qty = _q if _q > 0 else float(os.getenv("FX_FALLBACK_UNITS", "10000"))
         is_not_filled = False  # NOT_FILLED 여부 추적용
 
         # 🟦 주식은 평가 전에 "진짜 체결됐는지" 먼저 확인한다.
         #    market 주문이 장마감 직후/체결 지연 등으로 아직 'accepted' 상태일 수 있는데,
         #    이때 캔들 가격만 보고 TP_HIT/SL_HIT을 매기면 실제로는 포지션이 없는데 가짜 결과가 찍힌다.
-        if is_stock_pair(pair) and decision_text in ("BUY", "SELL"):
+        if is_stock_pair(pair) and _was_sent and _dir_norm in ("BUY", "SELL"):   # 🟥 [FIX-D8]
             entry_time_iso = entry_time.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%SZ") if entry_time.tzinfo else entry_time.strftime("%Y-%m-%dT%H:%M:%SZ")
             filled, filled_price, filled_at, filled_qty = get_alpaca_fill_status(pair, entry_time_iso)
             if not filled:
@@ -4546,7 +5402,7 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
         if candles is None or candles.empty:
             # 캔들 자체를 못 가져온 경우 — 그래도 4시간 넘었으면 더 기다릴 의미 없으니 시간초과로 정리
             if elapsed_minutes > max_window_minutes:
-                was_executed = decision_text in ("BUY", "SELL")
+                was_executed = _was_sent   # 🟥 [FIX-D8]
                 note = _generate_outcome_note("TIMEOUT_NO_HIT", reasons_text, decision_text, was_executed)
                 try:
                     sheet.update_cell(i, 17, "TIMEOUT_NO_HIT")
@@ -4571,7 +5427,7 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
             if gap_minutes > _gran_minutes * 2:
                 if elapsed_minutes > max_window_minutes and bars_needed > bars_capped:
                     # 너무 오래된 신호라 캡에 걸려 영영 못 덮는 경우 → 시간초과로 정리하고 끝
-                    was_executed = decision_text in ("BUY", "SELL")
+                    was_executed = _was_sent   # 🟥 [FIX-D8]
                     note = _generate_outcome_note("TIMEOUT_NO_HIT", reasons_text, decision_text, was_executed)
                     sheet.update_cell(i, 17, "TIMEOUT_NO_HIT")
                     sheet.update_cell(i, 34, note + " (데이터가 너무 오래돼 정밀 판정 불가)")
@@ -4607,7 +5463,7 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
             else:
                 continue  # 아직 더 기다려야 함 (다음 시간에 재평가)
 
-        was_executed = decision_text in ("BUY", "SELL")
+        was_executed = _was_sent   # 🟥 [FIX-D8]
         note = _generate_outcome_note(outcome, reasons_text, decision_text, was_executed)
 
         # 🟦 실제 손익(가격 기준, 1주/1단위 기준) 계산 — 'pnl' 컬럼은 기존 그대로 유지
@@ -4623,7 +5479,9 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
         #    수량(trade_qty)을 곱한 "실제 총손익"을 따로 계산해서 보여준다.
         #    주식인데 체결 수량을 못 가져온 경우(드묾)는 가격대별 고정수량표로 추정.
         if trade_qty is None:
-            trade_qty = get_tiered_qty(price_f) if is_stock_pair(pair) else 100000
+            # 🟥 [FIX-D9] FX 폴백도 100,000 하드코딩 대신 FX_FALLBACK_UNITS를 따른다.
+            trade_qty = (get_tiered_qty(price_f) if is_stock_pair(pair)
+                         else float(os.getenv("FX_FALLBACK_UNITS", "10000")))
         total_pnl_value = round(pnl_value * trade_qty, 2)
 
         # 🟦 NOT_FILLED 가상 평가: 실제 거래(TP_HIT/SL_HIT)와 구분하기 위해 앞에 NOT_FILLED_ 붙임.
@@ -4703,25 +5561,75 @@ def _find_force_close_fill(symbol, entry_time_iso):
     return None, None
 
 
+# ============================================================
+# 🟥 [FIX-A3] 진입 시각 메모리 레지스트리
+# ------------------------------------------------------------
+#  Alpaca 주문내역 조회에만 의존하면 진입시각을 놓치는 경우가 많다(아래 함수 주석 참조).
+#  주문이 나갈 때 여기에 기록해두고, 시간청산이 이걸 1순위로 본다.
+#  프로세스 재시작 시 비므로, 조회 폴백도 그대로 유지한다.
+# ============================================================
+_position_entry_times: dict[str, datetime] = {}
+_position_entry_lock = threading.Lock()
+
+
+def _record_position_entry(symbol: str, side: str):
+    """주문 성공 직후 진입시각 기록. side: 'long' | 'short'"""
+    if not symbol:
+        return
+    key = f"{symbol.upper()}:{side}"
+    with _position_entry_lock:
+        _position_entry_times[key] = datetime.now(ZoneInfo("UTC"))
+    print(f"🕐 [진입기록] {key} @ {_position_entry_times[key].isoformat()}")
+
+
+def _clear_position_entry(symbol: str, side: str | None = None):
+    """포지션이 닫혔을 때 기록 제거."""
+    if not symbol:
+        return
+    with _position_entry_lock:
+        for s in (["long", "short"] if side is None else [side]):
+            _position_entry_times.pop(f"{symbol.upper()}:{s}", None)
+
+
 def _get_latest_entry_time_for_open_position(symbol, side):
     """
     현재 열려있는 포지션(symbol)의 진입 시각을 찾는다.
-    🟦 버그 수정: status="closed"는 Alpaca에서 취소/만료된 주문 기준이라
-       실제 체결된 진입 주문을 못 찾는 문제가 있었음.
-       → status="all"로 전체 조회 후 filled 상태인 것 중 진입 방향만 필터링.
+
+    🟥 [FIX-A3] 기존 구현의 치명적 결함:
+       limit=20으로 최근 주문 20건만 조회했는데, 브래킷 주문은 진입 1건 + TP/SL 자식 2건을
+       만들기 때문에 같은 종목에 알림이 6~7번만 와도 20칸이 다 차서 진짜 진입 주문이
+       조회 범위 밖으로 밀려났다. 그러면 "진입시각을 못 찾아서 스킵"으로 빠지고
+       포지션이 영원히 안 닫혔다 — 실거래에서 최장 4,189분(약 3일) 보유가 나온 이유.
+       → ① 메모리 레지스트리 우선 조회 ② API 폴백은 limit=500으로 확대
+         ③ 자식 주문(브래킷 leg) 제외하고 진입 market 주문만 선별
     """
+    key = f"{(symbol or '').upper()}:{side}"
+    with _position_entry_lock:
+        cached = _position_entry_times.get(key)
+    if cached:
+        return cached
+
     try:
         url = f"{ALPACA_TRADE_BASE_URL}/v2/orders"
-        params = {"symbols": symbol, "status": "all", "direction": "desc", "limit": 20}
-        r = requests.get(url, headers=ALPACA_HEADERS, params=params, timeout=10)
+        # limit 20 → 500. Alpaca 1회 조회 상한이 500이다.
+        params = {"symbols": symbol, "status": "all", "direction": "desc", "limit": 500,
+                  "nested": "true"}
+        r = requests.get(url, headers=ALPACA_HEADERS, params=params, timeout=15)
         r.raise_for_status()
         want_side = "buy" if side == "long" else "sell"
         for o in r.json():
-            # market 주문이면서 진입 방향이고 체결 완료된 것
+            # 진입 주문만: 방향 일치 + 체결 완료 + market 타입 + 브래킷 부모(자식 leg 제외)
             if (o.get("side") == want_side
                     and o.get("status") == "filled"
-                    and o.get("filled_at")):
-                return datetime.fromisoformat(o["filled_at"].replace("Z", "+00:00"))
+                    and o.get("filled_at")
+                    and o.get("type") == "market"
+                    # (nested=true면 자식 leg는 최상위에 안 나오므로 별도 필터 불필요)
+                    and not o.get("parent_id")):
+                t = datetime.fromisoformat(o["filled_at"].replace("Z", "+00:00"))
+                # 찾은 값을 캐시에 넣어 다음 루프부터는 API를 안 타게 한다
+                with _position_entry_lock:
+                    _position_entry_times[key] = t
+                return t
     except Exception as e:
         print(f"❗ [강제청산] {symbol} 진입시각 조회 실패: {e}")
     return None
@@ -4745,6 +5653,40 @@ def close_stale_positions(cutoff_minutes=None):
         return {"checked": 0, "closed": 0}
 
     now_utc = datetime.now(ZoneInfo("UTC"))
+    now_ny = now_utc.astimezone(ZoneInfo("America/New_York"))
+    ny_hhmm = now_ny.hour * 100 + now_ny.minute
+    # 🟥 [FIX-A3] 장마감 전 전량 청산 구간인지 판정.
+    #    실거래에서 최대 손실을 만든 건 SL 미달성이 아니라 "밤을 넘긴 포지션의 갭"이었다.
+    #    (PLTR: -0.78% 손절 예정 → 오버나이트 갭으로 -5.17%, -$102)
+    #    이 구간에서는 진입시각을 몰라도 무조건 닫는다.
+    # 🟥 [FIX-A3b] HHMM=0을 "비활성"으로 문서화해놓고 코드는 0 <= ny_hhmm < 1600 이라
+    #    하루 종일 전량청산이 도는 치명적 반대 동작이었다. 0/음수는 명시적으로 끈다.
+    eod_flatten = (
+        STOCK_EOD_FLATTEN_ENABLED
+        and STOCK_EOD_FLATTEN_HHMM > 0
+        and now_ny.weekday() < 5
+        and STOCK_EOD_FLATTEN_HHMM <= ny_hhmm < 1600
+    )
+    if eod_flatten:
+        print(f"🌆 [강제청산] 장마감 전 전량청산 구간({now_ny:%H:%M} ET ≥ {STOCK_EOD_FLATTEN_HHMM}) "
+              f"→ 보유 포지션 전부 정리")
+
+    # 🟥 [FIX-A3c] TP/SL로 정상 청산된 포지션은 _clear_position_entry()가 안 불린다.
+    #    그 상태로 같은 종목에 새 포지션이 생기면 옛 진입시각을 읽어 즉시 강제청산될 수 있다.
+    #    → 매 루프마다 "현재 실제로 열려있는 포지션" 집합과 캐시를 동기화한다.
+    _open_keys = {
+        f"{(p.get('symbol') or '').upper()}:{p.get('side')}"
+        for p in positions if p.get("symbol")
+    }
+    # 🟥 [FIX-A3d] 방금 주문이 나간 건은 아직 Alpaca 포지션에 안 잡혀 있을 수 있다
+    #    (market 주문이 accepted/held 상태). 유예 시간(기본 10분) 안의 기록은 지우지 않는다.
+    _grace = timedelta(minutes=int(os.getenv("ENTRY_CACHE_GRACE_MINUTES", "10")))
+    with _position_entry_lock:
+        for _stale in [k for k, t in _position_entry_times.items()
+                       if k not in _open_keys and (now_utc - t) > _grace]:
+            _position_entry_times.pop(_stale, None)
+            print(f"🧹 [진입기록] 청산 완료된 {_stale} 캐시 제거")
+
     checked, closed = 0, 0
 
     for pos in positions:
@@ -4755,26 +5697,36 @@ def close_stale_positions(cutoff_minutes=None):
             continue
 
         entry_t = _get_latest_entry_time_for_open_position(symbol, side)
-        if not entry_t:
-            print(f"⚠️ [강제청산] {symbol} 진입시각을 못 찾아서 이번엔 스킵")
-            continue
+        held_minutes = None
+        if entry_t:
+            held_minutes = (now_utc - entry_t).total_seconds() / 60
 
-        held_minutes = (now_utc - entry_t).total_seconds() / 60
-        if held_minutes < cutoff:
+        if eod_flatten:
+            why = f"장마감 전 전량청산({now_ny:%H:%M} ET)"
+        elif held_minutes is None:
+            # 🟥 [FIX-A3] 기존엔 여기서 무조건 continue라 포지션이 영원히 안 닫혔다.
+            #    진입시각을 모르면 최소한 로그를 남기고, EOD 구간에서 반드시 정리되게 한다.
+            print(f"⚠️ [강제청산] {symbol} 진입시각 미상 → 시간청산 보류 "
+                  f"(장마감 {STOCK_EOD_FLATTEN_HHMM} ET에 전량청산 대상)")
             continue
+        elif held_minutes < cutoff:
+            continue
+        else:
+            why = f"진입 후 {held_minutes:.1f}분 경과(컷오프 {cutoff}분)"
 
         checked += 1
-        print(f"⏰ [강제청산] {symbol} 진입 후 {held_minutes:.1f}분 경과(컷오프 {cutoff}분) → 강제 시장가 청산 시도")
+        print(f"⏰ [강제청산] {symbol} {why} → 강제 시장가 청산 시도")
         try:
             r = requests.delete(f"{ALPACA_TRADE_BASE_URL}/v2/positions/{symbol}", headers=ALPACA_HEADERS, timeout=15)
             print(f"[강제청산] {symbol} 결과: {r.status_code} {r.text[:300]}")
             if r.status_code in (200, 207):
                 closed += 1
+                _clear_position_entry(symbol, side)
         except Exception as e:
             print(f"❌ [강제청산] {symbol} 청산 요청 실패: {e}")
 
     print(f"📊 [강제청산] 체크 {checked}건 / 청산 {closed}건")
-    return {"checked": checked, "closed": closed}
+    return {"checked": checked, "closed": closed, "eod_flatten": eod_flatten}
 
 
 def sync_alpaca_trade_log():
@@ -5055,15 +6007,24 @@ def sync_symbol_performance_summary():
         signal_count = freq.get(sym, 0)
         fill_rate = round(trades / signal_count * 100, 1) if signal_count else ""
 
-        # 간단한 자동 평가 코멘트 (표본 5건 미만이면 판단 보류)
-        if trades < 5:
-            verdict = f"표본 부족({trades}건) — 판단 보류"
-        elif isinstance(total_pnl, (int, float)) and total_pnl > 0 and isinstance(win_rate, (int, float)) and win_rate >= 50:
-            verdict = "✅ 양호 — 유지 후보"
-        elif isinstance(total_pnl, (int, float)) and total_pnl < 0:
-            verdict = "❌ 부진 — 제외 검토"
+        # 🟥 [FIX-D7] 자동 평가 코멘트 로직 수정.
+        #    기존엔 total_pnl > 0 이기만 하면 "✅ 양호 — 유지 후보"였다. 그래서 18거래에
+        #    총손익 $0.04인 PLTR이 "유지 후보"로 찍혔다 — 사실상 본전인데 양호로 오독된다.
+        #    → 부호가 아니라 "거래당 평균 손익"과 "손익분기 필요 승률"을 기준으로 판정한다.
+        _breakeven_wr = 100.0 / (1.0 + STOCK_RR_RATIO)   # 예: RR 1.6 → 38.5%
+        _min_trades = int(os.getenv("SYMBOL_VERDICT_MIN_TRADES", "10"))
+        _avg = avg_pnl if isinstance(avg_pnl, (int, float)) else None
+        _wr = win_rate if isinstance(win_rate, (int, float)) else None
+        if trades < _min_trades:
+            verdict = f"표본 부족({trades}건/{_min_trades}건) — 판단 보류"
+        elif _avg is None or _wr is None:
+            verdict = "🟡 데이터 부족 — 추가 관찰"
+        elif _avg > 1.0 and _wr >= _breakeven_wr:
+            verdict = f"✅ 양호 — 유지 후보 (평균 ${_avg}/거래, 손익분기 {_breakeven_wr:.1f}%)"
+        elif _avg < -1.0 or _wr < _breakeven_wr - 5:
+            verdict = f"❌ 부진 — 제외 검토 (평균 ${_avg}/거래, 손익분기 {_breakeven_wr:.1f}%)"
         else:
-            verdict = "🟡 애매 — 추가 관찰 필요"
+            verdict = f"🟡 본전권 — 추가 관찰 (평균 ${_avg}/거래)"
 
         computed.append([
             sym, signal_count, trades, fill_rate,
@@ -5111,7 +6072,9 @@ def sync_top_active_candidates(top_n: int = 5):
 
     try:
         url = f"{ALPACA_DATA_BASE_URL}/v1beta1/screener/stocks/most-actives"
-        params = {"by": "volume", "top": top_n}
+        # 🟥 [FIX-A5] 필터링 후에도 top_n개가 남도록 넉넉히 가져온다.
+        #    (거래량 상위는 페니주·레버리지 ETF가 대부분이라 그냥 5개만 받으면 전부 걸러진다)
+        params = {"by": "volume", "top": max(top_n * 8, 40)}
         r = requests.get(url, headers=ALPACA_HEADERS, params=params, timeout=15)
         r.raise_for_status()
         data = r.json()
@@ -5122,14 +6085,28 @@ def sync_top_active_candidates(top_n: int = 5):
 
     today_str = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
     new_rows = []
+    # 🟥 [FIX-A5] 기존 스캐너는 "거래량 상위"만 보고 뽑아서 SOXS(3배 인버스 반도체)와
+    #    GPUS/ZBAO/INLF 같은 페니주를 후보로 계속 공급했다. 거래량 1위 종목이 페니주인 건
+    #    주식 수가 많아서지 유동성이 좋아서가 아니다.
+    #    → is_blocked_instrument()로 레버리지 ETF·페니주를 걸러내고, 걸러진 이유도 표기한다.
+    skipped = 0
     for item in actives:
         symbol = item.get("symbol")
         volume = item.get("volume") or item.get("trade_count")
         if not symbol:
             continue
         price = get_alpaca_latest_price(symbol)
+        blocked, block_reason = is_blocked_instrument(symbol, price)
+        if blocked:
+            skipped += 1
+            print(f"🚫 [추천후보] {symbol} 제외 — {block_reason} (price={price})")
+            continue
         already = "✅ 이미 있음" if symbol in existing_symbols else "🆕 신규"
         new_rows.append([today_str, symbol, volume, price, already])
+        if len(new_rows) >= top_n:
+            break
+    if skipped:
+        print(f"ℹ️ [추천후보] 레버리지 ETF·페니주 {skipped}건 제외됨")
 
     try:
         existing = ws.get_all_values()
@@ -5632,10 +6609,8 @@ async def _hourly_outcome_tracker_loop():
             await asyncio.to_thread(sync_alpaca_trade_log)
         except Exception as e:
             print(f"❌ [Alpaca거래내역 루프] 오류: {e}")
-        try:
-            await asyncio.to_thread(close_stale_positions)
-        except Exception as e:
-            print(f"❌ [강제청산 루프] 오류: {e}")
+        # 🟥 [FIX-A3] close_stale_positions()는 여기서 제거하고 _time_exit_loop()로 독립시켰다.
+        #    이 체인에 묶여 있으면 앞 단계가 느릴 때 시간청산 차례가 오지 않는다.
         try:
             await asyncio.to_thread(sync_symbol_performance_summary)
         except Exception as e:
@@ -5647,9 +6622,25 @@ async def _hourly_outcome_tracker_loop():
         await asyncio.sleep(OUTCOME_TRACKER_INTERVAL_MINUTES * 60)
 
 
+async def _time_exit_loop():
+    """
+    🟥 [FIX-A3] 시간청산 전용 루프.
+    TIME_EXIT_CHECK_MINUTES(기본 5분)마다 close_stale_positions()를 돌린다.
+    시트 동기화 체인과 완전히 분리돼 있어서, 시트가 느리거나 실패해도
+    포지션 정리는 항상 제시간에 돈다.
+    """
+    while True:
+        try:
+            await asyncio.to_thread(close_stale_positions)
+        except Exception as e:
+            print(f"❌ [시간청산 루프] 오류: {e}")
+        await asyncio.sleep(max(60, TIME_EXIT_CHECK_MINUTES * 60))
+
+
 @app.on_event("startup")
 async def _start_background_tasks():
     asyncio.create_task(_hourly_outcome_tracker_loop())
+    asyncio.create_task(_time_exit_loop())          # 🟥 [FIX-A3] 신규
     asyncio.create_task(_daily_top_movers_loop())
     asyncio.create_task(_weekly_report_loop())
 
