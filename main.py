@@ -1899,8 +1899,21 @@ _EXCLUDED_SYMBOLS_ENV = os.getenv("EXCLUDED_SYMBOLS", "ALAB,CEG,VRT")
 EXCLUDED_SYMBOLS = set(s.strip().upper() for s in _EXCLUDED_SYMBOLS_ENV.split(",") if s.strip())
 # 결과추적/거래내역/성과분석 탭들을 몇 분마다 갱신할지 (기본 30분)
 OUTCOME_TRACKER_INTERVAL_MINUTES = int(os.getenv("OUTCOME_TRACKER_INTERVAL_MINUTES", "30"))
-# 진입 후 이 시간(분)이 지나도 TP/SL 둘 다 안 닿으면 강제로 시장가 청산
-STOCK_TIME_EXIT_MINUTES = int(os.getenv("STOCK_TIME_EXIT_MINUTES", "90"))
+# ============================================================
+# 🟥 [FIX-H1] 시간청산 기본값 90분 → 0(비활성)
+# ------------------------------------------------------------
+#  90분 컷오프는 TP=ATR×2.4 목표와 수학적으로 모순이었다.
+#    · 실거래 데이터: TP=ATR×1.0 도달까지 중앙 21분
+#    · TP 거리를 2.4배로 늘리면 필요 시간은 약 2.4² ≈ 5.8배 → 중앙 122분
+#    · 즉 90분(15분봉 6개) 안에 2.4 ATR을 달성하라는 요구가 되어,
+#      이길 거래의 절반 이상을 TP 도달 전에 강제로 잘라낸다.
+#  게다가 실측상 90분 초과 보유 구간이 유일한 흑자 구간이었다:
+#      90분 이내 137건 승률 41.6% / -$579
+#      90분 초과  29건 승률 55.2% / +$210   ← 여기를 잘라내고 있었다
+#  → 시간청산은 끄고, 오버나이트 위험은 장마감 전 전량청산(15:50)으로 막는다.
+#    자본 회전이 필요하면 240~360 정도로 설정할 것. 90은 쓰지 말 것.
+# ============================================================
+STOCK_TIME_EXIT_MINUTES = int(os.getenv("STOCK_TIME_EXIT_MINUTES", "0"))
 # 🟥 [FIX-A3] 시간청산 전용 루프 주기(분). 기존엔 30분짜리 시트 동기화 체인의
 #    3번째 순서로 묶여 있어서, 앞 단계(수백 행 gspread 업데이트)가 느리면
 #    시간청산 차례가 아예 안 왔다. 독립 루프로 분리하고 주기도 짧게 가져간다.
@@ -5749,6 +5762,12 @@ def _get_latest_entry_time_for_open_position(symbol, side):
 #  ⚠️ ①을 하고 ③이 실패하면 포지션이 보호장치 없이 남는다. 그래서 재시도를 넣고,
 #     끝까지 실패하면 CRITICAL 로그를 남겨 즉시 눈에 띄게 한다.
 # ============================================================
+# 🟥 [FIX-G4] 같은 종목 청산이 계속 실패하면 5분마다 403 3연타 + CRITICAL이 무한 반복된다.
+#    실패한 종목은 잠시 쉬었다가 다시 시도해 로그·API 폭주를 막는다.
+_close_fail_until: dict = {}
+_close_fail_count: dict = {}
+CLOSE_RETRY_BACKOFF_MINUTES = int(os.getenv("CLOSE_RETRY_BACKOFF_MINUTES", "30"))
+
 _ALPACA_OPEN_ORDER_STATES = {
     "new", "accepted", "held", "partially_filled",
     "pending_new", "accepted_for_bidding", "calculated", "replaced", "pending_replace",
@@ -5756,14 +5775,26 @@ _ALPACA_OPEN_ORDER_STATES = {
 
 
 def _cancel_open_orders_for_symbol(symbol: str) -> int:
-    """해당 종목의 열려있는 주문(브래킷 TP/SL 자식 포함)을 전부 취소. 취소한 개수 반환."""
+    """
+    해당 종목의 열려있는 주문(브래킷 TP/SL 자식 포함)을 전부 취소. 취소한 개수 반환.
+
+    🟥 [FIX-G3] `nested=true` 가 이 함수를 무력화하고 있었다.
+       · 브래킷 진입 주문(부모)은 체결되면 status='filled' 이 된다.
+       · `status=open` 필터는 filled 부모를 결과에서 제외한다.
+       · 그런데 `nested=true` 를 주면 TP/SL 자식이 부모 안에 중첩되어서만 나온다.
+       → 부모가 제외되면 자식도 같이 사라진다. 조회 결과가 0건.
+       실제 로그에서 "🧹 예약주문 N건 취소"가 한 번도 안 찍히고
+       곧바로 403 insufficient qty 가 3번 반복된 것이 바로 이 증상이다.
+       → nested 를 빼면 자식 leg 들이 최상위 주문으로 각각 조회된다.
+    """
     if not symbol:
         return 0
     try:
         r = requests.get(
             f"{ALPACA_TRADE_BASE_URL}/v2/orders",
             headers=ALPACA_HEADERS,
-            params={"status": "open", "symbols": symbol, "nested": "true", "limit": 500},
+            # nested 제거 — 자식 leg를 최상위로 받아야 취소할 수 있다
+            params={"status": "open", "symbols": symbol, "limit": 500},
             timeout=15,
         )
         r.raise_for_status()
@@ -5772,18 +5803,15 @@ def _cancel_open_orders_for_symbol(symbol: str) -> int:
         print(f"❌ [강제청산] {symbol} 열린 주문 조회 실패: {e}")
         return 0
 
-    def _walk(o):
-        yield o
-        for leg in (o.get("legs") or []):
-            yield from _walk(leg)
-
     ids = []
     for o in orders:
-        for x in _walk(o):
-            if (x.get("symbol") or symbol).upper() != symbol.upper():
-                continue
-            if (x.get("status") or "").lower() in _ALPACA_OPEN_ORDER_STATES and x.get("id"):
-                ids.append(x["id"])
+        if (o.get("symbol") or "").upper() != symbol.upper():
+            continue
+        if o.get("id"):
+            ids.append(o["id"])
+
+    if not ids:
+        print(f"ℹ️ [강제청산] {symbol} 취소할 열린 주문이 없음 (조회 {len(orders)}건)")
 
     cancelled = 0
     for oid in dict.fromkeys(ids):          # 중복 제거, 순서 유지
@@ -5809,6 +5837,13 @@ def _force_close_position(symbol: str, side: str | None = None) -> bool:
     예약주문 취소 → 포지션 시장가 청산. 성공 여부 반환.
     403(insufficient qty)이 나면 취소가 아직 반영 안 된 것이므로 재시도한다.
     """
+    key = (symbol or "").upper()
+    now = _t.time()
+    if _close_fail_until.get(key, 0) > now:
+        wait_min = (_close_fail_until[key] - now) / 60
+        print(f"⏸️ [강제청산] {symbol} 직전 실패로 대기 중 ({wait_min:.0f}분 남음) — 이번 회차 건너뜀")
+        return False
+
     _cancel_open_orders_for_symbol(symbol)
 
     for attempt in range(3):
@@ -5824,6 +5859,8 @@ def _force_close_position(symbol: str, side: str | None = None) -> bool:
         if r.status_code in (200, 207):
             print(f"✅ [강제청산] {symbol} 청산 완료")
             _clear_position_entry(symbol, side)
+            _close_fail_until.pop(key, None)      # 🟥 [FIX-G4] 성공 시 백오프 해제
+            _close_fail_count.pop(key, None)
             return True
 
         body = r.text[:300]
@@ -5836,11 +5873,17 @@ def _force_close_position(symbol: str, side: str | None = None) -> bool:
         if r.status_code == 404:
             print(f"ℹ️ [강제청산] {symbol} 포지션 없음(이미 청산됨)")
             _clear_position_entry(symbol, side)
+            _close_fail_until.pop(key, None)
+            _close_fail_count.pop(key, None)
             return True
         break   # 그 외 에러는 재시도해도 소용없음
 
-    print(f"🚨 [강제청산][CRITICAL] {symbol} 청산에 실패했습니다. "
-          f"예약주문을 취소한 뒤 청산이 안 됐다면 포지션이 보호장치 없이 남아 있을 수 있습니다. "
+    # 🟥 [FIX-G4] 실패 백오프 설정 — 5분마다 무한 재시도하며 로그를 도배하지 않게 한다.
+    _close_fail_count[key] = _close_fail_count.get(key, 0) + 1
+    _close_fail_until[key] = _t.time() + CLOSE_RETRY_BACKOFF_MINUTES * 60
+    print(f"🚨 [강제청산][CRITICAL] {symbol} 청산 실패({_close_fail_count[key]}회째). "
+          f"{CLOSE_RETRY_BACKOFF_MINUTES}분 후 재시도합니다. "
+          f"예약주문 취소 후에도 청산이 안 됐다면 포지션이 보호장치 없이 남아 있을 수 있으니 "
           f"Alpaca에서 직접 확인하세요.")
     return False
 
@@ -5874,7 +5917,11 @@ def close_stale_positions(cutoff_minutes=None):
     🟥 [FIX-G1] 청산은 반드시 _force_close_position()을 통해서 한다.
     (브래킷 TP/SL이 수량을 hold 하고 있어서, 예약주문을 먼저 취소하지 않으면 403이 난다)
     """
-    cutoff = cutoff_minutes or STOCK_TIME_EXIT_MINUTES
+    # 🟥 [FIX-H1] 0 이하 = 시간청산 비활성. (기존 `or` 연산은 0을 falsy로 처리해
+    #    STOCK_TIME_EXIT_MINUTES=0이면 cutoff=0이 되고, `held < 0`이 항상 거짓이라
+    #    "모든 포지션 즉시 청산"이라는 정반대 동작이 됐다.)
+    cutoff = STOCK_TIME_EXIT_MINUTES if cutoff_minutes is None else cutoff_minutes
+    time_exit_on = cutoff is not None and cutoff > 0
     try:
         r = requests.get(f"{ALPACA_TRADE_BASE_URL}/v2/positions", headers=ALPACA_HEADERS, timeout=15)
         r.raise_for_status()
@@ -5940,14 +5987,36 @@ def close_stale_positions(cutoff_minutes=None):
         if entry_t:
             held_minutes = (now_utc - entry_t).total_seconds() / 60
 
+        # 🟥 [FIX-G5] 밤을 넘겨버린 포지션 정리.
+        #    EOD 전량청산 창은 15:50~16:00 뿐이라, 그 10분에 배포/재시작/에러가 겹치면
+        #    포지션이 그대로 밤을 넘긴다. 실제 로그에서 424~665분(7~11시간)짜리
+        #    포지션이 남아 있던 게 이 경우다.
+        #    → 진입일이 오늘(ET)이 아니면 정규장 시간에 즉시 정리한다.
+        is_overnight = False
+        entry_ny = None
+        if entry_t is not None:
+            entry_ny = entry_t.astimezone(ZoneInfo("America/New_York"))
+            is_overnight = entry_ny.date() != now_ny.date()
+        in_regular = 930 <= ny_hhmm < 1600 and now_ny.weekday() < 5
+
         if eod_flatten:
             why = f"장마감 전 전량청산({now_ny:%H:%M} ET)"
+        elif is_overnight and in_regular:
+            why = f"오버나이트 잔여 포지션(진입 {entry_ny:%m/%d %H:%M} ET) → 정규장 개시 후 즉시 정리"
+        elif not time_exit_on and held_minutes is None:
+            continue     # 🟥 [FIX-H1] 시간청산 꺼져 있으면 진입시각을 몰라도 문제없음
         elif held_minutes is None:
             # 🟥 [FIX-A3] 기존엔 여기서 무조건 continue라 포지션이 영원히 안 닫혔다.
             #    진입시각을 모르면 최소한 로그를 남기고, EOD 구간에서 반드시 정리되게 한다.
             print(f"⚠️ [강제청산] {symbol} 진입시각 미상 → 시간청산 보류 "
                   f"(장마감 {STOCK_EOD_FLATTEN_HHMM} ET에 전량청산 대상)")
             continue
+        elif not in_regular:
+            # 🟥 [FIX-G5] 정규장 밖에서는 시장가 주문이 체결되지 않는다.
+            #    로그에서 21:10(장 종료 5시간 후)에 계속 청산을 시도하며 403을 뿜던 구간.
+            continue
+        elif not time_exit_on:
+            continue     # 🟥 [FIX-H1] 시간청산 비활성 — EOD 전량청산만 담당
         elif held_minutes < cutoff:
             continue
         else:
