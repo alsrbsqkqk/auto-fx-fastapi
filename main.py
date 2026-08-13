@@ -2094,6 +2094,14 @@ def process_webhook_sync(raw: bytes):
     signal = data.get("signal")
     print(f"✅ STEP 2: 데이터 수신 완료 | pair: {pair}")
 
+    # 🟥 [FIX-G2] 헬스체크/keep-alive 핑을 매매 신호로 처리하지 않는다.
+    #    로그에 계속 찍히던 것:
+    #      캔들 요청 실패: 400 ... /v3/instruments/KEEP_ALIVE/candles ... → POST /webhook 400
+    #    Render 슬립 방지용 핑이 OANDA 캔들 조회까지 타고 들어가서 매번 400을 냈다.
+    #    (지표·GPT는 안 탔지만 로그를 더럽히고 불필요한 외부 호출을 발생시켰다)
+    if str(pair or "").strip().upper() in ("KEEP_ALIVE", "KEEPALIVE", "PING", "HEALTH", "HEALTHCHECK"):
+        return JSONResponse(content={"status": "alive", "ts": datetime.now(ZoneInfo("UTC")).isoformat()})
+
     _ = check_recent_opposite_signal(pair, signal)  # 소프트 OFF: 기록만, 차단 안 함
 
     # ============================================================
@@ -5723,13 +5731,148 @@ def _get_latest_entry_time_for_open_position(symbol, side):
     return None
 
 
+# ============================================================
+# 🟥 [FIX-G1] 브래킷 예약주문 취소 → 그 다음 포지션 청산
+# ------------------------------------------------------------
+#  실제 로그에서 확인된 실패:
+#    403 {"available":"0","existing_qty":"10","held_for_orders":"10",
+#         "message":"insufficient qty available for order (requested:10, available:0)"}
+#
+#  원인: 브래킷 주문의 TP(limit) / SL(stop) 자식 주문이 보유 수량 전량을
+#        'held_for_orders'로 예약(hold)하고 있다. 그래서 팔 수 있는 수량이 0이고,
+#        DELETE /v2/positions/{symbol} 이 403으로 거부된다.
+#        (기존 주석의 "DELETE 하면 TP/SL도 같이 정리된다"는 사실이 아니다 —
+#         Alpaca는 단일 종목 청산 시 자식 주문을 자동 취소해주지 않는다.
+#         cancel_orders 옵션은 '전체 청산'(DELETE /v2/positions)에만 있다.)
+#
+#  → 반드시 ① 해당 종목의 열린 주문 취소 ② 취소 반영 대기 ③ 포지션 청산 순서로 간다.
+#  ⚠️ ①을 하고 ③이 실패하면 포지션이 보호장치 없이 남는다. 그래서 재시도를 넣고,
+#     끝까지 실패하면 CRITICAL 로그를 남겨 즉시 눈에 띄게 한다.
+# ============================================================
+_ALPACA_OPEN_ORDER_STATES = {
+    "new", "accepted", "held", "partially_filled",
+    "pending_new", "accepted_for_bidding", "calculated", "replaced", "pending_replace",
+}
+
+
+def _cancel_open_orders_for_symbol(symbol: str) -> int:
+    """해당 종목의 열려있는 주문(브래킷 TP/SL 자식 포함)을 전부 취소. 취소한 개수 반환."""
+    if not symbol:
+        return 0
+    try:
+        r = requests.get(
+            f"{ALPACA_TRADE_BASE_URL}/v2/orders",
+            headers=ALPACA_HEADERS,
+            params={"status": "open", "symbols": symbol, "nested": "true", "limit": 500},
+            timeout=15,
+        )
+        r.raise_for_status()
+        orders = r.json() or []
+    except Exception as e:
+        print(f"❌ [강제청산] {symbol} 열린 주문 조회 실패: {e}")
+        return 0
+
+    def _walk(o):
+        yield o
+        for leg in (o.get("legs") or []):
+            yield from _walk(leg)
+
+    ids = []
+    for o in orders:
+        for x in _walk(o):
+            if (x.get("symbol") or symbol).upper() != symbol.upper():
+                continue
+            if (x.get("status") or "").lower() in _ALPACA_OPEN_ORDER_STATES and x.get("id"):
+                ids.append(x["id"])
+
+    cancelled = 0
+    for oid in dict.fromkeys(ids):          # 중복 제거, 순서 유지
+        try:
+            rr = requests.delete(f"{ALPACA_TRADE_BASE_URL}/v2/orders/{oid}",
+                                 headers=ALPACA_HEADERS, timeout=15)
+            if rr.status_code in (200, 204):
+                cancelled += 1
+            elif rr.status_code == 422:
+                cancelled += 1          # 이미 체결/취소됨 — 목적은 달성된 것
+            else:
+                print(f"⚠️ [강제청산] {symbol} 주문 {oid} 취소 실패: {rr.status_code} {rr.text[:150]}")
+        except Exception as e:
+            print(f"⚠️ [강제청산] {symbol} 주문 {oid} 취소 예외: {e}")
+
+    if cancelled:
+        print(f"🧹 [강제청산] {symbol} 예약주문 {cancelled}건 취소 (held_for_orders 해제)")
+    return cancelled
+
+
+def _force_close_position(symbol: str, side: str | None = None) -> bool:
+    """
+    예약주문 취소 → 포지션 시장가 청산. 성공 여부 반환.
+    403(insufficient qty)이 나면 취소가 아직 반영 안 된 것이므로 재시도한다.
+    """
+    _cancel_open_orders_for_symbol(symbol)
+
+    for attempt in range(3):
+        if attempt:
+            _t.sleep(1.5)               # 취소 반영 대기
+        try:
+            r = requests.delete(f"{ALPACA_TRADE_BASE_URL}/v2/positions/{symbol}",
+                                headers=ALPACA_HEADERS, timeout=15)
+        except Exception as e:
+            print(f"❌ [강제청산] {symbol} 청산 요청 예외({attempt+1}/3): {e}")
+            continue
+
+        if r.status_code in (200, 207):
+            print(f"✅ [강제청산] {symbol} 청산 완료")
+            _clear_position_entry(symbol, side)
+            return True
+
+        body = r.text[:300]
+        print(f"[강제청산] {symbol} 결과({attempt+1}/3): {r.status_code} {body}")
+
+        if r.status_code == 403 and "insufficient qty" in body:
+            # 아직 hold가 안 풀렸다 → 한 번 더 취소 시도 후 재시도
+            _cancel_open_orders_for_symbol(symbol)
+            continue
+        if r.status_code == 404:
+            print(f"ℹ️ [강제청산] {symbol} 포지션 없음(이미 청산됨)")
+            _clear_position_entry(symbol, side)
+            return True
+        break   # 그 외 에러는 재시도해도 소용없음
+
+    print(f"🚨 [강제청산][CRITICAL] {symbol} 청산에 실패했습니다. "
+          f"예약주문을 취소한 뒤 청산이 안 됐다면 포지션이 보호장치 없이 남아 있을 수 있습니다. "
+          f"Alpaca에서 직접 확인하세요.")
+    return False
+
+
+def _close_all_positions_with_orders() -> dict:
+    """
+    장마감 전 전량청산용. DELETE /v2/positions?cancel_orders=true 는
+    '모든 예약주문 취소 + 모든 포지션 청산'을 한 번에 해준다(단일 종목 엔드포인트에는 없는 옵션).
+    """
+    try:
+        r = requests.delete(f"{ALPACA_TRADE_BASE_URL}/v2/positions",
+                            headers=ALPACA_HEADERS,
+                            params={"cancel_orders": "true"}, timeout=30)
+        ok = r.status_code in (200, 207)
+        print(f"🌆 [전량청산] 결과: {r.status_code} {r.text[:300]}")
+        if ok:
+            with _position_entry_lock:
+                _position_entry_times.clear()
+        return {"ok": ok, "status": r.status_code}
+    except Exception as e:
+        print(f"❌ [전량청산] 실패: {e}")
+        return {"ok": False, "error": str(e)}
+
+
 def close_stale_positions(cutoff_minutes=None):
     """
     Alpaca의 '현재 실시간 보유 포지션'을 직접 조회해서(=구글시트 탭에 의존하지 않음),
     진입 후 cutoff_minutes(기본 STOCK_TIME_EXIT_MINUTES)가 지났는데도 안 닫힌 것들을
     시장가로 강제 청산한다. 'Alpaca 거래내역' 탭은 한 번에 최근 500건만 보여주는 한계가 있어서,
     오래된 미청산 포지션이 그 탭에서 빠질 수 있었음 — 그래서 탭이 아니라 Alpaca 포지션 API를 직접 본다.
-    DELETE /v2/positions/{symbol}을 쓰면 TP/SL 예약주문도 같이 정리되면서 시장가로 청산된다.
+    🟥 [FIX-G1] 청산은 반드시 _force_close_position()을 통해서 한다.
+    (브래킷 TP/SL이 수량을 hold 하고 있어서, 예약주문을 먼저 취소하지 않으면 403이 난다)
     """
     cutoff = cutoff_minutes or STOCK_TIME_EXIT_MINUTES
     try:
@@ -5758,6 +5901,14 @@ def close_stale_positions(cutoff_minutes=None):
     if eod_flatten:
         print(f"🌆 [강제청산] 장마감 전 전량청산 구간({now_ny:%H:%M} ET ≥ {STOCK_EOD_FLATTEN_HHMM}) "
               f"→ 보유 포지션 전부 정리")
+        # 🟥 [FIX-G1] 전량청산은 cancel_orders=true 옵션이 있는 전용 엔드포인트로 한 번에 처리한다.
+        #    (종목별로 취소→청산을 반복하는 것보다 빠르고, 누락이 없다)
+        if positions:
+            _res = _close_all_positions_with_orders()
+            if _res.get("ok"):
+                print(f"📊 [강제청산] 전량청산 {len(positions)}건 처리 완료")
+                return {"checked": len(positions), "closed": len(positions), "eod_flatten": True}
+            print("⚠️ [강제청산] 전량청산 API 실패 → 종목별 개별 청산으로 폴백")
 
     # 🟥 [FIX-A3c] TP/SL로 정상 청산된 포지션은 _clear_position_entry()가 안 불린다.
     #    그 상태로 같은 종목에 새 포지션이 생기면 옛 진입시각을 읽어 즉시 강제청산될 수 있다.
@@ -5803,15 +5954,10 @@ def close_stale_positions(cutoff_minutes=None):
             why = f"진입 후 {held_minutes:.1f}분 경과(컷오프 {cutoff}분)"
 
         checked += 1
-        print(f"⏰ [강제청산] {symbol} {why} → 강제 시장가 청산 시도")
-        try:
-            r = requests.delete(f"{ALPACA_TRADE_BASE_URL}/v2/positions/{symbol}", headers=ALPACA_HEADERS, timeout=15)
-            print(f"[강제청산] {symbol} 결과: {r.status_code} {r.text[:300]}")
-            if r.status_code in (200, 207):
-                closed += 1
-                _clear_position_entry(symbol, side)
-        except Exception as e:
-            print(f"❌ [강제청산] {symbol} 청산 요청 실패: {e}")
+        print(f"⏰ [강제청산] {symbol} {why} → 예약주문 취소 후 시장가 청산 시도")
+        # 🟥 [FIX-G1] 예약주문(TP/SL) 취소 → 청산. 기존엔 바로 DELETE 해서 403이 무한 반복됐다.
+        if _force_close_position(symbol, side):
+            closed += 1
 
     print(f"📊 [강제청산] 체크 {checked}건 / 청산 {closed}건")
     return {"checked": checked, "closed": closed, "eod_flatten": eod_flatten}
