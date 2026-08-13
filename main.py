@@ -2068,13 +2068,74 @@ def summarize_recent_candle_flow(candles, window=20):
 
     return f"최근 {window}개 캔들 기준 {direction}, 상승:{up_count}개, 하락:{down_count}개"
 
+# ============================================================
+# 🟥 [FIX-J1] TradingView "request took too long and timed out" 해결
+# ------------------------------------------------------------
+#  증상: TradingView 알림 로그에서 BUY 신호만 전부 빨간 실패,
+#        KEEP_ALIVE 핑은 정상 성공.
+#  원인: TradingView 웹훅은 응답을 몇 초(약 3~5초)만 기다린다.
+#        그런데 기존 코드는 `await`로 처리 완료까지 붙잡고 있었고,
+#        그 처리에는 캔들 200개 조회 → 지표 계산 → 뉴스 조회 → MTF 조회
+#        → GPT 호출(최대 60초) → 주문 전송 → 구글시트 여러 번 쓰기가 들어 있다.
+#        실제로 알림 09:45:11 → 시트 기록 09:45:40 으로 약 30초가 걸렸다.
+#        KEEP_ALIVE만 성공한 건 그건 즉시 return하도록 따로 빼놨기 때문이다.
+#
+#  ⚠️ 중요: 이 "실패"는 주문이 안 나갔다는 뜻이 아니다.
+#     TradingView가 기다리다 포기했을 뿐, 서버는 끝까지 처리해서 주문까지 넣었다.
+#     (그래서 시트에는 EXECUTED_BUY와 TP_HIT이 정상적으로 남아 있었다)
+#     다만 그대로 두면 ① TradingView가 재전송해 중복 주문 위험 ② 알림 로그가
+#     전부 빨간색이라 진짜 장애를 구분할 수 없다.
+#
+#  해결: 접수 즉시 202를 돌려주고, 실제 처리는 백그라운드로 넘긴다.
+#        응답 시간이 수십 ms로 떨어져 TradingView는 항상 성공으로 표시된다.
+# ============================================================
+_bg_tasks: set = set()
+_bg_lock = threading.Lock()
+_bg_running = 0
+
+
+def _run_webhook_bg(raw: bytes):
+    """백그라운드 실행 래퍼 — 예외를 삼키지 않고 로그로 남긴다."""
+    global _bg_running
+    with _bg_lock:
+        _bg_running += 1
+        n = _bg_running
+    if n > 10:
+        print(f"⚠️ [웹훅] 동시 처리 {n}건 — 알림이 몰리고 있습니다(처리 지연 가능)")
+    _t0 = _t.time()
+    try:
+        return process_webhook_sync(raw)
+    except Exception as e:
+        import traceback
+        print(f"❌ [웹훅 백그라운드] 처리 중 예외: {e}")
+        traceback.print_exc()
+    finally:
+        _elapsed = _t.time() - _t0
+        print(f"⏱️ [웹훅] 처리 완료 — {_elapsed:.1f}초 소요 "
+              f"(TradingView 대기 한도는 3~5초라, 동기 처리였다면 여기서 타임아웃)")
+        with _bg_lock:
+            _bg_running -= 1
+
+
 @app.post("/webhook")
 async def webhook(request: Request):
     """
-    🟦 가벼운 async 래퍼. 실제 처리(process_webhook_sync)는 스레드 풀에서 돌려서,
-       여러 알림이 거의 동시에 들어와도 이벤트 루프가 막히지 않고 동시에 처리되게 한다.
-       (이전에는 전체 로직이 async def 안에서 동기 블로킹 호출을 그대로 실행해서,
-        알림이 몰리면 한 줄로 순서대로 처리되며 뒤로 갈수록 지연/타임아웃이 생겼음)
+    🟥 [FIX-J1] 즉시 202를 반환하고 실제 처리는 백그라운드로 넘긴다.
+    TradingView는 응답 본문을 쓰지 않으므로, 빨리 200/202를 주는 것이 유일하게 중요하다.
+    """
+    raw = (await request.body()) or b""
+    task = asyncio.create_task(asyncio.to_thread(_run_webhook_bg, raw))
+    # create_task 결과를 어디에도 안 붙들면 GC가 태스크를 회수할 수 있다 → 참조 유지
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+    return JSONResponse(content={"status": "accepted"}, status_code=200)
+
+
+@app.post("/webhook_sync")
+async def webhook_sync(request: Request):
+    """
+    디버깅용 — 처리 완료까지 기다렸다가 결과를 그대로 돌려준다.
+    (curl로 수동 테스트할 때 사용. TradingView에는 절대 이 주소를 쓰지 말 것)
     """
     raw = (await request.body()) or b""
     return await asyncio.to_thread(process_webhook_sync, raw)
@@ -2498,19 +2559,16 @@ def process_webhook_sync(raw: bytes):
     # 🟥 [FIX-B1] strategy_name은 위(웹훅 앞부분)에서 이미 확정했다. 여기서 다시 계산하지 않는다.
     #    (기존엔 여기서만 계산해서 스코어 함수는 전략명을 못 받았고, 마지막 `or ""`는 도달 불가 코드였다)
     alert_data = payload.get("alert_data", {})
-    threshold = strategy_thresholds.get(strategy_name, None)
-    if threshold is None:
-        # 🟥 [FIX-B1] 미등록 전략명이면 기존엔 threshold=999로 영구 차단되면서 로그도 없이 사라졌다.
-        #    이제는 명시적으로 경고를 남기고 기본값으로 떨어뜨린다.
-        _fallback = strategy_thresholds["BUY_STOCK_PORTFOLIO_A2"] if is_stock_pair(pair) else strategy_thresholds["기본알림"]
-        print(f"⚠️ [threshold] 등록되지 않은 전략명 '{strategy_name}' → 기본값 {_fallback} 적용 "
-              f"(strategy_thresholds에 추가하는 것을 권장)")
-        reasons.append(f"⚠️ 미등록 전략명 '{strategy_name}' → 기본 threshold {_fallback} 사용")
-        threshold = _fallback
+    # 🟥 [FIX-I1] 접두사 매칭으로 해석 — Pine 전략 이름이 A5→A10→A11로 바뀌어도 그대로 동작한다.
+    threshold, _thr_how = resolve_strategy_threshold(strategy_name, strategy_thresholds, is_stock_pair(pair))
+    if _thr_how == "미등록 → 기본값":
+        print(f"⚠️ [threshold] 등록되지 않은 전략명 '{strategy_name}' → 기본값 {threshold} 적용")
+        reasons.append(f"⚠️ 미등록 전략명 '{strategy_name}' → 기본 threshold {threshold} 사용")
+    else:
+        print(f"[threshold] '{strategy_name}' → {threshold} ({_thr_how})")
 
-    # 🟦 Pine 쪽 alert()는 안 건드리고, 주식 신호인데 strategy_name이 따로 안 와서
-    #    "기본알림"(FX 기준 3.0)으로 떨어진 경우만 주식 전용 threshold로 바꿔준다.
-    if is_stock_pair(pair) and strategy_name in ("기본알림", ""):   # 🟥 [FIX-F2]
+    # 🟦 주식인데 strategy_name이 아예 안 와서 "기본알림"(FX 기준 3.0)으로 떨어진 경우 보정
+    if is_stock_pair(pair) and strategy_name in ("기본알림", ""):
         threshold = strategy_thresholds.get("BUY_STOCK_PORTFOLIO_A2", -2.5)
 
     print(f"[DEBUG] strategy_name={strategy_name}, threshold={threshold}, score={signal_score}")
@@ -3881,6 +3939,55 @@ def _finalize_sheet_row(row_idx, effective_decision=None, gpt_decision=None, not
             sh.batch_update(updates)
     except Exception as e:
         print(f"⚠️ [시트] row {row_idx} 최종결과 기록 실패: {e}")
+
+
+# ============================================================
+# 🟥 [FIX-I1] 전략명 해석 — 버전이 바뀌어도 threshold가 따라오게
+# ------------------------------------------------------------
+#  문제: Pine 전략 이름을 A5 → A10 → A11로 올릴 때마다 여기 dict에 키를 추가하지 않으면
+#        '미등록 전략명'으로 빠진다. 그래서 Pine alert에 이름을 A5로 하드코딩해뒀는데,
+#        그 결과 시트의 strategy 컬럼이 항상 A5로 찍혀서 "어느 버전이 낸 신호인지"를
+#        구분할 수 없게 됐다. A/B 테스트를 하려는 지금 이건 치명적이다.
+#  해결: 이름을 정규화하고 접두사로 매칭한다. BUY_STOCK_PORTFOLIO_* 는 버전과 무관하게
+#        같은 threshold를 쓰므로, Pine에서 실제 이름을 그대로 보내도 안전하다.
+# ============================================================
+STRATEGY_PREFIX_THRESHOLDS = [
+    ("BUY_STOCK_PORTFOLIO", -2.5),   # A2 / A5 / A10 / A11 … 모든 버전
+    ("BUY_ENTRY_BAR_CLOSE", -7.0),
+    ("SELL_ENTRY_BAR_CLOSE", -7.0),
+    ("BALANCE_BREAKOUT", 4.5),
+]
+
+
+def _normalize_strategy_name(name: str) -> str:
+    """'BUY STOCK PORTFOLIO A10' / 'buy-stock-portfolio-a10' → 'BUY_STOCK_PORTFOLIO_A10'"""
+    n = str(name or "").strip().upper()
+    for ch in (" ", "-", ".", "/"):
+        n = n.replace(ch, "_")
+    while "__" in n:
+        n = n.replace("__", "_")
+    return n.strip("_")
+
+
+def resolve_strategy_threshold(strategy_name: str, table: dict, is_stock: bool):
+    """
+    (threshold, 매칭방식) 반환. 등록된 이름이 없어도 접두사로 안전하게 떨어진다.
+    """
+    raw = str(strategy_name or "").strip()
+    if raw in table:
+        return table[raw], "정확히 일치"
+
+    norm = _normalize_strategy_name(raw)
+    norm_table = {_normalize_strategy_name(k): v for k, v in table.items()}
+    if norm in norm_table:
+        return norm_table[norm], "정규화 후 일치"
+
+    for prefix, thr in STRATEGY_PREFIX_THRESHOLDS:
+        if norm.startswith(prefix):
+            return thr, f"접두사 매칭({prefix}*)"
+
+    fallback = table["BUY_STOCK_PORTFOLIO_A2"] if is_stock else table["기본알림"]
+    return fallback, "미등록 → 기본값"
 
 
 def _log_blocked_alert(pair, signal, alert_name, reason):
