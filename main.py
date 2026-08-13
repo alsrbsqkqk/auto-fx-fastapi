@@ -2549,11 +2549,11 @@ def process_webhook_sync(raw: bytes):
     "SELL_ENTRY_BAR_CLOSE": -7.0,
     "기본알림": 3.0,
     "Test Alarm": 0.0,
-    "BUY_STOCK_PORTFOLIO_A2": -2.5,
+    "BUY_STOCK_PORTFOLIO_A2": -7.5,
     # 🟥 [FIX-F2] Pine 전략을 A5로 이름 바꿨으므로 같은 threshold로 등록.
     #    (등록 안 하면 '미등록 전략명' 경로로 빠진다 — 이제는 경고+기본값이지만, 명시가 낫다)
-    "BUY_STOCK_PORTFOLIO_A5": -2.5,
-    "BUY STOCK PORTFOLIO A5": -2.5,
+    "BUY_STOCK_PORTFOLIO_A5": -7.5,
+    "BUY STOCK PORTFOLIO A5": -7.5,
     }
 
     # 🟥 [FIX-B1] strategy_name은 위(웹훅 앞부분)에서 이미 확정했다. 여기서 다시 계산하지 않는다.
