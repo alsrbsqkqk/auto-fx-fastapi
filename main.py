@@ -6,7 +6,7 @@ import os
 import requests
 import json
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone as _tz   # 🟥 [FIX-G10] _tz 를 전역으로
 import openai
 import numpy as np
 import gspread
@@ -7222,7 +7222,6 @@ def sync_symbol_performance_summary():
     # 🟦 포트폴리오에서 제거된 종목은 성과분석 탭에서도 자동으로 빠지도록:
     #    "현재 활성 종목" = 최근 30일 이내 메인 시트에 알림이 있는 종목만 포함.
     #    (제거된 종목의 과거 데이터는 'Alpaca 거래내역' 탭에 남아있지만, 이 탭에서는 안 보이게)
-    from datetime import timezone as _tz
     cutoff_30d = datetime.now(_tz.utc) - timedelta(days=30)
     active_symbols = set()
     for row in main_rows[1:]:
@@ -7284,6 +7283,451 @@ def sync_symbol_performance_summary():
         print(f"✅ [종목별성과] {len(computed)}개 종목 갱신 완료")
     except Exception as e:
         print(f"❌ [종목별성과] 시트 쓰기 실패: {e}")
+
+
+# ============================================================
+# 🟥 [FIX-G10] 아침 갭 스캐너 — '오늘 아침 스캔 결과' 탭
+# ------------------------------------------------------------
+#  장 시작 전에 5% 이상 갭상승한 종목을 찾아, 아래 5개 조건으로 걸러 상위 3개를 뽑는다.
+#    ① 어제 고가 위
+#    ② 200일 이동평균 위
+#    ③ 장전(프리마켓) 고가 유지 — 고점에서 밀리지 않았나
+#    ④ 당일 정규장 고가 유지 — (개장 전에는 해당 없음)
+#    ⑤ 상승 추세 정렬: 현재가 > 50일선 > 200일선
+#
+#  ⚠️ 갭 종목은 페니주·저유동성 종목이 대부분이다. 예전에 이 봇의 스캐너가
+#     SOXS·GPUS·ZBAO 같은 것들을 계속 공급했던 것과 같은 함정이다.
+#     그래서 가격·거래량·레버리지ETF 필터를 먼저 통과시킨 뒤에 조건을 본다.
+#
+#  ⚠️ 조건 ③④ 는 '시각'에 따라 뜻이 달라진다.
+#     개장 전에는 정규장 고가가 존재하지 않으므로 ④는 '해당없음' 으로 둔다.
+#     그래서 스캔을 두 번 돌린다 — 개장 전(09:20)과 개장 후(10:00).
+# ============================================================
+
+GAP_MIN_PCT = float(os.getenv("GAP_MIN_PCT", "5.0"))          # 최소 갭 %
+GAP_TOP_N = int(os.getenv("GAP_TOP_N", "3"))                  # 최종 추천 개수
+GAP_UNIVERSE_TOP = int(os.getenv("GAP_UNIVERSE_TOP", "50"))   # 상승률 상위 몇 개를 볼지
+GAP_MIN_PRICE = float(os.getenv("GAP_MIN_PRICE", "5.0"))      # 최소 주가
+GAP_MIN_AVG_VOL = float(os.getenv("GAP_MIN_AVG_VOL", "500000"))  # 20일 평균 거래량 하한
+GAP_HIGH_TOL_PCT = float(os.getenv("GAP_HIGH_TOL_PCT", "0.5"))   # '고가 유지' 허용 오차 %
+# 🟥 [G1/G2] 실행 시각을 개장 후로 옮겼다.
+#   ① Alpaca movers 는 '개장 시점에 리셋' 된다 — 09:20 에 부르면 **어제 상승률 상위**가
+#      돌아온다. 오늘의 갭 종목이 아니다.
+#   ② 무료(Basic) 플랜은 '최근 15분' 데이터를 안 준다. 개장 직전/직후를 조회하면 빈 응답이다.
+#   → 09:50 / 10:20 이 두 제약을 모두 피하는 가장 이른 시각이다.
+#     ('장 시작 전'이 아니게 된 건 데이터 제약 때문이지 설계 의도가 아니다)
+GAP_SCAN_TIMES = os.getenv("GAP_SCAN_TIMES", "0950,1020")     # ET 기준 실행 시각들
+
+#: 무료 플랜은 iex. 유료면 ALPACA_FEED=sip 로 바꿀 것 (프리마켓 데이터 품질이 크게 달라진다)
+ALPACA_FEED = os.getenv("ALPACA_FEED", "iex")
+#: Basic 플랜의 '최근 15분 제한' 을 피하기 위한 여유 (분)
+ALPACA_DELAY_MIN = int(os.getenv("ALPACA_DELAY_MIN", "16"))
+
+
+def _data_end_iso() -> str:
+    """Basic 플랜은 '지금' 까지 요청하면 빈 응답을 준다. 16분 전으로 끊는다."""
+    return (datetime.now(_tz.utc) - timedelta(minutes=ALPACA_DELAY_MIN)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _alpaca_movers(top: int = 50) -> list[dict]:
+    """상승률 상위 종목. 개장 전에는 비어 있을 수 있어서 most-actives 로 보완한다."""
+    out = []
+    try:
+        r = requests.get(f"{ALPACA_DATA_BASE_URL}/v1beta1/screener/stocks/movers",
+                         headers=ALPACA_HEADERS, params={"top": min(top, 50)}, timeout=15)
+        if r.ok:
+            for g in (r.json() or {}).get("gainers", []):
+                if g.get("symbol"):
+                    out.append({"symbol": g["symbol"], "src": "상승률상위"})
+        else:
+            # 🟥 [G5] top 상한(50) 초과 등으로 400 이 나면 예전엔 조용히 0개가 됐다
+            print(f"⚠️ [갭스캔] movers status={r.status_code} {r.text[:150]}")
+    except Exception as e:
+        print(f"⚠️ [갭스캔] movers 조회 실패: {e}")
+    try:
+        r = requests.get(f"{ALPACA_DATA_BASE_URL}/v1beta1/screener/stocks/most-actives",
+                         headers=ALPACA_HEADERS, params={"by": "volume", "top": min(top, 100)}, timeout=15)
+        if r.ok:
+            j = r.json() or {}
+            for a in (j.get("most_actives") or j.get("mostActives") or []):
+                if a.get("symbol"):
+                    out.append({"symbol": a["symbol"], "src": "거래량상위"})
+        else:
+            print(f"⚠️ [갭스캔] most-actives status={r.status_code} {r.text[:150]}")
+    except Exception as e:
+        print(f"⚠️ [갭스캔] most-actives 조회 실패: {e}")
+
+    seen, uniq = set(), []
+    for x in out:
+        if x["symbol"] not in seen:
+            seen.add(x["symbol"]); uniq.append(x)
+    return uniq
+
+
+def _alpaca_snapshots(symbols: list[str]) -> dict:
+    """여러 종목의 현재가/오늘봉/어제봉을 한 번에. {symbol: snapshot}"""
+    if not symbols:
+        return {}
+    out = {}
+    for i in range(0, len(symbols), 100):          # 한 번에 100개씩
+        chunk = symbols[i:i + 100]
+        try:
+            r = requests.get(f"{ALPACA_DATA_BASE_URL}/v2/stocks/snapshots",
+                             headers=ALPACA_HEADERS,
+                             params={"symbols": ",".join(chunk)}, timeout=20)
+            if r.ok:
+                out.update(r.json() or {})
+            else:
+                print(f"⚠️ [갭스캔] snapshots status={r.status_code}")
+        except Exception as e:
+            print(f"⚠️ [갭스캔] snapshots 실패: {e}")
+    return out
+
+
+def _alpaca_daily_bars(symbols: list[str], limit: int = 260) -> dict:
+    """여러 종목의 일봉. {symbol: [{c,h,l,v}, ...]} — 오름차순"""
+    if not symbols:
+        return {}
+    out: dict[str, list] = {}
+    start = (datetime.now(ZoneInfo("America/New_York")) - timedelta(days=420)).strftime("%Y-%m-%d")
+    for i in range(0, len(symbols), 40):
+        chunk = symbols[i:i + 40]
+        page = None
+        try:
+            while True:
+                params = {"symbols": ",".join(chunk), "timeframe": "1Day",
+                          "start": start, "limit": 10000, "adjustment": "split",
+                          "feed": ALPACA_FEED, "end": _data_end_iso()}
+                if page:
+                    params["page_token"] = page
+                r = requests.get(f"{ALPACA_DATA_BASE_URL}/v2/stocks/bars",
+                                 headers=ALPACA_HEADERS, params=params, timeout=25)
+                if not r.ok:
+                    print(f"⚠️ [갭스캔] 일봉 status={r.status_code}")
+                    break
+                j = r.json() or {}
+                for sym, bars in (j.get("bars") or {}).items():
+                    # 🟥 [G4] 데이터 없는 심볼은 bars 가 None 이다.
+                    #   extend(None) 은 TypeError → except 로 빠져 40개 청크가 통째로 사라졌다.
+                    out.setdefault(sym, []).extend(bars or [])
+                page = j.get("next_page_token")
+                if not page:
+                    break
+        except Exception as e:
+            print(f"⚠️ [갭스캔] 일봉 조회 실패: {e}")
+    for sym in out:
+        out[sym] = out[sym][-limit:]
+    return out
+
+
+def _premarket_and_regular_high(symbol: str) -> tuple[float | None, float | None]:
+    """오늘의 (프리마켓 고가, 정규장 고가). 데이터 없으면 None."""
+    ny = ZoneInfo("America/New_York")
+    now_ny = datetime.now(ny)
+    # 🟥 [G8] 04:00 ET 이전에 부르면 시작시각이 미래라 항상 빈 응답이 온다.
+    #   그게 '조건 미달' 로 보이면 원인을 못 찾는다. 명시적으로 끊는다.
+    if now_ny.hour < 4:
+        print(f"⚠️ [갭스캔] {symbol} — 04:00 ET 이전이라 당일 분봉이 없다")
+        return None, None
+    day0 = now_ny.replace(hour=4, minute=0, second=0, microsecond=0)
+    try:
+        r = requests.get(f"{ALPACA_DATA_BASE_URL}/v2/stocks/{symbol}/bars",
+                         headers=ALPACA_HEADERS,
+                         params={"timeframe": "1Min",
+                                 "start": day0.astimezone(_tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                 "end": _data_end_iso(), "feed": ALPACA_FEED,
+                                 "limit": 10000, "adjustment": "raw"}, timeout=20)
+        if not r.ok:
+            # 🟥 [G1] 예전엔 조용히 None 을 돌려줘서 '조건 미달' 로 보였다
+            print(f"⚠️ [갭스캔] {symbol} 분봉 status={r.status_code} {r.text[:150]}")
+            return None, None
+        bars = (r.json() or {}).get("bars") or []
+    except Exception as e:
+        print(f"⚠️ [갭스캔] {symbol} 분봉 실패: {e}")
+        return None, None
+
+    pm_high = reg_high = None
+    for b in bars:
+        try:
+            t = datetime.fromisoformat(b["t"].replace("Z", "+00:00")).astimezone(ny)
+        except Exception:
+            continue
+        hhmm = t.hour * 100 + t.minute
+        h = float(b["h"])
+        if hhmm < 930:
+            pm_high = h if pm_high is None else max(pm_high, h)
+        elif hhmm < 1600:
+            reg_high = h if reg_high is None else max(reg_high, h)
+    return pm_high, reg_high
+
+
+def _sma(values: list[float], n: int) -> float | None:
+    return sum(values[-n:]) / n if len(values) >= n else None
+
+
+def _gap_reason(symbol: str) -> str:
+    """왜 올랐는지 — 최근 24시간 뉴스 제목. 갭은 대개 뉴스가 원인이다."""
+    try:
+        end = datetime.now(_tz.utc)
+        r = requests.get("https://data.alpaca.markets/v1beta1/news",
+                         headers=ALPACA_HEADERS,
+                         params={"symbols": symbol,
+                                 "start": (end - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                 "end": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                 "limit": 3, "sort": "desc"}, timeout=10)
+        if not r.ok:
+            return "뉴스 조회 실패"
+        arts = (r.json() or {}).get("news", [])
+        if not arts:
+            return "⚠ 뉴스 없음 — 이유 불명 (수급만으로 오른 것일 수 있음)"
+        return " / ".join((a.get("headline") or "")[:90] for a in arts[:2])
+    except Exception:
+        return "뉴스 조회 실패"
+
+
+def scan_morning_gappers(top_n: int = None) -> dict:
+    """
+    갭 스캔 본체. '오늘 아침 스캔 결과' 탭을 통째로 새로 쓴다.
+    return: 요약 dict (엔드포인트 응답용)
+    """
+    top_n = top_n or GAP_TOP_N
+    ny = ZoneInfo("America/New_York")
+    now_ny = datetime.now(ny)
+    hhmm = now_ny.hour * 100 + now_ny.minute
+    pre_open = hhmm < 930
+    phase = "개장 전" if pre_open else "개장 후"
+
+    print(f"🔎 [갭스캔] 시작 — {now_ny:%Y-%m-%d %H:%M} ET ({phase})")
+
+    # ── 1) 후보 유니버스 ──────────────────────────────────
+    universe = _alpaca_movers(GAP_UNIVERSE_TOP)
+    if not universe:
+        print("❌ [갭스캔] 후보를 하나도 못 받았다")
+        return {"ok": False, "reason": "no_universe"}
+    src_map = {u["symbol"]: u["src"] for u in universe}
+    snaps = _alpaca_snapshots([u["symbol"] for u in universe])
+
+    # ── 2) 갭 계산 + 1차 필터 ────────────────────────────
+    cands = []
+    skipped = {"블록": 0, "저가": 0, "갭부족": 0, "데이터없음": 0}
+    for sym, sn in snaps.items():
+        prev = (sn or {}).get("prevDailyBar") or {}
+        last = (sn or {}).get("latestTrade") or {}
+        day = (sn or {}).get("dailyBar") or {}
+        # 🟥 [G3] dailyBar 는 당일 첫 체결이 찍히기 전까지 '어제 봉' 이다.
+        #   그 상태에서 prevDailyBar 를 쓰면 이틀 전 종가와 비교하게 되어
+        #   오늘 갭이 아니라 어제 움직임을 재게 된다. 날짜 도장을 확인한다.
+        _today = now_ny.date().isoformat()
+        _day_is_today = str(day.get("t") or "")[:10] == _today
+        _ref = prev if _day_is_today else day
+        prev_c = float(_ref.get("c") or 0)
+        prev_h = float(_ref.get("h") or 0)
+        if not _day_is_today:
+            skipped.setdefault("당일봉없음", 0)
+            skipped["당일봉없음"] += 1
+        px = float(last.get("p") or day.get("c") or 0)
+        if prev_c <= 0 or px <= 0:
+            skipped["데이터없음"] += 1
+            continue
+        gap = (px - prev_c) / prev_c * 100.0
+        if gap < GAP_MIN_PCT:
+            skipped["갭부족"] += 1
+            continue
+        if px < GAP_MIN_PRICE:
+            skipped["저가"] += 1
+            continue
+        blocked, why = is_blocked_instrument(sym, px)
+        if blocked:
+            skipped["블록"] += 1
+            continue
+        cands.append({"symbol": sym, "price": px, "gap": gap,
+                      "prev_close": prev_c, "prev_high": prev_h,
+                      "src": src_map.get(sym, "")})
+
+    print(f"🔎 [갭스캔] 갭 {GAP_MIN_PCT}%+ 통과 {len(cands)}개 "
+          f"(제외: {skipped})")
+    if not cands:
+        _write_gap_sheet([], now_ny, phase, skipped, 0, top_n)
+        return {"ok": True, "candidates": 0, "phase": phase}
+
+    cands.sort(key=lambda c: -c["gap"])
+    cands = cands[:25]                       # 분봉·뉴스 호출을 아끼려 상위 25개만
+
+    # ── 3) 일봉으로 이동평균·평균거래량 ──────────────────
+    daily = _alpaca_daily_bars([c["symbol"] for c in cands])
+    for c in cands:
+        bars = daily.get(c["symbol"], [])
+        closes = [float(b["c"]) for b in bars]
+        vols = [float(b.get("v", 0)) for b in bars]
+        c["sma50"] = _sma(closes, 50)
+        c["sma200"] = _sma(closes, 200)
+        c["avg_vol"] = _sma(vols, 20)
+        c["bars"] = len(closes)
+
+    # ── 4) 프리마켓/정규장 고가 ──────────────────────────
+    for c in cands:
+        pm, reg = _premarket_and_regular_high(c["symbol"])
+        c["pm_high"] = pm
+        c["reg_high"] = reg
+
+    # ── 5) 5개 조건 판정 ─────────────────────────────────
+    tol = 1.0 - GAP_HIGH_TOL_PCT / 100.0
+    for c in cands:
+        px = c["price"]
+        c1 = c["prev_high"] > 0 and px > c["prev_high"]
+        c2 = c["sma200"] is not None and px > c["sma200"]
+        c3 = c["pm_high"] is not None and px >= c["pm_high"] * tol
+        if pre_open:
+            c4 = None                        # 정규장 고가가 아직 없음
+        else:
+            c4 = c["reg_high"] is not None and px >= c["reg_high"] * tol
+        c5 = (c["sma50"] is not None and c["sma200"] is not None
+              and px > c["sma50"] > c["sma200"])
+        liq = c["avg_vol"] is not None and c["avg_vol"] >= GAP_MIN_AVG_VOL
+
+        checks = [c1, c2, c3, c4, c5]
+        passed = sum(1 for x in checks if x is True)
+        applicable = sum(1 for x in checks if x is not None)
+        c.update(c1=c1, c2=c2, c3=c3, c4=c4, c5=c5, liq=liq,
+                 passed=passed, applicable=applicable,
+                 all_ok=(passed == applicable and liq))
+
+    # 전부 통과 → 갭 큰 순. 통과 개수 → 갭 순
+    cands.sort(key=lambda c: (-c["passed"], -c["gap"]))
+    picks = [c for c in cands if c["all_ok"]][:top_n]
+
+    # ── 6) 오른 이유 (뉴스) — 상위 후보만 ─────────────────
+    # 🟥 [G7] cands 는 passed 순 정렬이라, 유동성까지 통과한 종목이 10위 밖에
+    #   있을 수 있다. 그러면 추천에 올라가고도 '오른 이유' 가 빈칸이 된다.
+    #   추천 목록은 무조건 포함시킨다.
+    _need_reason = {c["symbol"]: c for c in (picks + cands[:10])}
+    for c in _need_reason.values():
+        c["reason"] = _gap_reason(c["symbol"])
+
+    _write_gap_sheet(cands, now_ny, phase, skipped, len(picks), top_n)
+    print(f"✅ [갭스캔] 완료 — 후보 {len(cands)}개, 전조건 통과 {len(picks)}개")
+    return {"ok": True, "phase": phase, "candidates": len(cands),
+            "picks": [p["symbol"] for p in picks]}
+
+
+def _fmt_ck(v):
+    return "—" if v is None else ("✅" if v else "❌")
+
+
+def _write_gap_sheet(cands: list, now_ny, phase: str, skipped: dict, n_pick: int,
+                     top_n: int = None):
+    HEADERS = ["종목", "현재가", "갭 %", "오른 이유",
+               "①어제고가", "②200일선", "③장전고가", "④당일고가", "⑤추세정렬",
+               "유동성", "통과", "판정", "출처"]
+    try:
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds = ServiceAccountCredentials.from_json_keyfile_name(
+            "/etc/secrets/google_credentials.json", scope)
+        client = gspread.authorize(creds)
+        ss = client.open(GOOGLE_SHEET_NAME)
+        try:
+            ws = ss.worksheet("오늘 아침 스캔 결과")
+        except gspread.exceptions.WorksheetNotFound:
+            ws = ss.add_worksheet(title="오늘 아침 스캔 결과", rows=200, cols=len(HEADERS))
+            print("✅ [갭스캔] 탭 생성")
+    except Exception as e:
+        print(f"❌ [갭스캔] 시트 연결 실패: {e}")
+        return
+
+    out = [[f"오늘 아침 스캔 결과   {now_ny:%Y-%m-%d %H:%M} ET   ({phase})"]]
+    out.append([f"갭 {GAP_MIN_PCT:g}% 이상 · 주가 ${GAP_MIN_PRICE:g} 이상 · "
+                f"20일 평균거래량 {GAP_MIN_AVG_VOL:,.0f} 이상 · 레버리지ETF/페니주 제외"])
+    out.append([f"제외된 것: {skipped}"])
+    out.append([])
+
+    # 🟥 [G6] 예전엔 여기서 GAP_TOP_N 으로 다시 잘라, ?top=5 로 불러도 시트는 3개만 썼다
+    picks = [c for c in cands if c.get("all_ok")][:(top_n or GAP_TOP_N)]
+    out.append([f"■ 추천 {len(picks)}개 (5개 조건 전부 통과)"])
+    if picks:
+        out.append(HEADERS)
+        for c in picks:
+            out.append(_gap_row(c))
+    else:
+        out.append(["조건을 전부 만족한 종목이 없습니다. 오늘은 건너뛰는 게 맞습니다."])
+    out.append([])
+
+    out.append(["■ 전체 후보 (통과 개수 순)"])
+    out.append(HEADERS)
+    for c in cands:
+        out.append(_gap_row(c))
+
+    out.append([])
+    out.append(["※ ③장전고가/④당일고가 는 '고점에서 밀리지 않았나' 를 봅니다 "
+                f"(허용오차 {GAP_HIGH_TOL_PCT:g}%). 개장 전에는 ④가 '—' 입니다."])
+    out.append(["※ ⑤추세정렬 = 현재가 > 50일선 > 200일선"])
+    out.append(["※ 갭 종목은 뉴스로 움직입니다. '오른 이유' 가 비어 있으면 특히 조심하세요."])
+
+    width = max(len(r) for r in out)
+    out = [r + [""] * (width - len(r)) for r in out]
+    try:
+        ws.clear()
+        try:
+            ws.resize(rows=max(len(out) + 20, 60), cols=max(width, len(HEADERS)))
+        except Exception as e:
+            print(f"⚠️ [갭스캔] 시트 크기 조정 실패: {e}")
+        ws.update("A1", out)
+        print(f"✅ [갭스캔] 시트 기록 완료 — 후보 {len(cands)} / 추천 {len(picks)}")
+    except Exception as e:
+        print(f"❌ [갭스캔] 시트 쓰기 실패: {e}")
+
+
+def _gap_row(c: dict) -> list:
+    if c.get("all_ok"):
+        verdict = "⭐ 전조건 통과"
+    elif not c.get("liq"):
+        verdict = "⛔ 유동성 부족"
+    elif c.get("passed", 0) >= c.get("applicable", 5) - 1:
+        verdict = "🟡 1개 미달"
+    else:
+        verdict = "❌ 조건 미달"
+    return [
+        c["symbol"],
+        round(c["price"], 2),
+        f"{c['gap']:.1f}%",
+        c.get("reason", ""),
+        _fmt_ck(c.get("c1")), _fmt_ck(c.get("c2")), _fmt_ck(c.get("c3")),
+        _fmt_ck(c.get("c4")), _fmt_ck(c.get("c5")),
+        f"{c.get('avg_vol') or 0:,.0f}",
+        f"{c.get('passed', 0)}/{c.get('applicable', 5)}",
+        verdict,
+        c.get("src", ""),
+    ]
+
+
+async def _morning_gap_scan_loop():
+    """GAP_SCAN_TIMES(ET) 마다 스캔. 기본 09:20(개장 전) / 10:00(개장 후)."""
+    times = []
+    for t in GAP_SCAN_TIMES.split(","):
+        t = t.strip()
+        if t.isdigit() and len(t) == 4:
+            times.append((int(t[:2]), int(t[2:])))
+    if not times:
+        times = [(9, 20), (10, 0)]
+    print(f"🕘 [갭스캔] 예약 시각(ET): {['%02d:%02d' % t for t in times]}")
+
+    while True:
+        ny = ZoneInfo("America/New_York")
+        now = datetime.now(ny)
+        nxt = None
+        for h, m in times:
+            cand = now.replace(hour=h, minute=m, second=0, microsecond=0)
+            if cand <= now:
+                cand += timedelta(days=1)
+            if nxt is None or cand < nxt:
+                nxt = cand
+        await asyncio.sleep(max(30, (nxt - now).total_seconds()))
+        try:
+            # 주말은 건너뛴다
+            if datetime.now(ZoneInfo("America/New_York")).weekday() < 5:
+                await asyncio.to_thread(scan_morning_gappers)
+        except Exception as e:
+            print(f"❌ [갭스캔 루프] {e}")
+        await asyncio.sleep(90)
 
 
 def _oanda_price_quick(instrument: str):
@@ -8106,6 +8550,7 @@ async def _start_background_tasks():
     asyncio.create_task(_hourly_outcome_tracker_loop())
     asyncio.create_task(_time_exit_loop())          # 🟥 [FIX-A3] 신규
     asyncio.create_task(_daily_top_movers_loop())
+    asyncio.create_task(_morning_gap_scan_loop())   # 🟥 [FIX-G10] 아침 갭 스캔
     asyncio.create_task(_weekly_report_loop())
 
 
@@ -8142,6 +8587,17 @@ async def sync_symbol_performance_endpoint():
     'Alpaca 거래내역' 탭이 먼저 갱신돼 있어야 의미 있는 데이터가 나온다."""
     await asyncio.to_thread(sync_symbol_performance_summary)
     return JSONResponse(content={"status": "done"})
+
+
+@app.post("/scan_morning_gappers")
+@app.get("/scan_morning_gappers")
+async def scan_morning_gappers_endpoint(top: int = 0):
+    """🟥 [FIX-G10] 아침 갭 스캔을 지금 바로 실행.
+
+    자동 실행은 GAP_SCAN_TIMES(기본 09:20 / 10:00 ET). 이건 수동 트리거다.
+    """
+    res = await asyncio.to_thread(scan_morning_gappers, top or None)
+    return res
 
 
 @app.post("/check_symbol")
