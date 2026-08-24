@@ -7314,19 +7314,70 @@ GAP_HIGH_TOL_PCT = float(os.getenv("GAP_HIGH_TOL_PCT", "0.5"))   # '고가 유�
 #   ① Alpaca movers 는 '개장 시점에 리셋' 된다 — 09:20 에 부르면 **어제 상승률 상위**가
 #      돌아온다. 오늘의 갭 종목이 아니다.
 #   ② 무료(Basic) 플랜은 '최근 15분' 데이터를 안 준다. 개장 직전/직후를 조회하면 빈 응답이다.
-#   → 09:50 / 10:20 이 두 제약을 모두 피하는 가장 이른 시각이다.
-#     ('장 시작 전'이 아니게 된 건 데이터 제약 때문이지 설계 의도가 아니다)
-GAP_SCAN_TIMES = os.getenv("GAP_SCAN_TIMES", "0950,1020")     # ET 기준 실행 시각들
+#   → movers 가 리셋되는 09:30 직후가 가장 이른 시각이다. 09:32 로 잡는다.
+#     (2분은 첫 체결이 찍히고 movers 가 갱신될 여유)
+#     09:45 / 10:15 에 다시 돌려 밀린 종목을 걸러낸다.
+#   ⚠️ 09:30 '이전' 스캔은 무료(IEX) 로는 신뢰할 수 없다. IEX 는 프리마켓 체결이
+#      거의 없어 갭을 제대로 못 잰다. 진짜 개장 전 스캔은 SIP(유료) 가 있어야 한다.
+GAP_SCAN_TIMES = os.getenv("GAP_SCAN_TIMES", "0932,0945,1015")   # ET 기준 실행 시각들
 
 #: 무료 플랜은 iex. 유료면 ALPACA_FEED=sip 로 바꿀 것 (프리마켓 데이터 품질이 크게 달라진다)
 ALPACA_FEED = os.getenv("ALPACA_FEED", "iex")
-#: Basic 플랜의 '최근 15분 제한' 을 피하기 위한 여유 (분)
-ALPACA_DELAY_MIN = int(os.getenv("ALPACA_DELAY_MIN", "16"))
+# 🟥 [G9] '15분 지연' 을 추측하지 말고 **직접 재본다**.
+#   자료가 엇갈린다:
+#     · Alpaca 공식 FAQ — "end 는 15분 이전이어야 한다" 는 **SIP 에만** 적용
+#     · 제3자 요약     — "무료는 REST 전체가 15분 지연"
+#   추측으로 정하면 틀렸을 때 매일 조용히 0건이 나온다.
+#   → 유동성 큰 종목의 최근 분봉을 실제로 받아보고 지연을 측정한다. 1시간 캐시.
+ALPACA_DELAY_MIN = os.getenv("ALPACA_DELAY_MIN", "auto")   # "auto" 또는 분 단위 숫자
+_delay_probe = {"t": 0.0, "minutes": None}
+DELAY_PROBE_TTL = float(os.getenv("DELAY_PROBE_TTL", "3600"))
+
+
+def measure_data_delay(symbol: str = "SPY") -> int:
+    """이 계정의 실제 데이터 지연(분). 판정 불가면 보수적으로 16."""
+    if str(ALPACA_DELAY_MIN).strip().isdigit():
+        return int(ALPACA_DELAY_MIN)
+    now = _t.time()
+    if _delay_probe["minutes"] is not None and (now - _delay_probe["t"]) < DELAY_PROBE_TTL:
+        return _delay_probe["minutes"]
+
+    delay = 16
+    try:
+        start = (datetime.now(_tz.utc) - timedelta(minutes=90)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        r = requests.get(f"{ALPACA_DATA_BASE_URL}/v2/stocks/{symbol}/bars",
+                         headers=ALPACA_HEADERS,
+                         params={"timeframe": "1Min", "start": start,
+                                 "feed": ALPACA_FEED, "limit": 200}, timeout=15)
+        if r.ok:
+            bars = (r.json() or {}).get("bars") or []
+            if bars:
+                last = datetime.fromisoformat(bars[-1]["t"].replace("Z", "+00:00"))
+                gap_min = (datetime.now(_tz.utc) - last).total_seconds() / 60.0
+                if gap_min <= 30:
+                    delay = max(0, int(gap_min) - 1)   # 마지막 봉이 아직 안 닫힌 만큼 제외
+                    print(f"📏 [데이터지연] {symbol} 마지막 봉 {gap_min:.1f}분 전 "
+                          f"→ 지연 {delay}분 (feed={ALPACA_FEED})")
+                else:
+                    print(f"📏 [데이터지연] 장중이 아니라 측정 보류 "
+                          f"(마지막 봉 {gap_min:.0f}분 전) → 16분 적용")
+            else:
+                print(f"📏 [데이터지연] {symbol} 분봉 비어있음 → 16분 적용")
+        else:
+            print(f"📏 [데이터지연] status={r.status_code} → 16분 적용")
+    except Exception as e:
+        print(f"📏 [데이터지연] 측정 실패({e}) → 16분 적용")
+
+    _delay_probe.update(t=now, minutes=delay)
+    return delay
 
 
 def _data_end_iso() -> str:
-    """Basic 플랜은 '지금' 까지 요청하면 빈 응답을 준다. 16분 전으로 끊는다."""
-    return (datetime.now(_tz.utc) - timedelta(minutes=ALPACA_DELAY_MIN)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    """조회 종료 시각. 측정된 지연만큼만 뒤로 물린다 (지연 0이면 지금까지)."""
+    d = measure_data_delay()
+    if d <= 0:
+        return datetime.now(_tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return (datetime.now(_tz.utc) - timedelta(minutes=d)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _alpaca_movers(top: int = 50) -> list[dict]:
@@ -8587,6 +8638,31 @@ async def sync_symbol_performance_endpoint():
     'Alpaca 거래내역' 탭이 먼저 갱신돼 있어야 의미 있는 데이터가 나온다."""
     await asyncio.to_thread(sync_symbol_performance_summary)
     return JSONResponse(content={"status": "done"})
+
+
+@app.post("/check_data_delay")
+@app.get("/check_data_delay")
+async def check_data_delay_endpoint(symbol: str = "SPY"):
+    """🟥 [G9] 내 계정의 실제 데이터 지연이 몇 분인지 측정한다.
+
+    장중(09:30~16:00 ET)에 호출해야 의미가 있다.
+    0~2분이면 개장 직후 스캔이 가능하고, 15분 이상이면 그만큼 미뤄야 한다.
+    """
+    _delay_probe["minutes"] = None            # 캐시 무효화 후 재측정
+    d = await asyncio.to_thread(measure_data_delay, symbol)
+    ny = datetime.now(ZoneInfo("America/New_York"))
+    hhmm = ny.hour * 100 + ny.minute
+    intraday = 930 <= hhmm < 1600
+    return {
+        "측정_종목": symbol,
+        "피드": ALPACA_FEED,
+        "측정된_지연_분": d,
+        "현재_ET": ny.strftime("%H:%M"),
+        "장중_여부": intraday,
+        "권장_스캔시각": "0932,0945,1015" if d <= 3 else f"지연 {d}분 → 개장 후 {d + 2}분 뒤부터",
+        "메모": ("장중이 아니면 측정이 부정확합니다. 09:30~16:00 ET 에 다시 호출하세요."
+                 if not intraday else "정상 측정"),
+    }
 
 
 @app.post("/scan_morning_gappers")
