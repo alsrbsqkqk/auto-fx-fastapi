@@ -3032,9 +3032,23 @@ def process_webhook_sync(raw: bytes):
                 # 🟥 [FIX-E6b] 한도 계산도 실제 주문 수량 산출기(calc_alpaca_qty)와 같은 값을 써야 한다.
                 #    기존엔 캡이 적용되지 않은 get_tiered_qty()를 쓰다 보니, 캡으로 수량이 줄어든
                 #    고가주에서 한도가 실제 주문 4회분이 되어 의도(2회분)보다 느슨해졌다.
-                intended_qty = calc_alpaca_qty(price, final_sl, ALPACA_FIXED_NOTIONAL_USD)
-                max_total_qty = intended_qty * 2
-                if existing_qty + intended_qty > max_total_qty:
+                # 🟥 [FIX-P1b/D4] 보유한도(정상수량×2)는 '축소되지 않은' 수량으로 계산해야 한다.
+                #   상관 축소된 수량으로 한도를 잡으면, 그 종목을 많이 들수록 축소가 커지고
+                #   한도도 같이 작아져서 멀쩡한 진입이 POSITION_LIMIT 으로 잘못 막힌다.
+                #   (symbol 을 안 넘기면 축소가 걸리지 않는다)
+                base_qty = calc_alpaca_qty(price, final_sl, ALPACA_FIXED_NOTIONAL_USD)
+                intended_qty = calc_alpaca_qty(price, final_sl, ALPACA_FIXED_NOTIONAL_USD,
+                                               side=final_decision, symbol=pair_for_order)
+                # 🟥 [FIX-P1] 상관 한도로 0이 나오면 여기서 바로 끝낸다.
+                #    (주문 직전까지 갔다가 취소하면 시트에 '진입'으로 남아 통계가 오염된다)
+                if intended_qty <= 0:
+                    print(f"[SKIP] {pair_for_order} 포트폴리오 상관 한도 소진 → 신규진입 스킵")
+                    should_execute = False
+                    _block_label = "PORTFOLIO_CORRELATION_LIMIT"
+                max_total_qty = base_qty * 2
+                if not should_execute:
+                    pass   # 위에서 상관 한도로 이미 스킵됨
+                elif existing_qty + intended_qty > max_total_qty:
                     print(f"[SKIP] {pair_for_order} 기존 보유 {existing_qty}주 + 신규 {intended_qty}주 "
                           f"= 한도({max_total_qty}주, 정상수량×2) 초과 → 신규진입 스킵")
                     should_execute = False
@@ -3051,6 +3065,9 @@ def process_webhook_sync(raw: bytes):
                     _block_label = "FX_FIFO_OPEN_TRADE"   # 🟥 [FIX-D2c]
     
         if should_execute:
+            # 🟥 [FIX-P1] 사이징 단계에서 진입이 취소될 수 있으므로 별도 플래그를 둔다.
+            #    (기존 구조는 여기서 should_execute를 내려도 아래 place_order가 그대로 실행됐다)
+            _abort_order = False
             if is_stock_pair(pair_for_order):
                 # 🟦 주식: 실제 수량은 place_order_alpaca 내부에서 고정금액(ALPACA_FIXED_NOTIONAL_USD)
                 #         ÷ 현재가로 산출되므로, 여기서는 매수/매도 방향만 표시
@@ -3063,11 +3080,21 @@ def process_webhook_sync(raw: bytes):
                 #    → SL 거리 기준 리스크 사이징으로 바꾸고, FX_UNITS_FIXED로 옛 동작 복원 가능.
                 units = calc_fx_units(pair, price, final_sl, final_decision)
                 digits = 3 if pair.endswith("JPY") else 5
-    
-            print(f"[DEBUG] WILL PLACE ORDER → pair={pair}, side={final_decision}, units={units}, "
-                  f"price={price}, tp={final_tp}, sl={final_sl}, digits={digits}, score={signal_score}")
-    
-            result = place_order(pair_for_order, units, final_tp, final_sl, digits, price=price, atr=atr)
+                # 🟥 [FIX-P1] 상관 한도 소진 → 주문 자체를 내지 않는다
+                if units == 0:
+                    print(f"[SKIP] {pair} 포트폴리오 상관 한도 소진 → 신규진입 스킵")
+                    should_execute = False
+                    _block_label = "PORTFOLIO_CORRELATION_LIMIT"
+                    _abort_order = True
+
+            if _abort_order:
+                result = {"status": "skipped", "reason": "portfolio_correlation_limit"}
+                print(f"[DEBUG] SKIP ORDER → 포트폴리오 상관 한도 (pair={pair})")
+            else:
+                print(f"[DEBUG] WILL PLACE ORDER → pair={pair}, side={final_decision}, units={units}, "
+                      f"price={price}, tp={final_tp}, sl={final_sl}, digits={digits}, score={signal_score}")
+
+                result = place_order(pair_for_order, units, final_tp, final_sl, digits, price=price, atr=atr)
             # 🟥 [FIX-E3b] 전역 쿨다운 타이머를 실제로 갱신한다.
             #    이 값이 한 번도 갱신되지 않아 GLOBAL_COOLDOWN_SECONDS 설정이 무의미했다.
             if isinstance(result, dict) and result.get("status") == "order_placed":
@@ -4146,6 +4173,578 @@ def get_alpaca_account_equity():
         return None
 
 
+# ============================================================
+# 🟥 [FIX-P1] 포트폴리오 상관 인식 사이징  ("1등 업데이트")
+# ------------------------------------------------------------
+#  ■ 무엇이 문제였나
+#    알람이 여러 개 울리면 봇은 각 건을 **완전히 독립적으로** 계산했다.
+#    현재 감시 목록(PLTR·META·CEG·GEV·ANET·MU·PANW·CRWV)은 8개처럼 보이지만
+#    실제로는 전부 'AI 인프라' 한 가지 베팅이다.
+#      · CEG(전력)·GEV(발전설비)는 전력회사처럼 보이지만 AI 데이터센터 수요로 움직인다
+#      · 8건에 각각 0.5% 리스크를 걸면 분산이 아니라 AI에 4% 몰빵이다
+#    AI 테마가 하루 무너지면 8개가 동시에 손절된다. 지금 구조는 그걸 못 본다.
+#
+#  ■ 무엇을 하는가
+#    주문 직전에 세 가지를 본다.
+#      (1) 지금 Alpaca + OANDA에 **뭘 들고 있는지** 전부 조회
+#      (2) 새 종목이 어느 **그룹**에 속하고, 기존 노출과 **같은 방향**인지
+#      (3) 그룹 한도를 넘는 만큼 수량을 **줄인다** (넘치면 0 = 스킵)
+#
+#  ■ 반대 방향은 줄이지 않는다
+#    금 롱을 든 상태에서 은 숏이 들어오면 그건 집중이 아니라 헤지다.
+#    부호를 살려서 순노출(net)로 계산하는 이유가 이것이다.
+#
+#  ■ FX는 'USD 방향'으로 묶는다
+#    EUR_USD 롱과 GBP_USD 롱은 서로 다른 거래처럼 보이지만 둘 다 **USD 숏**이다.
+#    반대로 USD_JPY 롱은 **USD 롱**이라 앞의 둘과 상쇄된다.
+#    그래서 FX는 통화쌍이 아니라 USD 노출로 환산해 한 그룹에 넣는다.
+#
+#  ■ 실패 시 동작
+#    포지션 조회가 실패하면 축소하지 않는다(factor=1.0). 지금과 같은 동작이라
+#    API 한 번 삐끗했다고 거래가 전부 멈추지는 않는다. 대신 로그에 크게 남긴다.
+# ============================================================
+
+# 계좌 전체 자산. 비워두면 Alpaca equity + OANDA 잔고를 합쳐서 쓴다.
+PORTFOLIO_EQUITY_USD = os.getenv("PORTFOLIO_EQUITY_USD", "").strip()
+
+# 한 그룹이 가질 수 있는 최대 명목 노출 (자산 대비 %).
+# 25%면 AI인프라에 자산의 1/4까지만 실린다. 그 뒤 신호는 자동으로 작아진다.
+PORTFOLIO_GROUP_MAX_PCT = float(os.getenv("PORTFOLIO_GROUP_MAX_PCT", "25"))
+
+# 전체 명목 노출 상한 (자산 대비 %).
+PORTFOLIO_TOTAL_MAX_PCT = float(os.getenv("PORTFOLIO_TOTAL_MAX_PCT", "150"))
+
+# 축소 후 이 비율보다 작아지면 아예 진입하지 않는다.
+# 너무 작은 포지션은 수수료·스프레드만 내고 의미가 없다.
+PORTFOLIO_MIN_FACTOR = float(os.getenv("PORTFOLIO_MIN_FACTOR", "0.30"))
+
+# 상관 사이징 자체를 끄는 스위치 (문제 생겼을 때 즉시 원복용)
+PORTFOLIO_SIZING_ENABLED = os.getenv("PORTFOLIO_SIZING_ENABLED", "true").lower() == "true"
+
+# ------------------------------------------------------------
+# 종목 → 분야 지도
+#
+#  ★★ 형님이 관리하실 필요 없습니다. ★★
+#     실제 판단은 [FIX-P2] 의 '실측 상관계수'가 합니다. 트레이딩뷰에 종목을
+#     추가하기만 하면 봇이 그 종목의 일봉을 받아서 기존 보유분과의 상관을
+#     직접 계산합니다. 이 표에 없어도 정상 작동합니다.
+#
+#  이 표는 두 가지 용도로만 남아 있습니다:
+#     1. 가격을 못 받아왔을 때의 비상용 (신규 상장·API 장애 등)
+#     2. 시트에 '분야' 이름을 예쁘게 찍기 위한 라벨
+#     둘 다 없어도 한도는 정상 작동합니다.
+# ------------------------------------------------------------
+SYMBOL_GROUP = {
+    # ── AI 인프라 ────────────────────────────────────────────
+    #  형님 현재 감시목록이 사실상 전부 여기다. 반도체·전력·클라우드·네트워크가
+    #  다 하나의 'AI 데이터센터 투자' 사이클에 묶여 있다.
+    "NVDA": "AI인프라", "AMD": "AI인프라", "MU": "AI인프라", "AVGO": "AI인프라",
+    "MRVL": "AI인프라", "TSM": "AI인프라", "SMCI": "AI인프라", "DELL": "AI인프라",
+    "ANET": "AI인프라", "VRT": "AI인프라", "CRWV": "AI인프라", "NBIS": "AI인프라",
+    "CEG": "AI인프라",   # 원전 전력 — AI 데이터센터 전력 수요로 재평가된 종목
+    "GEV": "AI인프라",   # 발전설비 — 같은 이유
+    "VST": "AI인프라", "TLN": "AI인프라", "EQIX": "AI인프라", "DLR": "AI인프라",
+    "PLTR": "AI인프라", "META": "AI인프라", "MSFT": "AI인프라", "GOOGL": "AI인프라",
+    "GOOG": "AI인프라", "AMZN": "AI인프라", "ORCL": "AI인프라", "NOW": "AI인프라",
+    "SNOW": "AI인프라", "APP": "AI인프라", "PANW": "AI인프라", "CRWD": "AI인프라",
+    "ZS": "AI인프라", "NET": "AI인프라", "AAPL": "AI인프라",
+    "NAS100_USD": "AI인프라",   # 나스닥100 = 위 종목들의 묶음. 따로 세면 안 된다.
+
+    # ── 금융 ────────────────────────────────────────────────
+    "JPM": "금융", "BAC": "금융", "GS": "금융", "MS": "금융", "WFC": "금융",
+    "C": "금융", "SCHW": "금융", "BLK": "금융", "AXP": "금융", "V": "금융",
+    "MA": "금융", "PYPL": "금융", "COF": "금융", "USB": "금융",
+    "BRK.B": "금융", "BRK.A": "금융",   # 🟥 [FIX-P1b/D10] 추천 목록엔 있는데 지도에 없어서
+                                        #   막상 담으면 '기타'로 빠져 금융 노출이 안 올라갔다
+
+    # ── 헬스케어 ────────────────────────────────────────────
+    "UNH": "헬스케어", "JNJ": "헬스케어", "LLY": "헬스케어", "MRK": "헬스케어",
+    "PFE": "헬스케어", "ABBV": "헬스케어", "TMO": "헬스케어", "ABT": "헬스케어",
+    "AMGN": "헬스케어", "ISRG": "헬스케어", "GILD": "헬스케어", "VRTX": "헬스케어",
+
+    # ── 에너지(주식) ────────────────────────────────────────
+    "XOM": "에너지", "CVX": "에너지", "COP": "에너지", "SLB": "에너지",
+    "EOG": "에너지", "OXY": "에너지", "PSX": "에너지", "MPC": "에너지", "VLO": "에너지",
+
+    # ── 필수소비재 ──────────────────────────────────────────
+    "PG": "소비재", "KO": "소비재", "PEP": "소비재", "COST": "소비재",
+    "WMT": "소비재", "MCD": "소비재", "NKE": "소비재", "HD": "소비재",
+    "TGT": "소비재", "SBUX": "소비재", "MDLZ": "소비재", "CL": "소비재",
+
+    # ── 산업재 ──────────────────────────────────────────────
+    "CAT": "산업재", "DE": "산업재", "HON": "산업재", "GE": "산업재",
+    "UNP": "산업재", "UPS": "산업재", "LMT": "산업재", "RTX": "산업재",
+    "BA": "산업재", "NOC": "산업재", "ETN": "산업재", "EMR": "산업재",
+
+    # ── 유틸리티 (AI 전력주는 위로 뺐다) ────────────────────
+    "NEE": "유틸리티", "DUK": "유틸리티", "SO": "유틸리티",
+    "AEP": "유틸리티", "D": "유틸리티", "EXC": "유틸리티",
+
+    # ── 통신 ────────────────────────────────────────────────
+    "T": "통신", "VZ": "통신", "TMUS": "통신",
+
+    # ── 자동차/EV ───────────────────────────────────────────
+    "TSLA": "자동차", "RIVN": "자동차", "F": "자동차", "GM": "자동차", "LCID": "자동차",
+
+    # ── 크립토 연동 ─────────────────────────────────────────
+    #  BTC 와 코인 관련주는 같이 움직인다. 그리고 위험자산이라
+    #  AI인프라와도 상관이 높지만, 별개 그룹으로 두고 한도로 제어한다.
+    "COIN": "크립토", "MSTR": "크립토", "MARA": "크립토", "RIOT": "크립토",
+    "BTC": "크립토", "BTCUSD": "크립토", "ETH": "크립토", "ETHUSD": "크립토",
+
+    # ── OANDA: 귀금속 ───────────────────────────────────────
+    "XAU": "귀금속", "XAG": "귀금속", "XPT": "귀금속", "XPD": "귀금속",
+
+    # ── OANDA: 에너지 원자재 ────────────────────────────────
+    "WTICO": "원유", "BCO": "원유", "NATGAS": "천연가스",
+
+    # ── OANDA: 지수 (나스닥은 AI인프라로 뺐다) ──────────────
+    "SPX500": "미국지수", "US30": "미국지수", "US2000": "미국지수",
+    "DE30": "유럽지수", "EU50": "유럽지수", "UK100": "유럽지수",
+    "JP225": "아시아지수", "HK33": "아시아지수", "AU200": "아시아지수",
+
+    # ── OANDA: 채권 ─────────────────────────────────────────
+    "USB02Y": "채권", "USB05Y": "채권", "USB10Y": "채권", "USB30Y": "채권",
+    "DE10YB": "채권", "UK10YB": "채권",
+
+    # ── OANDA: 농산물/기타 ──────────────────────────────────
+    "CORN": "농산물", "WHEAT": "농산물", "SOYBN": "농산물",
+    "SUGAR": "농산물", "XCU": "산업금속",
+}
+
+#: FX 통화 코드. 둘 다 여기 있으면 '통화쌍'으로 보고 USD 노출로 환산한다.
+_FX_CURRENCIES = {
+    "USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF",
+    "SEK", "NOK", "DKK", "SGD", "HKD", "MXN", "ZAR", "TRY",
+    "PLN", "CZK", "HUF", "CNH", "THB",
+}
+
+PORTFOLIO_GROUP_FX_USD = "USD통화"
+PORTFOLIO_GROUP_OTHER = "기타"
+
+
+def _split_instrument(symbol: str) -> tuple[str, str]:
+    """'EUR_USD' → ('EUR','USD'),  'XAU_USD' → ('XAU','USD'),  'PLTR' → ('PLTR','')"""
+    s = (symbol or "").upper().replace("/", "_").replace("-", "_")
+    parts = [p for p in s.split("_") if p]
+    if len(parts) >= 2:
+        return parts[0], parts[-1]
+    return (parts[0] if parts else ""), ""
+
+
+def portfolio_group_for(symbol: str) -> str:
+    """이 종목이 어느 상관 그룹에 속하는가."""
+    sym = (symbol or "").upper().replace("/", "_").replace("-", "_")
+    if sym in SYMBOL_GROUP:
+        return SYMBOL_GROUP[sym]
+    base, quote = _split_instrument(sym)
+    # 통화 vs 통화 = FX. USD 노출 하나로 묶는다.
+    if base in _FX_CURRENCIES and quote in _FX_CURRENCIES:
+        # 🟥 [FIX-P1b/D6] USD가 낀 쌍만 'USD 노출'로 묶는다.
+        #   EUR_GBP 같은 크로스를 USD통화에 넣으면 방향 부호를 만들어낼 수 없고,
+        #   명목도 USD가 아니라 GBP 기준이라 진짜 USD 포지션을 상쇄해버린다.
+        if base == "USD" or quote == "USD":
+            return PORTFOLIO_GROUP_FX_USD
+        return f"FX_{base}{quote}"
+    if base in SYMBOL_GROUP:
+        return SYMBOL_GROUP[base]
+    return PORTFOLIO_GROUP_OTHER
+
+
+def _signed_direction(symbol: str, side: str) -> int:
+    """
+    노출의 부호. 같은 그룹 안에서 같은 부호끼리는 더해지고 반대면 상쇄된다.
+
+    ★ FX만 특별 취급한다.
+      EUR_USD 롱 = EUR 사고 USD 팜 = **USD 숏** → -1
+      USD_JPY 롱 = USD 사고 JPY 팜 = **USD 롱** → +1
+      이렇게 해야 "EUR 롱 + USD_JPY 롱"이 서로 상쇄된다는 사실이 반영된다.
+    """
+    s = 1 if str(side).upper() in ("BUY", "LONG") else -1
+    base, quote = _split_instrument(symbol)
+    if base in _FX_CURRENCIES and quote in _FX_CURRENCIES:
+        if base == "USD":
+            return s          # USD_XXX 롱 = USD 롱
+        if quote == "USD":
+            return -s         # XXX_USD 롱 = USD 숏
+    return s
+
+
+def get_portfolio_equity_usd() -> float | None:
+    """Alpaca equity + OANDA 잔고. 환경변수로 고정할 수도 있다."""
+    if PORTFOLIO_EQUITY_USD:
+        try:
+            return float(PORTFOLIO_EQUITY_USD)
+        except ValueError:
+            pass
+    total = 0.0
+    got = False
+    eq = get_alpaca_account_equity()
+    if eq:
+        total += float(eq); got = True
+    bal = get_oanda_account_balance()
+    if bal:
+        total += float(bal); got = True
+    return total if got and total > 0 else None
+
+
+def get_portfolio_positions() -> list[dict] | None:
+    """
+    Alpaca + OANDA 의 열린 포지션 전부.
+    return: [{symbol, side, notional_usd, group, signed_usd}, ...]
+            조회가 하나라도 실패하면 None (그러면 축소를 걸지 않는다)
+    """
+    out: list[dict] = []
+    # 🟥 [FIX-P1b/D2] 예전엔 둘 중 하나만 성공해도 ok=True 였다.
+    #   Alpaca 조회가 실패하면 주식 노출이 0%로 보이고, 상관 한도가
+    #   무력화된다 — 이 기능이 막으려던 바로 그 상황이 조용히 통과한다.
+    alpaca_ok = False
+    oanda_ok = None          # None = 시도 안 함(키 없음), False = 실패
+
+    # ── Alpaca 주식 ──
+    try:
+        r = requests.get(f"{ALPACA_TRADE_BASE_URL}/v2/positions",
+                         headers=ALPACA_HEADERS, timeout=10)
+        if r.status_code == 200:
+            alpaca_ok = True
+            for p in r.json() or []:
+                sym = p.get("symbol", "")
+                qty = float(p.get("qty", 0) or 0)
+                mv = abs(float(p.get("market_value", 0) or 0))
+                if mv <= 0 and qty:
+                    mv = abs(qty) * float(p.get("current_price", 0) or 0)
+                side = "LONG" if qty >= 0 else "SHORT"
+                g = portfolio_group_for(sym)
+                out.append({"symbol": sym, "side": side, "notional_usd": mv,
+                            "group": g, "signed_usd": mv * _signed_direction(sym, side)})
+        else:
+            print(f"⚠️ [포트폴리오] Alpaca 포지션 조회 status={r.status_code}")
+    except Exception as e:
+        print(f"⚠️ [포트폴리오] Alpaca 포지션 조회 실패: {e}")
+
+    # ── OANDA (FX / 금 / 지수 등) ──
+    if OANDA_API_KEY and ACCOUNT_ID:
+        try:
+            r = requests.get(f"{OANDA_BASE_URL}/v3/accounts/{ACCOUNT_ID}/openTrades",
+                             headers={"Authorization": f"Bearer {OANDA_API_KEY}"}, timeout=10)
+            if r.ok:
+                oanda_ok = True
+                for t in (r.json() or {}).get("trades", []):
+                    inst = t.get("instrument", "")
+                    units = float(t.get("currentUnits", 0) or 0)
+                    px = float(t.get("price", 0) or 0)
+                    if not inst or units == 0:
+                        continue
+                    base, quote = _split_instrument(inst)
+                    # units 는 base 통화(또는 온스) 단위다. USD 명목으로 환산한다.
+                    if base == "USD":
+                        notional = abs(units)                 # USD_JPY: units 가 이미 USD
+                    elif quote == "USD":
+                        notional = abs(units) * px            # EUR_USD, XAU_USD
+                    else:
+                        notional = abs(units) * px            # 크로스는 근사
+                    side = "LONG" if units > 0 else "SHORT"
+                    g = portfolio_group_for(inst)
+                    out.append({"symbol": inst, "side": side, "notional_usd": notional,
+                                "group": g, "signed_usd": notional * _signed_direction(inst, side)})
+            else:
+                oanda_ok = False
+                print(f"⚠️ [포트폴리오] OANDA openTrades status={r.status_code}")
+        except Exception as e:
+            oanda_ok = False
+            print(f"⚠️ [포트폴리오] OANDA 포지션 조회 실패: {e}")
+
+    if not alpaca_ok or oanda_ok is False:
+        print(f"⚠️ [포트폴리오] 부분 조회 실패(alpaca={alpaca_ok}, oanda={oanda_ok}) "
+              f"→ 반쪽 데이터로 한도를 계산하면 위험하므로 전체 무효 처리")
+        return None
+    return out
+
+
+# ------------------------------------------------------------
+# 🟥 [FIX-P2] 상관관계를 '표'가 아니라 '실제 가격'에서 잰다
+#
+#  ■ 왜 바꿨나
+#    처음엔 종목→분야 표(SYMBOL_GROUP)를 손으로 관리하게 만들었다.
+#    그건 잘못된 설계다. 트레이딩뷰에 종목 하나 추가할 때마다 파이썬 코드를
+#    고쳐야 한다면, 언젠가 반드시 빠뜨리고, 빠뜨린 종목은 '기타'로 새서
+#    한도가 걸리지 않는다. 즉 **제일 필요할 때 조용히 작동을 멈춘다.**
+#
+#  ■ 지금 방식
+#    새 종목과 현재 보유 종목들의 **일봉 수익률 상관계수를 직접 계산**한다.
+#    · PLTR vs META  → 실제로 높게 나온다 (같이 움직이니까)
+#    · PLTR vs XAU   → 낮게 나온다
+#    · EUR_USD vs GBP_USD → 높게 나온다 (둘 다 USD 반대편)
+#    · EUR_USD vs USD_JPY → 음수로 나온다 (자동으로 상쇄 처리됨)
+#    표를 손으로 관리할 필요가 없다. **트레이딩뷰에 종목만 추가하면 끝이다.**
+#
+#  ■ 표는 어떻게 되나
+#    SYMBOL_GROUP 은 이제 '보조 수단'이다. 가격을 못 받아왔을 때만 쓴다.
+#    (신규 상장, 데이터 부족, API 장애 등) 형님이 관리할 필요 없다.
+#
+#  ■ 비용
+#    일봉 시세는 하루 한 번만 받으면 된다(24시간 캐시). 상관계수도 같이 캐시한다.
+#    포지션이 5개면 하루에 6번 정도 캔들을 더 받는다. 그게 전부다.
+# ------------------------------------------------------------
+
+CORR_LOOKBACK_DAYS = int(os.getenv("CORR_LOOKBACK_DAYS", "120"))   # 상관 계산에 쓸 일봉 수
+CORR_MIN_OVERLAP = int(os.getenv("CORR_MIN_OVERLAP", "40"))        # 겹치는 날이 이보다 적으면 포기
+CORR_CACHE_TTL = float(os.getenv("CORR_CACHE_TTL", "86400"))       # 24시간
+CORR_MAX_PEERS = int(os.getenv("CORR_MAX_PEERS", "20"))            # 비교할 보유종목 최대 개수
+
+_series_cache: dict[str, tuple[float, dict]] = {}   # symbol -> (저장시각, {날짜: 종가})
+_corr_cache: dict[tuple, tuple[float, float]] = {}  # (a,b) -> (저장시각, 상관계수)
+
+
+def _daily_close_series(symbol: str) -> dict:
+    """일봉 종가를 {'YYYY-MM-DD': 종가} 로. 실패하면 빈 dict."""
+    now = _t.time()
+    hit = _series_cache.get(symbol)
+    if hit and (now - hit[0]) < CORR_CACHE_TTL:
+        return hit[1]
+
+    out: dict = {}
+    try:
+        df = get_candles(symbol, "D", CORR_LOOKBACK_DAYS)
+        if df is not None and len(df) > 0:
+            is_fx = not is_stock_pair(symbol)
+            for _, row in df.iterrows():
+                ts = str(row.get("time") or "")[:10]
+                if not ts:
+                    continue
+                if is_fx:
+                    # ★ OANDA 일봉은 뉴욕 17:00 시작 기준이라, 라벨이 'D일'인 캔들은
+                    #   실제로는 D일 17:00 ~ D+1일 17:00 을 담는다. 주식 일봉(D+1일 장중)과
+                    #   맞추려면 하루 밀어야 한다. 안 밀면 주식↔FX 상관이 엉뚱하게 낮게 나온다.
+                    try:
+                        ts = (datetime.fromisoformat(ts) + timedelta(days=1)).strftime("%Y-%m-%d")
+                    except Exception:
+                        pass
+                out[ts] = float(row["close"])
+    except Exception as e:
+        print(f"⚠️ [상관] {symbol} 일봉 조회 실패: {e}")
+
+    _series_cache[symbol] = (now, out)
+    return out
+
+
+def measured_correlation(a: str, b: str):
+    """
+    두 종목의 일봉 수익률 상관계수. 계산 불가면 None.
+
+    ★ 종가가 아니라 '수익률'로 계산한다. 종가끼리 상관을 재면 둘 다 우상향이라는
+      이유만으로 0.9 가 나온다(허위 상관). 실제로 같이 움직이는지는 수익률로 봐야 한다.
+    """
+    if a == b:
+        return 1.0
+    key = tuple(sorted((a, b)))
+    now = _t.time()
+    hit = _corr_cache.get(key)
+    if hit and (now - hit[0]) < CORR_CACHE_TTL:
+        return hit[1]
+
+    sa, sb = _daily_close_series(a), _daily_close_series(b)
+    common = sorted(set(sa) & set(sb))
+    if len(common) < CORR_MIN_OVERLAP + 1:
+        _corr_cache[key] = (now, None)
+        return None
+
+    ra, rb = [], []
+    for i in range(1, len(common)):
+        p0a, p1a = sa[common[i - 1]], sa[common[i]]
+        p0b, p1b = sb[common[i - 1]], sb[common[i]]
+        if p0a > 0 and p0b > 0:
+            ra.append(p1a / p0a - 1.0)
+            rb.append(p1b / p0b - 1.0)
+    n = len(ra)
+    if n < CORR_MIN_OVERLAP:
+        _corr_cache[key] = (now, None)
+        return None
+
+    ma, mb = sum(ra) / n, sum(rb) / n
+    cov = sum((x - ma) * (y - mb) for x, y in zip(ra, rb))
+    va = sum((x - ma) ** 2 for x in ra)
+    vb = sum((y - mb) ** 2 for y in rb)
+    if va <= 0 or vb <= 0:
+        _corr_cache[key] = (now, None)
+        return None
+    rho = max(-1.0, min(1.0, cov / (va ** 0.5 * vb ** 0.5)))
+    _corr_cache[key] = (now, rho)
+    return rho
+
+
+def _fallback_correlation(a: str, b: str) -> float:
+    """가격을 못 받았을 때만 쓰는 보조 수단. 같은 분야면 0.8, 아니면 0."""
+    ga, gb = portfolio_group_for(a), portfolio_group_for(b)
+    if ga == gb and ga != PORTFOLIO_GROUP_OTHER:
+        return 0.8
+    return 0.0
+
+
+def correlated_exposure(symbol: str, positions: list[dict]) -> tuple[float, list]:
+    """
+    '이 종목 방향에서 본' 현재 노출 합계.
+
+        노출 = Σ ( 상관계수 × 그 포지션의 부호있는 명목 )
+
+    같은 방향으로 강하게 상관된 포지션은 더해지고, 반대 방향이거나
+    음의 상관이면 빼진다. 헤지가 자동으로 반영된다.
+
+    return: (노출 합계, [(종목, 상관계수, 기여액), ...])
+    """
+    total = 0.0
+    detail = []
+    for p in positions[:CORR_MAX_PEERS]:
+        peer = p["symbol"]
+        rho = measured_correlation(symbol, peer)
+        src = "실측"
+        if rho is None:
+            rho = _fallback_correlation(symbol, peer)
+            src = "분야표"
+        # 🟥 "LONG"/"BUY" 둘 다 매수로 받는다. 문자열 하나 어긋나면 부호가 통째로
+        #    뒤집혀 '집중'을 '헤지'로 오판한다 — 조용히 반대로 도는 종류의 사고다.
+        signed = p["notional_usd"] * (
+            1 if str(p.get("side", "")).upper() in ("LONG", "BUY") else -1)
+        contrib = rho * signed
+        total += contrib
+        detail.append((peer, round(rho, 2), round(contrib), src))
+    return total, detail
+
+
+# 🟥 [FIX-P1b/D5] 스냅샷 캐시.
+#   상관 사이징은 한 신호에서 calc_alpaca_qty 가 2번 호출되며(사전체크+주문직전),
+#   매번 Alpaca 계좌/포지션 + OANDA 잔고/트레이드 4개 요청을 냈다.
+#   그 호출이 심볼 주문락 **안에서** 일어나 최악의 경우 100초까지 락을 잡는다.
+#   같은 신호 처리 중에는 같은 스냅샷을 쓰면 충분하다.
+_pf_cache = {"t": 0.0, "eq": None, "pos": None}
+PORTFOLIO_CACHE_TTL = float(os.getenv("PORTFOLIO_CACHE_TTL", "10"))
+
+
+def _pf_snapshot(force: bool = False):
+    """(자산, 포지션목록). TTL 안에서는 재조회하지 않는다."""
+    now = _t.time()
+    if force or (now - _pf_cache["t"]) > PORTFOLIO_CACHE_TTL:
+        _pf_cache["eq"] = get_portfolio_equity_usd()
+        _pf_cache["pos"] = get_portfolio_positions()
+        _pf_cache["t"] = now
+    return _pf_cache["eq"], _pf_cache["pos"]
+
+
+def summarize_portfolio_exposure() -> dict:
+    """그룹별 노출 요약. 추천 후보 탭과 진단 엔드포인트에서 같이 쓴다."""
+    equity, positions = _pf_snapshot(force=True)   # 진단·시트는 항상 최신으로
+    if positions is None or not equity:
+        return {"ok": False, "equity": equity, "positions": positions or [], "groups": {}}
+    groups: dict[str, dict] = {}
+    for p in positions:
+        g = groups.setdefault(p["group"], {"gross": 0.0, "net": 0.0, "symbols": []})
+        g["gross"] += p["notional_usd"]
+        g["net"] += p["signed_usd"]
+        g["symbols"].append(p["symbol"])
+    for g in groups.values():
+        g["gross_pct"] = round(g["gross"] / equity * 100, 2)
+        g["net_pct"] = round(g["net"] / equity * 100, 2)
+    return {"ok": True, "equity": equity, "positions": positions, "groups": groups,
+            "total_gross_pct": round(sum(x["gross"] for x in groups.values()) / equity * 100, 2)}
+
+
+def portfolio_size_factor(symbol: str, side: str, intended_notional_usd: float) -> tuple[float, str]:
+    """
+    이 진입을 얼마나 줄여야 하는가. 1.0 = 그대로, 0.0 = 스킵.
+
+    🟥 [FIX-P2] 분야 표가 아니라 **실측 상관계수**로 계산한다.
+
+        현재 노출 = Σ ( 상관계수(새종목, 보유종목) × 보유 명목 × 방향부호 )
+        예상 노출 = | 현재 노출 + 이번 진입(부호 포함) |
+        예산      = 자산 × PORTFOLIO_GROUP_MAX_PCT%
+
+        예상 노출이 예산 이하  → 1.0
+        넘으면                 → 남은 여유만큼만
+        여유 없으면            → 0.0 (스킵)
+
+    ★ 반대 방향이거나 음의 상관이면 노출이 줄어들어 자동으로 1.0 이 된다.
+      헤지는 집중이 아니므로 막지 않는다.
+    ★ 종목을 새로 추가할 때 코드를 고칠 필요가 없다. 가격만 있으면 계산된다.
+    """
+    if not PORTFOLIO_SIZING_ENABLED:
+        return 1.0, "상관사이징 OFF"
+    try:
+        intended = abs(float(intended_notional_usd))
+    except (TypeError, ValueError):
+        return 1.0, "명목금액 불명 → 축소 없음"
+    if intended <= 0:
+        return 1.0, "명목금액 0"
+
+    equity, positions = _pf_snapshot()
+    if not equity or positions is None:
+        print("⚠️ [상관사이징] 자산/포지션 조회 실패 → 축소 없이 진행(현행 유지). 원인 확인 필요.")
+        return 1.0, "조회 실패 → 축소 없음"
+    if not positions:
+        return 1.0, "열린 포지션 없음"
+
+    sign = 1 if str(side).upper() in ("BUY", "LONG") else -1
+    exposure, detail = correlated_exposure(symbol, positions)
+
+    total_gross = sum(p["notional_usd"] for p in positions)
+    budget = equity * (PORTFOLIO_GROUP_MAX_PCT / 100.0)
+    total_budget = equity * (PORTFOLIO_TOTAL_MAX_PCT / 100.0)
+
+    projected = abs(exposure + sign * intended)
+    if projected <= budget:
+        f_group = 1.0
+    else:
+        room = budget - sign * exposure
+        f_group = max(0.0, min(1.0, room / intended))
+
+    room_total = total_budget - total_gross
+    f_total = 1.0 if room_total >= intended else max(0.0, room_total / intended)
+    factor = min(f_group, f_total)
+
+    # 어떤 종목이 얼마나 겹쳐서 이렇게 됐는지 그대로 보여준다
+    top = sorted(detail, key=lambda d: -abs(d[2]))[:3]
+    peers = ", ".join(f"{s}(ρ{r:+.2f},{src})" for s, r, _, src in top) or "없음"
+    detail_txt = (f"겹침={exposure/equity*100:+.1f}% 한도={PORTFOLIO_GROUP_MAX_PCT:.0f}% "
+                  f"주요겹침[{peers}] → 계수 {factor:.2f}")
+
+    if factor <= 0:
+        return 0.0, f"{detail_txt} (한도 소진 — 스킵)"
+    if factor < PORTFOLIO_MIN_FACTOR:
+        return 0.0, (f"{detail_txt} (계수 {factor:.2f} < 최소 {PORTFOLIO_MIN_FACTOR:.2f} — "
+                     f"너무 작아 비용만 나가므로 스킵)")
+    return factor, detail_txt
+
+
+def _apply_portfolio_factor_qty(qty: int, ref_price: float,
+                                side: str | None, symbol: str | None) -> int:
+    """산출된 주식 수량에 포트폴리오 상관 계수를 곱한다.
+
+    symbol 이 없으면(옛 호출부) 축소하지 않는다 — 그룹을 알 수 없으면 판단할 수 없고,
+    모르는 채로 줄이는 것보다 현행 유지가 안전하다.
+    """
+    # 🟥 [FIX-P1b/D8] 0은 '취소'라는 뜻이다. max(1,...)로 1주를 만들면 안 된다.
+    if qty <= 0:
+        return 0
+    if not symbol:
+        return int(qty)
+    try:
+        intended_notional = float(qty) * float(ref_price)
+    except (TypeError, ValueError):
+        return max(1, int(qty))
+    factor, why = portfolio_size_factor(symbol, side or "BUY", intended_notional)
+    if factor >= 0.999:
+        print(f"[상관사이징] {symbol} 축소 없음 — {why}")
+        return max(1, int(qty))
+    if factor <= 0:
+        print(f"🚫 [상관사이징] {symbol} 진입 취소 — {why}")
+        return 0
+    new_qty = int(qty * factor)
+    if new_qty < 1:
+        print(f"🚫 [상관사이징] {symbol} 축소 결과 1주 미만 → 취소 — {why}")
+        return 0
+    print(f"📉 [상관사이징] {symbol} {qty}주 → {new_qty}주 — {why}")
+    return new_qty
+
+
 def get_tiered_qty(price: float) -> int:
     """
     가격대별 고정 수량표 (목표: 한 거래당 약 $3,000 이하)
@@ -4173,7 +4772,8 @@ def get_tiered_qty(price: float) -> int:
         return 60
 
 
-def calc_alpaca_qty(ref_price: float, sl: float, notional_usd: float) -> int:
+def calc_alpaca_qty(ref_price: float, sl: float, notional_usd: float,
+                    side: str | None = None, symbol: str | None = None) -> int:
     """
     포지션 수량(qty) 산출. ALPACA_SIZING_MODE로 방식 선택:
     - "tiered": 가격대별 고정 수량표(get_tiered_qty) 사용. 가장 단순하고 예측 가능.
@@ -4203,7 +4803,7 @@ def calc_alpaca_qty(ref_price: float, sl: float, notional_usd: float) -> int:
                   f"notional 캡(${ALPACA_MAX_NOTIONAL_USD:g}) 적용 {capped}주로 축소")
         else:
             print(f"[Alpaca][tiered-sizing] price={ref_price}, qty={qty}")
-        return capped
+        return _apply_portfolio_factor_qty(capped, ref_price, side, symbol)
 
     if ALPACA_SIZING_MODE == "risk":
         equity = get_alpaca_account_equity()
@@ -4218,13 +4818,15 @@ def calc_alpaca_qty(ref_price: float, sl: float, notional_usd: float) -> int:
             print(f"[Alpaca][risk-sizing] equity={equity}, risk%={ALPACA_RISK_PCT}, "
                   f"risk$={risk_dollars:.2f}, stop_distance={stop_distance:.4f}, "
                   f"qty_by_risk={qty_by_risk}, cap_by_notional={max_qty_by_notional}")
-            return max(1, min(qty_by_risk, max_qty_by_notional))
+            return _apply_portfolio_factor_qty(
+                max(1, min(qty_by_risk, max_qty_by_notional)), ref_price, side, symbol)
 
         print("[Alpaca][risk-sizing] equity 조회 실패 또는 stop_distance=0 → 고정금액 방식으로 폴백")
 
     # fixed 모드 또는 risk 계산 실패시 폴백
     qty_by_fixed = int(notional_usd // ref_price)
-    return max(1, min(qty_by_fixed, max_qty_by_notional))
+    return _apply_portfolio_factor_qty(
+        max(1, min(qty_by_fixed, max_qty_by_notional)), ref_price, side, symbol)
 
 
 def calc_fx_units(pair: str, price, sl, direction: str) -> int:
@@ -4297,6 +4899,35 @@ def calc_fx_units(pair: str, price, sl, direction: str) -> int:
     units = max(1000, min(units, max_units))   # 최소 1,000 / 최대 FX_MAX_UNITS
     print(f"[FX sizing] {pair} 잔고={balance:.2f}, 리스크{risk_pct}%=${risk_amount:.2f}, "
           f"SL거리={stop_dist:.5f}, units={units} (기존 고정값 100000 → 리스크 기반)")
+
+    # 🟥 [FIX-P1] 포트폴리오 상관 축소.
+    #   EUR_USD 롱을 이미 들고 있는데 GBP_USD 롱이 들어오면 둘 다 'USD 숏'이라
+    #   분산이 아니라 USD 한 방향에 두 배를 거는 것이다. 그만큼 줄인다.
+    #   반대로 USD_JPY 롱(=USD 롱)이 들어오면 상쇄되므로 줄이지 않는다.
+    _base, _quote = _split_instrument(pair)
+    if _quote == "USD":
+        _notional_usd = units * p          # EUR_USD, XAU_USD : units×가격
+    elif _base == "USD":
+        _notional_usd = float(units)       # USD_JPY : units 가 이미 USD
+    else:
+        _notional_usd = units * p
+    _factor, _why = portfolio_size_factor(pair, direction, _notional_usd)
+    if _factor <= 0:
+        print(f"🚫 [상관사이징] {pair} 진입 취소 — {_why}")
+        return 0
+    if _factor < 0.999:
+        # 🟥 [FIX-P1b/D7] max(1000, ...) 로 바닥을 깔면 축소 목표를 넘겨버린다.
+        #   예: units 1200, 계수 0.35 → 목표 420 인데 1000 이 나가 2.4배 초과.
+        #   최소 주문 단위에 못 미치면 늘리지 말고 그냥 건너뛴다.
+        _new = int(units * _factor)
+        if _new < 1000:
+            print(f"🚫 [상관사이징] {pair} 축소 목표 {_new} units < 최소 1,000 → 진입 취소 — {_why}")
+            return 0
+        print(f"📉 [상관사이징] {pair} {units} → {_new} units — {_why}")
+        units = _new
+    else:
+        print(f"[상관사이징] {pair} 축소 없음 — {_why}")
+
     return sign * units
 
 
@@ -4422,7 +5053,17 @@ def place_order_alpaca(symbol, side, notional_usd, ref_price, tp, sl, digits=2, 
         except Exception as e:
             print(f"[WARN] TP 근접 체크 실패(무시): {e}")
 
-    qty = calc_alpaca_qty(ref_price, sl, notional_usd)
+    # 🟥 [FIX-P1] side/symbol 을 넘겨야 상관 사이징이 그룹과 방향을 판단할 수 있다.
+    qty = calc_alpaca_qty(ref_price, sl, notional_usd, side=side, symbol=symbol)
+
+    # 🟥 [FIX-P1] 상관 한도 소진으로 수량이 0이 되면 주문을 내지 않는다.
+    if qty <= 0:
+        return {
+            "status": "skipped",
+            "reason": "portfolio_correlation_limit",
+            "symbol": symbol,
+            "ref_price": ref_price,
+        }
 
     url = f"{ALPACA_TRADE_BASE_URL}/v2/orders"
     headers = {**ALPACA_HEADERS, "Content-Type": "application/json"}
@@ -6454,76 +7095,298 @@ def sync_symbol_performance_summary():
         print(f"❌ [종목별성과] 시트 쓰기 실패: {e}")
 
 
-def sync_top_active_candidates(top_n: int = 5):
+def _oanda_price_quick(instrument: str):
+    """OANDA 현재가(중간값). 추천 후보 표시용. 실패 시 None."""
+    if not (OANDA_API_KEY and ACCOUNT_ID):
+        return None
+    try:
+        r = requests.get(
+            f"{OANDA_BASE_URL}/v3/accounts/{ACCOUNT_ID}/pricing",
+            headers={"Authorization": f"Bearer {OANDA_API_KEY}"},
+            params={"instruments": instrument}, timeout=10,
+        )
+        if not r.ok:
+            return None
+        p = (r.json() or {}).get("prices", [{}])[0]
+        bids, asks = p.get("bids") or [], p.get("asks") or []
+        if not bids or not asks:
+            return None
+        return round((float(bids[0]["price"]) + float(asks[0]["price"])) / 2, 5)
+    except Exception:
+        return None
+
+
+# ------------------------------------------------------------
+# 🟥 [FIX-P1] 분산 후보 유니버스
+#   ★ '거래량 상위'는 분산에 아무 도움이 안 된다. 거래량 상위는 그날 화제인 종목이고,
+#     화제인 종목은 대개 이미 들고 있는 것과 같은 테마다. (실제로 이 스캐너는
+#     페니주와 3배 레버리지 ETF를 계속 공급했다)
+#   → 그룹별로 '유동성 있고 그 분야를 대표하는' 종목을 미리 정해두고,
+#     지금 노출이 적은 그룹부터 추천한다.
+#   ★ OANDA 상품(금·원유·채권·지수·통화)이 여기 같이 들어간다.
+#     AI 주식 8개를 아무리 늘려도 분산이 안 되지만, 원유 하나는 진짜 분산이 된다.
+# ------------------------------------------------------------
+DIVERSIFIER_UNIVERSE = {
+    "귀금속": [
+        ("XAU_USD", "OANDA", "금. 주식과 상관이 낮고 위기 때 반대로 움직인다. 추세추종이 가장 잘 통하는 상품 중 하나"),
+        ("XAG_USD", "OANDA", "은. 금과 같은 방향이지만 변동성이 더 크다 (금을 이미 들었다면 중복)"),
+    ],
+    "원유": [
+        ("WTICO_USD", "OANDA", "WTI 원유. AI·테크와 상관 거의 없음. 지정학 이벤트에 독립적으로 움직인다"),
+        ("BCO_USD", "OANDA", "브렌트유. WTI와 거의 같이 움직이므로 둘 중 하나만"),
+    ],
+    "천연가스": [
+        ("NATGAS_USD", "OANDA", "천연가스. 계절성이 강하고 다른 무엇과도 상관이 낮다. 대신 변동성이 매우 크다"),
+    ],
+    "채권": [
+        ("USB10Y_USD", "OANDA", "미국 10년 국채. 주식이 무너질 때 반대로 가는 대표 자산"),
+        ("USB02Y_USD", "OANDA", "미국 2년 국채. 금리 정책에 민감, 10년물보다 변동성 작음"),
+    ],
+    "USD통화": [
+        ("USD_JPY", "OANDA", "달러/엔. 유동성 최상위, 스프레드 최저. 단 개입 리스크 주의"),
+        ("EUR_USD", "OANDA", "유로/달러. 세계 최대 거래량, 비용이 가장 싸다"),
+        ("AUD_USD", "OANDA", "호주달러. 원자재·중국 경기와 연동돼 EUR와는 다르게 움직인다"),
+        ("USD_CAD", "OANDA", "캐나다달러. 유가와 연동. 원유 대신 쓸 수도 있다"),
+    ],
+    "미국지수": [
+        ("SPX500_USD", "OANDA", "S&P500. 나스닥보다 넓어 AI 편중이 덜하다"),
+        ("US2000_USD", "OANDA", "러셀2000 소형주. 대형 테크와 다르게 움직이는 구간이 있다"),
+    ],
+    "아시아지수": [
+        ("JP225_USD", "OANDA", "닛케이225. 엔화 방향과 미국장 양쪽에 반응, 시간대가 달라 분산 효과"),
+    ],
+    "유럽지수": [
+        ("DE30_EUR", "OANDA", "독일 DAX. 산업재 비중이 높아 미국 테크지수와 구성이 다르다"),
+    ],
+    "산업금속": [
+        ("XCU_USD", "OANDA", "구리. 제조업 경기 지표. 금과도 테크와도 다르게 움직인다"),
+    ],
+    "금융": [
+        ("JPM", "Alpaca", "JP모건. 금리 상승 국면에서 테크와 반대로 움직이는 대표 종목"),
+        ("GS", "Alpaca", "골드만삭스. 금융 대표주, 유동성 충분"),
+        ("BRK.B", "Alpaca", "버크셔. 가치주 성향이라 AI 사이클과 상관이 낮다"),
+    ],
+    "헬스케어": [
+        ("LLY", "Alpaca", "일라이릴리. 헬스케어 대장주, 테크 사이클과 무관"),
+        ("UNH", "Alpaca", "유나이티드헬스. 경기방어 성격"),
+        ("JNJ", "Alpaca", "존슨앤드존슨. 변동성 낮고 방어적"),
+    ],
+    "에너지": [
+        ("XOM", "Alpaca", "엑슨모빌. 유가 연동, AI와 상관 거의 없음"),
+        ("CVX", "Alpaca", "셰브론. XOM과 같이 움직이므로 둘 중 하나만"),
+    ],
+    "소비재": [
+        ("COST", "Alpaca", "코스트코. 경기방어 + 꾸준한 추세"),
+        ("WMT", "Alpaca", "월마트. 방어적이면서 추세가 잘 이어진다"),
+        ("KO", "Alpaca", "코카콜라. 변동성 최저 수준, 포트폴리오 안정용"),
+    ],
+    "산업재": [
+        ("CAT", "Alpaca", "캐터필러. 실물경기 대표주"),
+        ("RTX", "Alpaca", "RTX. 방산 — 지정학 이벤트에 테크와 반대로 반응"),
+        ("LMT", "Alpaca", "록히드마틴. 방산, 경기와 무관한 수주 기반"),
+    ],
+    "자동차": [
+        ("TSLA", "Alpaca", "테슬라. 변동성 크고 자체 사이클이 있어 AI 그룹과 완전히 겹치지는 않는다"),
+    ],
+    "통신": [
+        ("TMUS", "Alpaca", "T-모바일. 방어적, 배당 성향"),
+    ],
+}
+
+
+def sync_top_active_candidates(top_n: int = 12):
     """
-    Alpaca Screener API(most-actives, 거래량 상위)를 조회해서
-    '오늘의 추천 후보' 탭에 정리. 매일 오전 10시(ET)에 자동 실행됨.
-    이미 포트폴리오에 있는 종목(메인 시트에 이력이 있는 종목)인지도 같이 표시.
+    🟥 [FIX-P1] '오늘의 추천 후보' 탭 전면 개편.
+
+    ■ 예전 방식의 문제
+      Alpaca '거래량 상위'만 보고 뽑았다. 그런데 거래량 상위는
+        · 그날 화제인 종목 = 대개 이미 들고 있는 것과 같은 테마
+        · 주식 수가 많은 페니주 (거래량이 많은 건 유동성이 아니라 주식 수 때문)
+        · 3배 레버리지 ETF
+      셋 중 하나다. 분산에 아무 도움이 안 됐다.
+
+    ■ 새 방식
+      (1) 지금 Alpaca+OANDA에 뭘 얼마나 들고 있는지 **그룹별로 집계**한다
+      (2) 노출이 **적은 그룹부터** 후보를 추천한다
+      (3) 금·원유·채권·통화·해외지수(OANDA)도 후보에 포함한다
+          — AI 주식을 아무리 늘려도 분산이 안 되지만 원유 하나는 진짜 분산이 된다
+      (4) 왜 추천하는지, 지금 그 분야 노출이 얼마인지, 이미 들고 있는지를 같이 적는다
+
+    탭은 매번 통째로 새로 쓴다(append 아님).
     """
-    HEADERS = ["조회일", "종목", "거래량", "현재가", "이미 담겨있나?"]
+    HEADERS = ["분야", "종목", "거래소", "현재가", "추천 이유",
+               "내 포트폴리오와 겹침", "가장 많이 겹치는 보유종목",
+               "보유 여부", "분산 점수", "판정"]
 
     try:
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google_credentials.json", scope)
+        creds = ServiceAccountCredentials.from_json_keyfile_name(
+            "/etc/secrets/google_credentials.json", scope)
         client = gspread.authorize(creds)
-        spreadsheet = client.open("민균 FX trading result")
-
-        main_rows = spreadsheet.sheet1.get_all_values()
-        existing_symbols = {row[1] for row in main_rows[1:] if len(row) > 1 and row[1]}
-
+        spreadsheet = client.open(GOOGLE_SHEET_NAME)
         try:
             ws = spreadsheet.worksheet("오늘의 추천 후보")
         except gspread.exceptions.WorksheetNotFound:
-            ws = spreadsheet.add_worksheet(title="오늘의 추천 후보", rows=500, cols=len(HEADERS))
+            ws = spreadsheet.add_worksheet(title="오늘의 추천 후보", rows=400, cols=len(HEADERS))
             print("✅ [추천후보] 탭이 없어서 새로 생성했습니다.")
     except Exception as e:
         print(f"❌ [추천후보] 시트 연결 실패: {e}")
         return
 
-    try:
-        url = f"{ALPACA_DATA_BASE_URL}/v1beta1/screener/stocks/most-actives"
-        # 🟥 [FIX-A5] 필터링 후에도 top_n개가 남도록 넉넉히 가져온다.
-        #    (거래량 상위는 페니주·레버리지 ETF가 대부분이라 그냥 5개만 받으면 전부 걸러진다)
-        params = {"by": "volume", "top": max(top_n * 8, 40)}
-        r = requests.get(url, headers=ALPACA_HEADERS, params=params, timeout=15)
-        r.raise_for_status()
-        data = r.json()
-        actives = data.get("most_actives") or data.get("mostActives") or []
-    except Exception as e:
-        print(f"❌ [추천후보] Alpaca 조회 실패: {e}")
-        return
+    today_str = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M ET")
 
-    today_str = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
-    new_rows = []
-    # 🟥 [FIX-A5] 기존 스캐너는 "거래량 상위"만 보고 뽑아서 SOXS(3배 인버스 반도체)와
-    #    GPUS/ZBAO/INLF 같은 페니주를 후보로 계속 공급했다. 거래량 1위 종목이 페니주인 건
-    #    주식 수가 많아서지 유동성이 좋아서가 아니다.
-    #    → is_blocked_instrument()로 레버리지 ETF·페니주를 걸러내고, 걸러진 이유도 표기한다.
-    skipped = 0
-    for item in actives:
-        symbol = item.get("symbol")
-        volume = item.get("volume") or item.get("trade_count")
-        if not symbol:
-            continue
-        price = get_alpaca_latest_price(symbol)
-        blocked, block_reason = is_blocked_instrument(symbol, price)
-        if blocked:
-            skipped += 1
-            print(f"🚫 [추천후보] {symbol} 제외 — {block_reason} (price={price})")
-            continue
-        already = "✅ 이미 있음" if symbol in existing_symbols else "🆕 신규"
-        new_rows.append([today_str, symbol, volume, price, already])
-        if len(new_rows) >= top_n:
-            break
-    if skipped:
-        print(f"ℹ️ [추천후보] 레버리지 ETF·페니주 {skipped}건 제외됨")
+    # ── (1) 현재 노출 집계 ──────────────────────────────────
+    snap = summarize_portfolio_exposure()
+    groups = snap.get("groups", {})
+    equity = snap.get("equity")
+    held_symbols = {p["symbol"].upper() for p in snap.get("positions", [])}
+
+    positions = snap.get("positions", [])
+
+    def overlap_pct(sym: str) -> tuple[float, str]:
+        """이 종목이 지금 내 포트폴리오와 얼마나 겹치는가 (자산 대비 %).
+
+        🟥 [FIX-P2] 분야 표가 아니라 실측 상관계수로 계산한다.
+        같이 나오는 문자열은 '가장 많이 겹치는 보유 종목'이다.
+        """
+        if not positions or not equity:
+            return 0.0, "-"
+        expo, detail = correlated_exposure(sym, positions)
+        if not detail:
+            return 0.0, "-"
+        top = max(detail, key=lambda d: abs(d[2]))
+        return abs(expo) / equity * 100.0, f"{top[0]} (ρ{top[1]:+.2f})"
+
+    # ── 후보 점수화 ─────────────────────────────────────────
+    #  분산 점수 = 100 - (내 포트폴리오와 겹치는 정도 %) × 3
+    #  이미 보유 중이면 -40. 한도를 이미 넘긴 종목은 0점.
+    rows: list[list] = []
+    for grp, items in DIVERSIFIER_UNIVERSE.items():
+        for sym, venue, reason in items:
+            ov, top_peer = overlap_pct(sym)
+            held = sym.upper() in held_symbols
+            score = 100.0 - ov * 3.0
+            if held:
+                score -= 40.0
+            if ov >= PORTFOLIO_GROUP_MAX_PCT:
+                score = 0.0
+            score = max(0.0, round(score, 1))
+
+            px = _oanda_price_quick(sym) if venue == "OANDA" else get_alpaca_latest_price(sym)
+
+            # 페니주·레버리지 ETF 방어는 그대로 유지
+            if venue == "Alpaca":
+                blocked, why = is_blocked_instrument(sym, px)
+                if blocked:
+                    print(f"🚫 [추천후보] {sym} 제외 — {why}")
+                    continue
+
+            if ov >= PORTFOLIO_GROUP_MAX_PCT:
+                verdict = f"⛔ 한도 초과 — 이미 {ov:.1f}% 겹침 (상한 {PORTFOLIO_GROUP_MAX_PCT:.0f}%)"
+            elif held:
+                verdict = "🔁 이미 보유 — 추가하면 같은 베팅이 커진다"
+            elif ov <= 2.0:
+                verdict = "⭐ 최우선 — 지금 포트폴리오와 거의 안 겹친다"
+            elif ov < PORTFOLIO_GROUP_MAX_PCT / 2:
+                verdict = "✅ 추천 — 아직 여유 있음"
+            else:
+                verdict = "🟡 여유 적음 — 소량만"
+
+            rows.append([
+                grp, sym, venue,
+                px if px is not None else "조회실패",
+                reason,
+                f"{ov:.1f}%",
+                top_peer,
+                "보유 중" if held else "없음",
+                score,
+                verdict,
+            ])
+
+    rows.sort(key=lambda r: r[8], reverse=True)
+    rows = rows[:max(top_n, 1)]
+
+    # ── (3) 현재 포트폴리오 요약 블록 ───────────────────────
+    out: list[list] = []
+    out.append([f"오늘의 추천 후보  ({today_str})"])
+    out.append([])
+    out.append(["■ 지금 내 포지션이 어디에 쏠려 있나"])
+    if not snap.get("ok"):
+        out.append(["포지션/자산 조회 실패 — 아래 추천은 노출 0% 가정으로 계산된 값입니다"])
+    else:
+        out.append(["분야", "보유 종목", "총 노출", "순 노출(방향 반영)", "상태"])
+        if not groups:
+            out.append(["(열린 포지션 없음)", "", "", "", ""])
+        for g, info in sorted(groups.items(), key=lambda kv: -abs(kv[1]["net_pct"])):
+            _net_abs = abs(info["net_pct"])
+            if _net_abs >= PORTFOLIO_GROUP_MAX_PCT:
+                state = f"⛔ 한도 초과 (상한 {PORTFOLIO_GROUP_MAX_PCT:.0f}%)"
+            elif _net_abs >= PORTFOLIO_GROUP_MAX_PCT * 0.7:
+                state = "🟡 한도 근접"
+            else:
+                state = "✅ 여유"
+            out.append([g, ", ".join(sorted(set(info["symbols"])))[:200],
+                        f"{info['gross_pct']:.1f}%", f"{info['net_pct']:+.1f}%", state])
+        out.append(["합계", "", f"{snap.get('total_gross_pct', 0):.1f}%",
+                    f"자산 ${equity:,.0f}" if equity else "", ""])
+
+        # 🟥 [FIX-P2] "내 10개가 사실은 몇 개인가" — 실측 상관계수로 직접 보여준다.
+        #   분야 이름표가 아니라 실제 가격이 답한다.
+        held = [p["symbol"] for p in positions]
+        if len(held) >= 2:
+            pairs = []
+            for i in range(len(held)):
+                for j in range(i + 1, len(held)):
+                    rho = measured_correlation(held[i], held[j])
+                    if rho is not None:
+                        pairs.append((abs(rho), held[i], held[j], rho))
+            pairs.sort(reverse=True)
+            if pairs:
+                out.append([])
+                out.append(["■ 지금 보유 종목끼리 실제로 얼마나 같이 움직이나 (일봉 수익률 상관)"])
+                out.append(["종목 A", "종목 B", "상관계수", "해석", ""])
+                for _, a, b, rho in pairs[:12]:
+                    if rho >= 0.7:
+                        note = "사실상 같은 베팅"
+                    elif rho >= 0.4:
+                        note = "상당히 겹침"
+                    elif rho <= -0.4:
+                        note = "서로 상쇄 (헤지 효과)"
+                    else:
+                        note = "거의 독립 — 분산에 도움"
+                    out.append([a, b, f"{rho:+.2f}", note, ""])
+                strong = sum(1 for p in pairs if p[0] >= 0.7)
+                out.append([f"※ 상관 0.7 이상인 쌍이 {strong}개 / 전체 {len(pairs)}쌍. "
+                            f"많을수록 '종목 수'보다 실제 분산이 훨씬 적다는 뜻입니다."])
+
+    out.append([])
+    out.append(["■ 분산에 도움이 되는 후보 (내 포트폴리오와 덜 겹치는 순)"])
+    out.append(HEADERS)
+    out.extend(rows)
+    out.append([])
+    out.append(["※ '겹침'은 분야 이름이 아니라 **실제 일봉 상관계수**로 계산합니다. "
+                "새 종목을 트레이딩뷰에 추가만 하면 자동으로 반영됩니다 (코드 수정 불필요)."])
+    out.append(["※ '분산 점수'가 높을수록 지금 포트폴리오와 안 겹치는 종목입니다."])
+    out.append([f"※ 한 분야 상한 {PORTFOLIO_GROUP_MAX_PCT:.0f}% / 전체 상한 {PORTFOLIO_TOTAL_MAX_PCT:.0f}% "
+                f"(환경변수 PORTFOLIO_GROUP_MAX_PCT / PORTFOLIO_TOTAL_MAX_PCT 로 조정)"])
+    out.append(["※ 같은 분야에 이미 차 있으면 알람이 울려도 봇이 자동으로 수량을 줄이거나 건너뜁니다."])
+
+    # 열 개수를 맞춰야 gspread 가 거부하지 않는다
+    width = max(len(r) for r in out)
+    out = [r + [""] * (width - len(r)) for r in out]
 
     try:
-        existing = ws.get_all_values()
-        if not existing:
-            ws.append_row(HEADERS)
-        ws.append_rows(new_rows)
-        print(f"✅ [추천후보] {len(new_rows)}건 추가 완료 ({today_str})")
+        ws.clear()
+        # 🟥 [FIX-P1b/D3] 기존 탭은 5열로 만들어져 있다(옛 헤더 5개).
+        #   clear() 는 격자 크기를 안 바꾸고 update() 도 자동 확장하지 않아서
+        #   "exceeds grid limits. Max columns: 5" 로 실패한다 — 그런데 except 에
+        #   먹혀서 '조용히 갱신 안 됨' 이 된다. 쓰기 전에 격자를 늘린다.
+        try:
+            ws.resize(rows=max(len(out) + 20, 60), cols=max(width, len(HEADERS)))
+        except Exception as _e:
+            print(f"⚠️ [추천후보] 시트 크기 조정 실패(계속 진행): {_e}")
+        ws.update("A1", out)
+        print(f"✅ [추천후보] 전면 갱신 완료 — 후보 {len(rows)}건, 그룹 {len(groups)}개 ({today_str})")
     except Exception as e:
         print(f"❌ [추천후보] 시트 쓰기 실패: {e}")
 
@@ -7088,6 +7951,27 @@ async def sync_symbol_performance_endpoint():
     'Alpaca 거래내역' 탭이 먼저 갱신돼 있어야 의미 있는 데이터가 나온다."""
     await asyncio.to_thread(sync_symbol_performance_summary)
     return JSONResponse(content={"status": "done"})
+
+
+@app.post("/portfolio_exposure")
+@app.get("/portfolio_exposure")
+async def portfolio_exposure_endpoint():
+    """🟥 [FIX-P1] 지금 봇이 보는 '분야별 쏠림'을 그대로 돌려준다.
+
+    알람을 기다리지 않고 바로 확인할 수 있다. 상관 사이징이 왜 수량을 줄였는지
+    알고 싶을 때 여기부터 보면 된다.
+    """
+    snap = await asyncio.to_thread(summarize_portfolio_exposure)
+    return {
+        "ok": snap.get("ok"),
+        "equity_usd": snap.get("equity"),
+        "total_gross_pct": snap.get("total_gross_pct"),
+        "group_max_pct": PORTFOLIO_GROUP_MAX_PCT,
+        "total_max_pct": PORTFOLIO_TOTAL_MAX_PCT,
+        "sizing_enabled": PORTFOLIO_SIZING_ENABLED,
+        "groups": snap.get("groups"),
+        "positions": snap.get("positions"),
+    }
 
 
 @app.post("/sync_top_active_candidates")
