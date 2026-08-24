@@ -21,6 +21,7 @@ import asyncio
 from playwright.sync_api import sync_playwright
 import time
 import time as _t
+import contextvars          # 🟥 [FIX-T1] 웹훅 요청별 시간축 보관용
 # 🟥 [FIX-E1] API 키 전문을 stdout에 출력하던 줄을 제거.
 #    Render/Docker 로그에 그대로 남아 유출 위험이 있었다.
 #    키가 로드됐는지만 확인할 수 있게 마스킹해서 찍는다.
@@ -2029,12 +2030,71 @@ def price_round_digits(pair: str) -> int:
     return 3 if pair.endswith("JPY") else 5
 
 
+# ============================================================
+# 🟥 [FIX-T1] 분석 시간축을 '알림이 온 차트'에 맞춘다
+# ------------------------------------------------------------
+#  ■ 무엇이 문제였나
+#    이 함수는 주식이면 무조건 M15, FX면 무조건 M30 을 돌려줬다.
+#    그런데 TP/SL 은 여기서 받은 캔들로 계산한 ATR 로 정해진다.
+#    → 트레이딩뷰 차트를 1시간봉으로 바꿔서 알림을 걸면
+#      신호는 1시간짜리인데 손절은 15분 ATR 로 잡힌다.
+#      1시간 ATR 은 15분 ATR 의 약 2배다. 즉 **손절이 필요치의 절반**이 되어
+#      정상적인 흔들림에도 계속 잘려나간다.
+#    설정 어디에도 안 나타나고 로그도 정상으로 보인다. 조용히 지는 종류의 버그다.
+#
+#  ■ 어떻게 고쳤나
+#    Pine 알림이 이미 "tf": timeframe.period 를 보내고 있었는데 봇이 안 읽고 있었다.
+#    이제 그 값을 읽어 분석 시간축으로 쓴다.
+#    → 차트를 1시간으로 바꾸면 봇도 자동으로 1시간 ATR 을 쓴다. 설정 불필요.
+#    tf 가 없는 옛 알림은 아래 기본값으로 폴백한다.
+# ============================================================
+STOCK_BASE_GRANULARITY = os.getenv("STOCK_BASE_GRANULARITY", "M15")
+FX_BASE_GRANULARITY = os.getenv("FX_BASE_GRANULARITY", "M30")
+
+#: 이번 웹훅 요청의 시간축. 요청마다 독립적으로 유지된다.
+_ALERT_TF = contextvars.ContextVar("alert_tf", default=None)
+
+#: TradingView timeframe.period → 봇 granularity
+_TV_TF_MAP = {
+    "1": "M1", "3": "M5", "5": "M5", "10": "M15", "15": "M15",
+    "30": "M30", "45": "M30", "60": "H1", "120": "H1", "180": "H4",
+    "240": "H4", "360": "H4", "480": "H4", "720": "H4",
+    "1D": "D", "D": "D", "1W": "W", "W": "W",
+}
+
+#: Alpaca(주식)에서 실제로 조회 가능한 단위.
+_STOCK_SUPPORTED = {"M1", "M5", "M15", "M30", "H1", "H4", "D"}
+
+
+def normalize_alert_timeframe(raw, pair: str = "") -> str | None:
+    """알림의 tf 문자열을 봇 granularity 로. 못 알아보면 None."""
+    if raw is None:
+        return None
+    s = str(raw).strip().upper()
+    if not s:
+        return None
+    gran = _TV_TF_MAP.get(s)
+    if gran is None and s in ("M1", "M5", "M15", "M30", "H1", "H2", "H4", "D", "W"):
+        gran = "H4" if s == "H2" else s      # H2 는 양쪽 다 애매해서 H4 로 올린다
+    if gran is None:
+        return None
+    if pair and is_stock_pair(pair) and gran not in _STOCK_SUPPORTED:
+        return None
+    return gran
+
+
 def base_granularity_for(pair: str) -> str:
     """
-    분석 기준 캔들 단위. 주식은 15분봉, FX는 기존과 동일하게 30분봉.
-    (캔들 조회, 지지/저항, MTF 요약, GPT 프롬프트 안내문 전부 이 값을 따른다.)
+    분석 기준 캔들 단위.
+
+    1순위: 이번 알림이 온 차트의 시간축 (Pine 이 보낸 "tf")
+    2순위: 환경변수 STOCK_BASE_GRANULARITY / FX_BASE_GRANULARITY
+    (캔들 조회, ATR→TP/SL, 지지/저항, MTF 요약, GPT 프롬프트가 전부 이 값을 따른다)
     """
-    return "M15" if is_stock_pair(pair) else "M30"
+    tf = _ALERT_TF.get()
+    if tf:
+        return tf
+    return STOCK_BASE_GRANULARITY if is_stock_pair(pair) else FX_BASE_GRANULARITY
 
 
 def analyze_highs_lows(candles, window=20):
@@ -2175,6 +2235,19 @@ def process_webhook_sync(raw: bytes):
     #    (지표·GPT는 안 탔지만 로그를 더럽히고 불필요한 외부 호출을 발생시켰다)
     if str(pair or "").strip().upper() in ("KEEP_ALIVE", "KEEPALIVE", "PING", "HEALTH", "HEALTHCHECK"):
         return JSONResponse(content={"status": "alive", "ts": datetime.now(ZoneInfo("UTC")).isoformat()})
+
+    # 🟥 [FIX-T1] 알림이 온 차트의 시간축을 이번 요청 내내 쓰도록 세팅한다.
+    #    이게 없으면 1시간봉 차트에서 알림이 와도 봇은 15분 ATR 로 손절을 잡는다.
+    _tf_raw = data.get("tf") or data.get("timeframe") or data.get("interval")
+    _tf_norm = normalize_alert_timeframe(_tf_raw, pair)
+    if _tf_norm:
+        _ALERT_TF.set(_tf_norm)
+        print(f"⏱️ [시간축] {pair} 알림 tf={_tf_raw} → 분석 {_tf_norm} (ATR·TP/SL 이 기준으로 계산됨)")
+    else:
+        _ALERT_TF.set(None)
+        _fb = STOCK_BASE_GRANULARITY if is_stock_pair(pair) else FX_BASE_GRANULARITY
+        print(f"⚠️ [시간축] {pair} 알림에 tf 없음/해석불가(tf={_tf_raw!r}) → 기본값 {_fb} 사용. "
+              f"차트 시간축을 바꿨다면 Pine 알림에 tf 를 넣거나 환경변수를 맞출 것.")
 
     _ = check_recent_opposite_signal(pair, signal)  # 소프트 OFF: 기록만, 차단 안 함
 
