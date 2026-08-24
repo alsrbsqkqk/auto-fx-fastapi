@@ -7137,10 +7137,339 @@ def sync_alpaca_trade_log():
 
     try:
         ws.clear()
+        # 🟥 [FIX-D1] 탭은 1000행으로 만들어졌는데 주문이 그보다 쌓이면
+        #    update 가 'exceeds grid limits' 로 터지면서 갱신이 아예 멈춘다.
+        try:
+            ws.resize(rows=max(len(sheet_rows) + 50, 1000), cols=len(HEADERS))
+        except Exception as e:
+            print(f"⚠️ [Alpaca거래내역] 크기 조정 실패: {e}")
         ws.update("A1", sheet_rows)
         print(f"✅ [Alpaca거래내역] {len(rows)}건 갱신 완료")
     except Exception as e:
         print(f"❌ [Alpaca거래내역] 시트 쓰기 실패: {e}")
+        return
+
+    # 🟥 [FIX-D1] 날짜가 바뀌는 곳마다 가로선
+    _draw_date_separators(spreadsheet, ws, sheet_rows, date_col=1,
+                          ncols=len(HEADERS), tag="Alpaca구분선")
+
+
+
+# ============================================================
+# 🟥 [FIX-D1] 날짜 구분선 — 날짜가 바뀌는 행 아래에 가로선을 긋는다
+# ------------------------------------------------------------
+#  ⚠️ ws.clear() 는 '값'만 지우고 '테두리'는 그대로 남긴다.
+#     그래서 매번 먼저 전부 지우고 다시 긋는다. 안 그러면 갱신할 때마다
+#     예전 선이 엉뚱한 행에 남아서 며칠 지나면 표가 걸레가 된다.
+# ============================================================
+
+def _draw_date_separators(spreadsheet, ws, sheet_rows, date_col, ncols, tag="구분선"):
+    """
+    sheet_rows[0] 은 헤더. sheet_rows[i][date_col] 의 앞 10글자(YYYY-MM-DD)를 날짜로 본다.
+    날짜가 바뀌기 직전 행의 '아래'에 선을 긋는다.
+    """
+    try:
+        sid = ws.id
+    except Exception:
+        return
+    if not sheet_rows or ncols < 1:
+        return
+
+    # ⚠️ 구글은 '시트 격자 밖'의 범위를 주면 통째로 거부한다.
+    #    ws.resize() 로 행을 줄여놨는데 그보다 넓게 지우려 들면 선이 하나도 안 그려진다.
+    try:
+        grid_rows = int(ws.row_count)
+        grid_cols = int(ws.col_count)
+    except Exception:
+        grid_rows, grid_cols = len(sheet_rows), ncols
+    ncols = max(1, min(int(ncols), grid_cols))
+    wipe_to = max(1, min(max(len(sheet_rows), 1) + 500, grid_rows))
+    reqs = [{
+        "updateBorders": {
+            "range": {"sheetId": sid, "startRowIndex": 0, "endRowIndex": wipe_to,
+                      "startColumnIndex": 0, "endColumnIndex": ncols},
+            "innerHorizontal": {"style": "NONE"},
+            "bottom": {"style": "NONE"},
+        }
+    }]
+
+    def _date_of(row):
+        if date_col >= len(row):
+            return ""
+        return str(row[date_col] or "").strip()[:10]
+
+    prev_date, last_idx = None, None
+    for i in range(1, len(sheet_rows)):
+        d = _date_of(sheet_rows[i])
+        if not d:
+            continue
+        if prev_date is not None and d != prev_date and last_idx is not None:
+            reqs.append({
+                "updateBorders": {
+                    "range": {"sheetId": sid,
+                              "startRowIndex": last_idx, "endRowIndex": last_idx + 1,
+                              "startColumnIndex": 0, "endColumnIndex": ncols},
+                    "bottom": {"style": "SOLID_MEDIUM",
+                               "color": {"red": 0.20, "green": 0.20, "blue": 0.20}},
+                }
+            })
+        prev_date, last_idx = d, i
+
+    try:
+        spreadsheet.batch_update({"requests": reqs})
+        print(f"✅ [{tag}] 날짜 경계 {len(reqs) - 1}곳에 선을 그었다")
+    except Exception as e:
+        # 선 긋기는 '있으면 좋은 것'이다. 실패해도 거래내역 자체는 이미 기록됐다.
+        print(f"⚠️ [{tag}] 선 긋기 실패(내용은 정상 기록됨): {e}")
+
+
+# ============================================================
+# 🟥 [FIX-O1] 'OANDA 거래내역' 탭 — Alpaca 탭과 똑같은 모양으로
+# ------------------------------------------------------------
+#  왜 필요한가: 지금까지 FX/금 거래는 '어디에도 정리돼 있지 않았다'.
+#  주식은 'Alpaca 거래내역'에서 승률·손익을 한눈에 보는데, OANDA 쪽은
+#  오완다 웹사이트에 들어가야만 볼 수 있었다. 같은 표로 만들어야
+#  주식 전략과 FX 전략을 나란히 비교할 수 있다.
+#
+#  Alpaca 탭과 다른 점 하나: '스왑($)' 칸이 있다.
+#  FX는 포지션을 하루 넘겨 들고 있으면 이자(스왑)가 붙거나 빠진다.
+#  주식엔 없는 비용이라 따로 뺐다. 진짜 손익 = 손익($) + 스왑($).
+# ============================================================
+
+def sync_oanda_trade_log():
+    HEADERS = [
+        "트레이드ID", "진입시각", "종목", "방향", "점수", "수량", "진입가",
+        "TP가", "SL가", "상태", "청산가", "청산시각", "보유시간(분)",
+        "손익($)", "손익(%)", "스왑($)", "누적손익($)"
+    ]
+
+    if not (OANDA_API_KEY and ACCOUNT_ID):
+        print("⚠️ [OANDA거래내역] OANDA_API_KEY / ACCOUNT_ID 가 없어서 건너뜀")
+        return
+
+    try:
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds = ServiceAccountCredentials.from_json_keyfile_name(GOOGLE_CREDS_PATH, scope)
+        client = gspread.authorize(creds)
+        spreadsheet = client.open(GOOGLE_SHEET_NAME)
+        score_lookup = _build_score_lookup(spreadsheet.sheet1.get_all_values())
+
+        try:
+            ws = spreadsheet.worksheet("OANDA 거래내역")
+        except gspread.exceptions.WorksheetNotFound:
+            ws = spreadsheet.add_worksheet(title="OANDA 거래내역", rows=1000, cols=len(HEADERS))
+            print("✅ [OANDA거래내역] 탭이 없어서 새로 생성했습니다.")
+    except Exception as e:
+        print(f"❌ [OANDA거래내역] 시트 연결 실패: {e}")
+        return
+
+    # ── 1) 트레이드 내역 조회 (최대 5페이지 = 2500건) ──────────
+    # ⚠️ 여기서 실패하면 '절대' 시트를 건드리면 안 된다.
+    #    실패했는데 그냥 진행하면 ws.clear() 가 돌아서 그동안 쌓인 거래내역이
+    #    통째로 날아간다. 그것도 30분마다 반복해서. 그래서 fetch_ok 로 막는다.
+    headers = {"Authorization": f"Bearer {OANDA_API_KEY}"}
+    trades = []
+    seen_ids = set()
+    before_id = None
+    fetch_ok = False
+    try:
+        for _page_i in range(5):
+            params = {"state": "ALL", "count": 500}
+            if before_id:
+                params["beforeID"] = before_id
+            r = requests.get(f"{OANDA_BASE_URL}/v3/accounts/{ACCOUNT_ID}/trades",
+                             headers=headers, params=params, timeout=20)
+            if not r.ok:
+                print(f"❌ [OANDA거래내역] 조회 실패 status={r.status_code} {r.text[:200]}")
+                fetch_ok = False
+                break
+            page = (r.json() or {}).get("trades") or []
+            fetch_ok = True
+            if not page:
+                break
+            # 응답 정렬 순서를 믿지 않는다. ID 로 중복을 직접 걸러야
+            # 누적손익이 두 배로 뻥튀기되는 사고가 안 난다.
+            fresh = [t for t in page if str(t.get("id")) not in seen_ids]
+            for t in fresh:
+                seen_ids.add(str(t.get("id")))
+            trades.extend(fresh)
+            if len(page) < 500 or not fresh:
+                break
+            try:
+                ids = [int(t["id"]) for t in page if str(t.get("id")).isdigit()]
+                if not ids:
+                    break
+                nxt = min(ids) - 1     # beforeID 는 '이 ID 이하' → 1 빼야 중복이 없다
+                if nxt <= 0 or (before_id and nxt >= int(before_id)):
+                    break              # 진도가 안 나가면 무한루프 방지
+                before_id = str(nxt)
+            except Exception:
+                break
+    except Exception as e:
+        print(f"❌ [OANDA거래내역] 조회 중 오류: {e}")
+        return
+
+    if not fetch_ok:
+        print("⛔ [OANDA거래내역] 조회에 실패해서 시트는 건드리지 않고 그대로 둡니다.")
+        return
+
+    if not trades:
+        print("ℹ️ [OANDA거래내역] 거래 기록이 아직 없습니다.")
+
+    def _f(v, default=None):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return default
+
+    def _to_et(iso_str):
+        if not iso_str:
+            return ""
+        try:
+            s = str(iso_str)
+            # OANDA 는 나노초까지 준다: 2026-08-24T13:30:00.123456789Z → 파이썬이 못 읽는다
+            if "." in s:
+                head, tail = s.split(".", 1)
+                frac = "".join(ch for ch in tail if ch.isdigit())[:6]
+                s = f"{head}.{frac}+00:00"
+            else:
+                s = s.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(s)
+            return dt.astimezone(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M:%S ET")
+        except Exception:
+            return str(iso_str)[:19]
+
+    def _iso_utc(iso_str):
+        """_find_matching_score 가 읽을 수 있는 형태로."""
+        if not iso_str:
+            return None
+        s = str(iso_str)
+        if "." in s:
+            head, tail = s.split(".", 1)
+            frac = "".join(ch for ch in tail if ch.isdigit())[:6]
+            return f"{head}.{frac}+00:00"
+        return s.replace("Z", "+00:00")
+
+    rows = []
+    for t in trades:
+        inst = t.get("instrument") or ""
+        units0 = _f(t.get("initialUnits"), 0.0) or 0.0
+        side = "BUY" if units0 > 0 else "SELL"
+        entry_price = _f(t.get("price"))
+        entry_time = t.get("openTime")
+        state = (t.get("state") or "").upper()
+
+        tp_o = t.get("takeProfitOrder") or {}
+        sl_o = t.get("stopLossOrder") or {}
+        ts_o = t.get("trailingStopLossOrder") or {}
+        tp_price = _f(tp_o.get("price"))
+        sl_price = (_f(sl_o.get("price"))
+                    or _f(ts_o.get("trailingStopValue"))
+                    or _f(ts_o.get("price")))
+
+        closed = (state == "CLOSED")
+        # ⚠️ averageClosePrice 는 '일부만 줄인' 트레이드에도 채워진다.
+        #    그걸 그대로 쓰면 '진행중인데 청산가가 찍혀 있는' 모순된 줄이 나온다.
+        exit_price = _f(t.get("averageClosePrice")) if closed else None
+        exit_time = t.get("closeTime") if closed else None
+        part_closed = (not closed) and _f(t.get("averageClosePrice")) is not None
+
+        if state == "CLOSE_WHEN_TRADEABLE":
+            status_kr = "청산대기"
+        elif state == "OPEN":
+            status_kr = "일부청산·진행중" if part_closed else "진행중"
+        elif str(tp_o.get("state") or "").upper() == "FILLED":
+            status_kr = "TP청산"
+        elif str(sl_o.get("state") or "").upper() == "FILLED":
+            status_kr = "SL청산"
+        elif str(ts_o.get("state") or "").upper() == "FILLED":
+            status_kr = "트레일청산"
+        elif closed:
+            # ⚠️ OANDA 가 닫힌 트레이드에 TP/SL 주문 객체를 안 붙여주는 경우가 있다.
+            #    그러면 전부 '수동청산'으로 보여서 TP 승률을 못 센다.
+            #    그럴 땐 청산가가 TP선/SL선 중 어디에 붙었는지로 되짚는다.
+            _ep = _f(t.get("averageClosePrice"))
+            _tol = (abs(_ep) * 0.0005) if _ep else 0.0     # 0.05% 허용
+            if _ep and tp_price and abs(_ep - tp_price) <= _tol:
+                status_kr = "TP청산(추정)"
+            elif _ep and sl_price and abs(_ep - sl_price) <= _tol:
+                status_kr = "SL청산(추정)"
+            else:
+                status_kr = "수동/시간청산"
+        else:
+            status_kr = state or "?"
+
+        realized = _f(t.get("realizedPL"), 0.0) or 0.0
+        financing = _f(t.get("financing"), 0.0) or 0.0
+
+        # 🟦 메인 시트 점수 매칭: OANDA 는 'USD_JPY', 트레이딩뷰 알람은 'USDJPY' 로 들어온다.
+        #    어느 쪽으로 기록됐는지 모르니 둘 다 시도한다.
+        score = None
+        for cand in (inst, inst.replace("_", "")):
+            score = _find_matching_score(score_lookup, cand, _iso_utc(entry_time))
+            if score is not None:
+                break
+
+        rows.append({
+            "id": t.get("id"), "entry_time": entry_time, "symbol": inst, "side": side,
+            "score": score, "qty": abs(units0), "entry_price": entry_price,
+            "tp": tp_price, "sl": sl_price, "status_kr": status_kr,
+            "exit_price": exit_price, "exit_time": exit_time,
+            "pnl": realized if state == "CLOSED" else None,
+            "swap": financing,
+        })
+
+    rows = [r for r in rows if r["entry_time"]]
+    rows.sort(key=lambda r: str(r["entry_time"]))
+
+    sheet_rows = [HEADERS]
+    cum_pnl = 0.0
+    for r in rows:
+        hold_minutes = ""
+        if r["exit_time"] and r["entry_time"]:
+            try:
+                t1 = datetime.fromisoformat(_iso_utc(r["entry_time"]))
+                t2 = datetime.fromisoformat(_iso_utc(r["exit_time"]))
+                hold_minutes = round((t2 - t1).total_seconds() / 60, 1)
+            except Exception:
+                hold_minutes = ""
+
+        # 🟦 손익(%)는 '가격이 몇 % 움직였나' 로 낸다. Alpaca 탭과 같은 의미다.
+        #    FX 는 종목마다 계약 단위가 달라서 손익($)/명목 으로는 서로 비교가 안 된다.
+        pnl_pct = ""
+        if r["exit_price"] and r["entry_price"]:
+            direction = 1 if r["side"] == "BUY" else -1
+            pnl_pct = round((r["exit_price"] - r["entry_price"]) / r["entry_price"]
+                            * 100 * direction, 3)
+
+        if r["pnl"] is not None:
+            cum_pnl += r["pnl"] + r["swap"]
+
+        sheet_rows.append([
+            r["id"], _to_et(r["entry_time"]), r["symbol"], r["side"], r["score"],
+            round(r["qty"], 2), r["entry_price"], r["tp"], r["sl"], r["status_kr"],
+            r["exit_price"], _to_et(r["exit_time"]), hold_minutes,
+            round(r["pnl"], 2) if r["pnl"] is not None else "",
+            pnl_pct,
+            round(r["swap"], 2) if (r["pnl"] is not None and r["swap"]) else "",
+            round(cum_pnl, 2) if r["pnl"] is not None else "",
+        ])
+
+    try:
+        ws.clear()
+        try:
+            ws.resize(rows=max(len(sheet_rows) + 50, 200), cols=len(HEADERS))
+        except Exception as e:
+            print(f"⚠️ [OANDA거래내역] 크기 조정 실패: {e}")
+        ws.update("A1", sheet_rows)
+        print(f"✅ [OANDA거래내역] {len(rows)}건 갱신 완료")
+    except Exception as e:
+        print(f"❌ [OANDA거래내역] 시트 쓰기 실패: {e}")
+        return
+
+    # 🟥 [FIX-D1] 날짜 구분선
+    _draw_date_separators(spreadsheet, ws, sheet_rows, date_col=1,
+                          ncols=len(HEADERS), tag="OANDA구분선")
 
 
 def sync_symbol_performance_summary():
@@ -8568,6 +8897,10 @@ async def _hourly_outcome_tracker_loop():
             await asyncio.to_thread(sync_alpaca_trade_log)
         except Exception as e:
             print(f"❌ [Alpaca거래내역 루프] 오류: {e}")
+        try:
+            await asyncio.to_thread(sync_oanda_trade_log)   # 🟥 [FIX-O1]
+        except Exception as e:
+            print(f"❌ [OANDA거래내역 루프] 오류: {e}")
         # 🟥 [FIX-A3] close_stale_positions()는 여기서 제거하고 _time_exit_loop()로 독립시켰다.
         #    이 체인에 묶여 있으면 앞 단계가 느릴 때 시간청산 차례가 오지 않는다.
         try:
@@ -8620,6 +8953,14 @@ async def sync_alpaca_trade_log_endpoint():
     """'Alpaca 거래내역' 탭을 지금 바로 갱신하고 싶을 때 호출 (정기 1시간 루프와 별개)."""
     await asyncio.to_thread(sync_alpaca_trade_log)
     return JSONResponse(content={"status": "done"})
+
+
+@app.post("/sync_oanda_trade_log")
+@app.get("/sync_oanda_trade_log")
+async def sync_oanda_trade_log_endpoint():
+    """🟥 [FIX-O1] 'OANDA 거래내역' 탭을 지금 바로 갱신."""
+    await asyncio.to_thread(sync_oanda_trade_log)
+    return {"status": "ok", "message": "'OANDA 거래내역' 탭 갱신 완료"}
 
 
 @app.post("/close_stale_positions")
