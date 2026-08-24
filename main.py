@@ -2023,6 +2023,100 @@ def is_stock_pair(pair: str) -> bool:
     return bool(_STOCK_TICKER_RE.match(p))
 
 
+# ============================================================
+# 🟥 [FIX-S1] 알림 심볼 → 브로커가 이해하는 형식으로 정규화
+# ------------------------------------------------------------
+#  ■ 무엇이 문제였나
+#    BUY_STOCK_PORTFOLIO_A10 은 알림에 "symbol": syminfo.ticker 를 보낸다.
+#    주식 차트에서는 "PLTR" 이라 문제가 없었다.
+#    그런데 OANDA 차트에 같은 스크립트를 걸면 syminfo.ticker 가
+#        USDJPY / XAUUSD / WTICOUSD / SPX500USD
+#    처럼 **밑줄 없는** 형태로 온다. OANDA API 는 USD_JPY 를 요구한다.
+#    → /v3/instruments/USDJPY/candles 요청이 400 으로 죽고,
+#      get_candles 가 빈 DataFrame 을 돌려주고,
+#      current_price=None 으로 웹훅이 **시트에 한 줄도 안 남기고** 종료됐다.
+#    거래도 안 되고 기록도 안 남는 이유가 이것이다. 로그에도 "캔들 요청 실패"
+#    한 줄만 찍혀서 원인을 알기 어려웠다.
+#
+#  ■ 어떻게 고쳤나
+#    끝 3글자가 통화코드면 밑줄을 넣어준다 (XAUUSD → XAU_USD).
+#    주식 티커(1~5글자)는 건드리지 않는다 — 미국 주식은 5글자를 넘지 않으므로
+#    6글자 이상만 변환 대상이 되어 안전하다.
+#    그리고 OANDA 계좌의 실제 거래가능 목록과 대조해서, 없는 상품이면
+#    조용히 죽지 않고 이유를 남긴다.
+# ============================================================
+
+#: OANDA 상품 이름의 끝에 올 수 있는 통화 코드
+_QUOTE_CCY = {
+    "USD", "EUR", "JPY", "GBP", "CHF", "CAD", "AUD", "NZD",
+    "HKD", "SGD", "SEK", "NOK", "DKK", "MXN", "ZAR", "TRY",
+    "PLN", "CZK", "HUF", "CNH", "THB", "INR", "SAR",
+}
+
+_OANDA_INSTR_CACHE = {"t": 0.0, "set": set()}
+OANDA_INSTR_TTL = float(os.getenv("OANDA_INSTR_TTL", "86400"))
+
+
+def get_oanda_instruments() -> set:
+    """이 계좌에서 실제로 거래 가능한 OANDA 상품 이름 집합. 24시간 캐시.
+    조회 실패 시 빈 집합 (그러면 검증을 건너뛰고 변환 결과를 그대로 쓴다)."""
+    now = _t.time()
+    if _OANDA_INSTR_CACHE["set"] and (now - _OANDA_INSTR_CACHE["t"]) < OANDA_INSTR_TTL:
+        return _OANDA_INSTR_CACHE["set"]
+    if not (OANDA_API_KEY and ACCOUNT_ID):
+        return set()
+    try:
+        r = requests.get(f"{OANDA_BASE_URL}/v3/accounts/{ACCOUNT_ID}/instruments",
+                         headers={"Authorization": f"Bearer {OANDA_API_KEY}"}, timeout=15)
+        if r.ok:
+            names = {i.get("name", "") for i in (r.json() or {}).get("instruments", [])}
+            names.discard("")
+            if names:
+                _OANDA_INSTR_CACHE.update(t=now, set=names)
+                print(f"📋 [OANDA] 거래가능 상품 {len(names)}개 로드")
+                return names
+        print(f"⚠️ [OANDA] 상품목록 조회 status={r.status_code}")
+    except Exception as e:
+        print(f"⚠️ [OANDA] 상품목록 조회 실패: {e}")
+    return _OANDA_INSTR_CACHE["set"]
+
+
+def normalize_symbol(raw: str) -> tuple[str, str]:
+    """
+    알림 심볼을 브로커 형식으로. return (정규화된 심볼, 설명)
+
+    'PLTR'      → ('PLTR',      '주식')            그대로 Alpaca
+    'USD_JPY'   → ('USD_JPY',   '이미 정상')
+    'USDJPY'    → ('USD_JPY',   '밑줄 삽입')       ← A10 이 보내던 형태
+    'XAUUSD'    → ('XAU_USD',   '밑줄 삽입')
+    'SPX500USD' → ('SPX500_USD','밑줄 삽입')
+    'ZZZZZZ'    → ('ZZZZZZ',    '변환 불가')       호출부에서 차단
+    """
+    s = (raw or "").strip().upper().replace("/", "_").replace("-", "_")
+    if not s:
+        return "", "빈 심볼"
+    if is_stock_pair(s):
+        return s, "주식"
+    if "_" in s:
+        return s, "이미 정상"
+    # 끝 3글자가 통화코드면 나눠준다
+    if len(s) > 3 and s[-3:] in _QUOTE_CCY:
+        cand = f"{s[:-3]}_{s[-3:]}"
+        known = get_oanda_instruments()
+        if not known or cand in known:
+            return cand, "밑줄 삽입"
+        # 변환은 됐는데 계좌에서 거래 불가 — 비슷한 이름을 찾아 알려준다
+        near = [k for k in known if k.replace("_", "") == s][:3]
+        if near:
+            return near[0], f"밑줄 삽입(계좌 목록에서 매칭: {near[0]})"
+        return cand, f"⚠ {cand} 이(가) 계좌 거래가능 목록에 없음"
+    known = get_oanda_instruments()
+    near = [k for k in known if k.replace("_", "") == s][:1]
+    if near:
+        return near[0], "계좌 목록에서 매칭"
+    return s, "변환 불가"
+
+
 def price_round_digits(pair: str) -> int:
     """주문 가격(TP/SL) 반올림 자릿수. 주식은 센트 단위(2자리)."""
     if is_stock_pair(pair):
@@ -2225,6 +2319,20 @@ def process_webhook_sync(raw: bytes):
     # 🟦 TradingView 알림이 'pair' 대신 'symbol'로 보내는 경우도 허용
     #    (예: PineScript alert(... '{"symbol":"{{ticker}}", ...}' ...))
     pair = data.get("pair") or data.get("symbol")
+    # 🟥 [FIX-S1] A10 이 OANDA 차트에서 보내는 'USDJPY' 형태를 'USD_JPY' 로 바로잡는다.
+    #    이걸 안 하면 캔들 조회가 400 으로 죽고 시트에 한 줄도 안 남는다.
+    if pair:
+        _pair_before = str(pair).strip().upper()
+        pair, _pair_note = normalize_symbol(pair)
+        if pair != _pair_before:
+            print(f"🔤 [심볼] {_pair_before} → {pair} ({_pair_note})")
+        if _pair_note in ("변환 불가",) or _pair_note.startswith("⚠"):
+            print(f"❌ [심볼] {_pair_before}: {_pair_note} — 거래 불가. 알림 심볼을 확인할 것.")
+            _log_blocked_alert(pair, data.get("signal"), data.get("alert_name"),
+                               f"SYMBOL_UNRESOLVED: {_pair_note}")
+            return JSONResponse(content={
+                "status": "blocked", "reason": "symbol_unresolved",
+                "pair": _pair_before, "note": _pair_note}, status_code=200)
     signal = data.get("signal")
     print(f"✅ STEP 2: 데이터 수신 완료 | pair: {pair}")
 
@@ -2347,9 +2455,19 @@ def process_webhook_sync(raw: bytes):
 
     # ✅ 방어 로직 추가 (607줄 기준)
     if current_price is None:
+        # 🟥 [FIX-S1b] 여기서 그냥 400 을 던지면 시트에 아무 흔적이 없어서
+        #    "알림은 울렸는데 아무 일도 안 일어남" 으로만 보인다.
+        #    실제로 USDJPY 등이 여기서 조용히 죽고 있었다. 이유를 남긴다.
+        _venue = "Alpaca" if is_stock_pair(pair) else "OANDA"
+        _reason = (f"NO_CANDLES: {_venue} 에서 {pair} {base_granularity_for(pair)} "
+                   f"캔들을 못 받았다 (심볼 형식/거래가능 여부 확인 필요)")
+        print(f"❌ [캔들] {_reason}")
+        _log_blocked_alert(pair, data.get("signal"), data.get("alert_name"), _reason)
         return JSONResponse(
-            content={"error": "current_price가 None (candles close missing)"},
-            status_code=400
+            content={"status": "blocked", "reason": "no_candles",
+                     "pair": pair, "venue": _venue,
+                     "granularity": base_granularity_for(pair)},
+            status_code=200
         )
     # ✅ ATR 먼저 계산 (Series)
     atr_series = calculate_atr(candles)
@@ -8024,6 +8142,52 @@ async def sync_symbol_performance_endpoint():
     'Alpaca 거래내역' 탭이 먼저 갱신돼 있어야 의미 있는 데이터가 나온다."""
     await asyncio.to_thread(sync_symbol_performance_summary)
     return JSONResponse(content={"status": "done"})
+
+
+@app.post("/check_symbol")
+@app.get("/check_symbol")
+async def check_symbol_endpoint(s: str = ""):
+    """🟥 [FIX-S1] 심볼 하나가 어디로 어떻게 라우팅되는지 즉시 확인.
+
+    알림을 기다리지 않고 브라우저에서 바로 볼 수 있다.
+        /check_symbol?s=USDJPY
+        /check_symbol?s=PLTR
+    """
+    if not s:
+        return {"error": "?s=심볼 을 붙일 것 (예: /check_symbol?s=USDJPY)"}
+
+    raw = s.strip().upper()
+    norm, note = await asyncio.to_thread(normalize_symbol, raw)
+    is_stock = is_stock_pair(norm)
+    venue = "Alpaca (주식)" if is_stock else "OANDA (FX/원자재/지수)"
+    gran = STOCK_BASE_GRANULARITY if is_stock else FX_BASE_GRANULARITY
+
+    # 실제로 캔들이 오는지까지 확인한다 — 이게 최종 판정이다
+    try:
+        df = await asyncio.to_thread(get_candles, norm, gran, 30)
+        bars = 0 if df is None else len(df)
+    except Exception as e:
+        bars = 0
+        note += f" / 캔들조회 예외: {e}"
+
+    tradable = None
+    if not is_stock:
+        known = await asyncio.to_thread(get_oanda_instruments)
+        tradable = (norm in known) if known else None
+
+    ok = bars > 0
+    return {
+        "입력": raw,
+        "정규화": norm,
+        "변환메모": note,
+        "라우팅": venue,
+        "기본_시간축": gran,
+        "캔들_수신": bars,
+        "OANDA_거래가능": tradable,
+        "판정": "✅ 정상 — 알림이 오면 처리됨" if ok else
+                "❌ 이 심볼로는 캔들을 못 받는다 — 알림이 와도 거래·기록이 안 된다",
+        "그룹": portfolio_group_for(norm),
+    }
 
 
 @app.post("/portfolio_exposure")
