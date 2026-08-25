@@ -8981,6 +8981,59 @@ async def sync_symbol_performance_endpoint():
     return JSONResponse(content={"status": "done"})
 
 
+@app.post("/oanda_instruments")
+@app.get("/oanda_instruments")
+async def oanda_instruments_endpoint(q: str = "", refresh: int = 1):
+    """🟥 [FIX-S2] 이 OANDA 계좌가 '실제로' 거래할 수 있는 상품 전체 목록.
+
+    BLOCKED_SYMBOL_UNRESOLVED 가 떴을 때 추측하지 말고 이걸로 확인한다.
+    q=XAG 처럼 검색어를 주면 그 글자가 들어간 상품만 골라 보여준다.
+    """
+    def _go():
+        if refresh:
+            _OANDA_INSTR_CACHE["t"] = 0.0          # 24시간 캐시 무시하고 새로 받는다
+        if not (OANDA_API_KEY and ACCOUNT_ID):
+            return {"오류": "OANDA_API_KEY 또는 ACCOUNT_ID 가 설정되지 않았습니다"}
+        try:
+            r = requests.get(f"{OANDA_BASE_URL}/v3/accounts/{ACCOUNT_ID}/instruments",
+                             headers={"Authorization": f"Bearer {OANDA_API_KEY}"}, timeout=20)
+        except Exception as e:
+            return {"오류": f"조회 실패: {e}"}
+        if not r.ok:
+            return {"오류": f"status={r.status_code}", "본문": r.text[:300]}
+
+        items = (r.json() or {}).get("instruments", []) or []
+        names = {str(i.get("name") or "") for i in items}
+        names.discard("")
+        if names:                                   # 캐시도 같이 갱신해 둔다
+            _OANDA_INSTR_CACHE.update(t=_t.time(), set=names)
+
+        by_type = {}
+        for i in items:
+            by_type.setdefault(str(i.get("type") or "?"), []).append(str(i.get("name") or ""))
+        for k in by_type:
+            by_type[k].sort()
+
+        watch = ["XAU_USD", "XAG_USD", "SPX500_USD", "NAS100_USD", "WTICO_USD",
+                 "USD_JPY", "EUR_USD", "GBP_USD", "AUD_USD"]
+        out = {
+            "계좌": ACCOUNT_ID,
+            "엔드포인트": OANDA_BASE_URL,
+            "실계좌여부": OANDA_LIVE,
+            "총_상품수": len(items),
+            "종류별_개수": {k: len(v) for k, v in sorted(by_type.items())},
+            "주요종목_거래가능": {w: (w in names) for w in watch},
+        }
+        if q:
+            key = q.strip().upper().replace("_", "")
+            out["검색결과"] = sorted(n for n in names if key in n.replace("_", ""))
+        else:
+            out["전체목록"] = {k: v for k, v in sorted(by_type.items())}
+        return out
+
+    return JSONResponse(content=await asyncio.to_thread(_go))
+
+
 @app.post("/check_data_delay")
 @app.get("/check_data_delay")
 async def check_data_delay_endpoint(symbol: str = "SPY"):
