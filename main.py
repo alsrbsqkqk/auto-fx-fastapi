@@ -1896,7 +1896,9 @@ STOCK_ENTRY_CUTOFF_HOUR = int(os.getenv("STOCK_ENTRY_CUTOFF_HOUR", "15"))
 
 # 🟦 포트폴리오에서 제거된 종목 — Pine 백테스트 자체가 낮거나 실거래 일관 손실
 # 환경변수로 관리하거나 아래 리스트를 직접 수정
-_EXCLUDED_SYMBOLS_ENV = os.getenv("EXCLUDED_SYMBOLS", "ALAB,CEG,VRT")
+# 🟥 [FIX-EX1] CEG 를 기본 차단 목록에서 뺀다(사용자 요청 — 거래 허용).
+#    다시 막고 싶으면 Render 환경변수 EXCLUDED_SYMBOLS 로 언제든 되돌릴 수 있다.
+_EXCLUDED_SYMBOLS_ENV = os.getenv("EXCLUDED_SYMBOLS", "ALAB,VRT")
 EXCLUDED_SYMBOLS = set(s.strip().upper() for s in _EXCLUDED_SYMBOLS_ENV.split(",") if s.strip())
 # 결과추적/거래내역/성과분석 탭들을 몇 분마다 갱신할지 (기본 30분)
 OUTCOME_TRACKER_INTERVAL_MINUTES = int(os.getenv("OUTCOME_TRACKER_INTERVAL_MINUTES", "30"))
@@ -1944,6 +1946,10 @@ STOCK_EOD_FLATTEN_HHMM = int(os.getenv("STOCK_EOD_FLATTEN_HHMM", "1550"))
 #  기본값: SL 1.5×ATR, RR 1.6 → TP 2.4×ATR. 손익분기 필요 승률 38.5%.
 #  ⚠️ TradingView Pine 전략의 tpATR/slATR 입력값도 같이 맞춰야 정렬이 유지된다.
 # ============================================================
+# 🟥 [FIX-FX3] FX 가상 TP/SL 계산용 (알림에 tp/sl 이 없을 때만 사용)
+FX_SL_ATR_MULT = float(os.getenv("FX_SL_ATR_MULT", "1.5"))
+FX_RR_RATIO = float(os.getenv("FX_RR_RATIO", "1.6"))
+
 STOCK_SL_ATR_MULT = float(os.getenv("STOCK_SL_ATR_MULT", "1.5"))
 # 목표 손익비(Reward:Risk). TP 거리 = SL 거리 × 이 값.
 STOCK_RR_RATIO = float(os.getenv("STOCK_RR_RATIO", "1.6"))
@@ -2752,15 +2758,17 @@ def process_webhook_sync(raw: bytes):
     alert_data = payload.get("alert_data", {})
     # 🟥 [FIX-I1] 접두사 매칭으로 해석 — Pine 전략 이름이 A5→A10→A11로 바뀌어도 그대로 동작한다.
     threshold, _thr_how = resolve_strategy_threshold(strategy_name, strategy_thresholds, is_stock_pair(pair))
-    if _thr_how == "미등록 → 기본값":
+    if _thr_how.startswith("미등록"):
         print(f"⚠️ [threshold] 등록되지 않은 전략명 '{strategy_name}' → 기본값 {threshold} 적용")
         reasons.append(f"⚠️ 미등록 전략명 '{strategy_name}' → 기본 threshold {threshold} 사용")
     else:
         print(f"[threshold] '{strategy_name}' → {threshold} ({_thr_how})")
 
     # 🟦 주식인데 strategy_name이 아예 안 와서 "기본알림"(FX 기준 3.0)으로 떨어진 경우 보정
-    if is_stock_pair(pair) and strategy_name in ("기본알림", ""):
-        threshold = strategy_thresholds.get("BUY_STOCK_PORTFOLIO_A2", -2.5)
+    # 🟥 [FIX-TH1] 전략명이 안 온 알림. 주식만 보정하면 FX 는 '기본알림'(3.0)에 걸려
+    #    문턱을 내린 의미가 없어진다. 양쪽 다 상품 기준 기본값으로 떨어뜨린다.
+    if strategy_name in ("기본알림", ""):
+        threshold = STOCK_SCORE_THRESHOLD if is_stock_pair(pair) else FX_SCORE_THRESHOLD
 
     print(f"[DEBUG] strategy_name={strategy_name}, threshold={threshold}, score={signal_score}")
     gpt_feedback = "GPT 분석 생략: 점수 미달"
@@ -3035,6 +3043,65 @@ def process_webhook_sync(raw: bytes):
     #       이게 없으면 WAIT 행은 시트에 TP/SL이 항상 빈칸으로 남아서, 나중에 결과추적이
     #       "WAIT 했는데 실제로 TP/SL 중 뭐가 먼저 닿았을지"를 평가할 수가 없었다.
     _calc_direction = final_decision if final_decision in ("BUY", "SELL") else (signal if signal in ("BUY", "SELL") else None)
+
+    # ============================================================
+    # 🟥 [FIX-FX3] FX 도 TP/SL 을 시트에 남긴다.
+    # ------------------------------------------------------------
+    #  기존엔 아래 블록이 is_stock_pair(pair) 로 막혀 있어서, FX 는 GPT 가
+    #  호출되지 않은 행(WAIT / SKIPPED_BY_THRESHOLD)에 TP/SL 이 영영 빈칸이었다.
+    #  결과추적(evaluate_pending_outcomes)은 TP/SL 이 없으면 판정 자체를 못 하므로
+    #  그 행들은 'summary = 미정' 에서 영원히 멈춘다. 주식은 채워지고 FX 만 안 채워진
+    #  이유가 바로 이것이다.
+    #
+    #  FX 는 Pine 알림(A12)이 이미 tp/sl 을 실어 보내므로 그 값을 먼저 쓰고,
+    #  없으면(구형 BUY_ENTRY_BAR_CLOSE 등) ATR 로 계산한다.
+    # ============================================================
+    if (not is_stock_pair(pair)) and _calc_direction and price is not None:
+        def _fnum(v):
+            # ⚠️ 아래쪽 _as_num() 은 이 지점보다 '뒤에' 정의돼 있어서 여기선 못 쓴다.
+            try:
+                f = float(str(v).strip())
+                return f if f == f and abs(f) != float("inf") else None
+            except (TypeError, ValueError):
+                return None
+        _fx_tp = _fnum(alert_data.get("tp")) if isinstance(alert_data, dict) else None
+        _fx_sl = _fnum(alert_data.get("sl")) if isinstance(alert_data, dict) else None
+        _fx_src = "알림값"
+        if _fx_tp is None or _fx_sl is None:
+            try:
+                _fx_atr = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr or 0)
+            except Exception:
+                _fx_atr = 0.0
+            if _fx_atr > 0:
+                _d = price_round_digits(pair)
+                _sd = _fx_atr * FX_SL_ATR_MULT
+                _td = _sd * FX_RR_RATIO
+                if _calc_direction == "BUY":
+                    _fx_tp, _fx_sl = round(price + _td, _d), round(price - _sd, _d)
+                else:
+                    _fx_tp, _fx_sl = round(price - _td, _d), round(price + _sd, _d)
+                _fx_src = f"ATR×{FX_SL_ATR_MULT}/RR{FX_RR_RATIO}"
+        # ⚠️ 절대 실주문 값을 건드리지 않는다.
+        #    final_tp/final_sl 은 place_order() 가 OANDA 로 보내는 값이고,
+        #    final_sl 은 calc_fx_units() 가 수량을 정할 때 나누는 값이다.
+        #    여기서 덮어쓰면 adjust_tp_sl_for_structure() 의 최소 RR·최소 pip·S/R 보정이
+        #    통째로 무효가 되고, 알림이 tp=0 을 보내면 주문이 거부된다.
+        #    이 블록의 목적은 '실행 안 된 행도 나중에 채점할 수 있게 시트에 남기는 것' 뿐이다.
+        _fx_ok = (_fx_tp is not None and _fx_sl is not None
+                  and _fx_tp > 0 and _fx_sl > 0
+                  and (_fx_tp > price > _fx_sl if _calc_direction == "BUY"
+                       else _fx_sl > price > _fx_tp))
+        if _fx_ok and final_decision not in ("BUY", "SELL"):
+            gpt_feedback += (f"\n🟦 [FX 평가용] {_calc_direction} 로 들어갔다면 "
+                             f"TP={_fx_tp}, SL={_fx_sl} ({_fx_src}) — 실제 주문은 안 나감")
+            try:
+                correct_sheet_trade_prices(sheet_row_idx, price, _fx_tp, _fx_sl)
+            except Exception as e:
+                print(f"⚠️ [FX TP/SL 기록] 실패(무시): {e}")
+        elif not _fx_ok and final_decision not in ("BUY", "SELL"):
+            print(f"⚠️ [FX 평가용] {pair} TP/SL 값이 이상해서 기록 생략 "
+                  f"(tp={_fx_tp}, sl={_fx_sl}, price={price}, dir={_calc_direction})")
+
     if is_stock_pair(pair) and _calc_direction and price is not None and atr is not None:
         _stock_atr = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr)
         if _stock_atr and _stock_atr > 0:
@@ -4169,10 +4236,37 @@ def _finalize_sheet_row(row_idx, effective_decision=None, gpt_decision=None, not
 #  해결: 이름을 정규화하고 접두사로 매칭한다. BUY_STOCK_PORTFOLIO_* 는 버전과 무관하게
 #        같은 threshold를 쓰므로, Pine에서 실제 이름을 그대로 보내도 안전하다.
 # ============================================================
+# ============================================================
+# 🟥 [FIX-TH1] 점수 문턱을 '측정 결과'에 맞춰 사실상 해제한다.
+# ------------------------------------------------------------
+#  ■ 왜 바꾸나 (2026-08-25, 실거래 53건 실측)
+#      점수 ↔ 손익 상관  r = -0.296  (t = -2.21, n = 53, p ≈ 0.03)
+#      → 점수가 '낮을수록' 성적이 좋다. 부호가 반대다.
+#
+#        점수 < -2 : 19건, 승률 57.9%, 총 +$225.55
+#        점수 ≥ -2 : 34건, 승률 38.2%, 총 -$218.54
+#
+#      즉 문턱은 '나쁜 신호를 걸러내는 장치'가 아니라
+#      **제일 좋은 신호를 골라서 버리는 장치**로 작동해 왔다.
+#      실제로 '-3 미만' 구간에서 차단된 4건은 4건 모두 TP를 쳤다(4/4).
+#
+#  ■ 그래서 어떻게 하나
+#      점수를 뒤집어서 쓰지는 않는다 — n=53 짜리 노이즈에 맞추는 짓이다.
+#      대신 **문을 열어두고 점수는 계속 기록만** 한다. 표본이 쌓이면 그때 판단한다.
+#      기본값 -99 = 사실상 전부 통과. 환경변수로 언제든 다시 조일 수 있다.
+#
+#  ■ 덤으로 고쳐지는 것
+#      FX를 A12 스크립트로 옮기면서 전략명이 BUY_STOCK_PORTFOLIO_* 로 바뀌었고,
+#      그 바람에 FX 문턱이 -7.0 → -2.5 로 아무도 모르게 올라가 있었다.
+#      (GBP_USD -4.8, AUD_USD -4.1 이 그래서 차단됐다)
+# ============================================================
+STOCK_SCORE_THRESHOLD = float(os.getenv("STOCK_SCORE_THRESHOLD", "-99"))
+FX_SCORE_THRESHOLD = float(os.getenv("FX_SCORE_THRESHOLD", "-99"))
+
 STRATEGY_PREFIX_THRESHOLDS = [
-    ("BUY_STOCK_PORTFOLIO", -2.5),   # A2 / A5 / A10 / A11 … 모든 버전
-    ("BUY_ENTRY_BAR_CLOSE", -7.0),
-    ("SELL_ENTRY_BAR_CLOSE", -7.0),
+    ("BUY_STOCK_PORTFOLIO", None),   # None = 상품 종류에 따라 위 환경변수로 결정
+    ("BUY_ENTRY_BAR_CLOSE", None),
+    ("SELL_ENTRY_BAR_CLOSE", None),
     ("BALANCE_BREAKOUT", 4.5),
 ]
 
@@ -4191,21 +4285,25 @@ def resolve_strategy_threshold(strategy_name: str, table: dict, is_stock: bool):
     """
     (threshold, 매칭방식) 반환. 등록된 이름이 없어도 접두사로 안전하게 떨어진다.
     """
+    # 🟥 [FIX-TH1] 상품 종류로 결정되는 기본 문턱. 전략명 표보다 이게 우선한다.
+    auto = STOCK_SCORE_THRESHOLD if is_stock else FX_SCORE_THRESHOLD
+
     raw = str(strategy_name or "").strip()
+    norm = _normalize_strategy_name(raw)
+
+    for prefix, thr in STRATEGY_PREFIX_THRESHOLDS:
+        if norm.startswith(prefix):
+            if thr is None:
+                return auto, f"접두사({prefix}*) → {'주식' if is_stock else 'FX'} 기본 {auto}"
+            return thr, f"접두사 매칭({prefix}*)"
+
     if raw in table:
         return table[raw], "정확히 일치"
-
-    norm = _normalize_strategy_name(raw)
     norm_table = {_normalize_strategy_name(k): v for k, v in table.items()}
     if norm in norm_table:
         return norm_table[norm], "정규화 후 일치"
 
-    for prefix, thr in STRATEGY_PREFIX_THRESHOLDS:
-        if norm.startswith(prefix):
-            return thr, f"접두사 매칭({prefix}*)"
-
-    fallback = table["BUY_STOCK_PORTFOLIO_A2"] if is_stock else table["기본알림"]
-    return fallback, "미등록 → 기본값"
+    return auto, f"미등록 → {'주식' if is_stock else 'FX'} 기본 {auto}"
 
 
 def _log_blocked_alert(pair, signal, alert_name, reason):
@@ -4502,6 +4600,18 @@ SYMBOL_GROUP = {
     "CORN": "농산물", "WHEAT": "농산물", "SOYBN": "농산물",
     "SUGAR": "농산물", "XCU": "산업금속",
 }
+
+# 🟥 [FIX-DV2] 분산 후보를 Alpaca ETF 로 바꿨으므로 분야 매핑도 같이 옮긴다.
+#    안 하면 추천후보 탭의 '지금 어디에 쏠려 있나' 표가 전부 '기타' 로 나온다.
+SYMBOL_GROUP.update({
+    "GLD": "귀금속", "IAU": "귀금속", "SLV": "귀금속", "GDX": "귀금속",
+    "XLE": "원유·에너지", "USO": "원유·에너지", "BNO": "원유·에너지", "UNG": "원유·에너지",
+    "TLT": "채권", "IEF": "채권", "SHY": "채권", "AGG": "채권", "BND": "채권",
+    "SPY": "미국지수", "IVV": "미국지수", "VOO": "미국지수",
+    "IWM": "미국지수", "RSP": "미국지수", "QQQ": "미국지수", "DIA": "미국지수",
+    "EWJ": "해외지수", "VGK": "해외지수", "EEM": "해외지수", "EFA": "해외지수", "VXUS": "해외지수",
+    "CPER": "산업금속", "XME": "산업금속", "DBB": "산업금속",
+})
 
 #: FX 통화 코드. 둘 다 여기 있으면 '통화쌍'으로 보고 USD 노출로 환산한다.
 _FX_CURRENCIES = {
@@ -7637,7 +7747,18 @@ GAP_MIN_PCT = float(os.getenv("GAP_MIN_PCT", "5.0"))          # 최소 갭 %
 GAP_TOP_N = int(os.getenv("GAP_TOP_N", "3"))                  # 최종 추천 개수
 GAP_UNIVERSE_TOP = int(os.getenv("GAP_UNIVERSE_TOP", "50"))   # 상승률 상위 몇 개를 볼지
 GAP_MIN_PRICE = float(os.getenv("GAP_MIN_PRICE", "5.0"))      # 최소 주가
-GAP_MIN_AVG_VOL = float(os.getenv("GAP_MIN_AVG_VOL", "500000"))  # 20일 평균 거래량 하한
+# 🟥 [G11] 무료(IEX) 피드는 IEX 한 거래소 체결분만 세므로 실제 거래량의 5~10% 로 나온다.
+#    50만은 '전체 거래량' 기준 숫자였다 — 그대로 쓰면 멀쩡한 종목이 전부 잘린다.
+#    (실측: SNAP 이 2.7M 으로 찍힘. 실제는 2천만 주 이상)
+GAP_MIN_AVG_VOL = float(os.getenv("GAP_MIN_AVG_VOL", "50000"))   # IEX 기준 ≈ 전체 50만
+
+# 🟥 [G12] '5개 전부 통과' 만 추천하면 추천이 0개인 날이 대부분이다.
+#    조건 5개는 서로 독립이 아니다 — ②200일선과 ⑤추세정렬은 사실상 같은 것이고,
+#    ③장전고가와 ④당일고가도 같은 것(고점에서 안 밀렸나)을 두 번 본다.
+#    즉 실질적으로는 2~3개짜리 조건을 5개인 것처럼 세고 있었다.
+#    → 전부 통과(1군)와 1개 미달(2군)을 나눠서 둘 다 보여주고,
+#      관찰 기간 동안 '1군이 정말 2군보다 나은가' 를 데이터로 확인한다.
+GAP_TIER2_ENABLED = os.getenv("GAP_TIER2_ENABLED", "true").strip().lower() != "false"
 GAP_HIGH_TOL_PCT = float(os.getenv("GAP_HIGH_TOL_PCT", "0.5"))   # '고가 유지' 허용 오차 %
 # 🟥 [G1/G2] 실행 시각을 개장 후로 옮겼다.
 #   ① Alpaca movers 는 '개장 시점에 리셋' 된다 — 09:20 에 부르면 **어제 상승률 상위**가
@@ -7980,7 +8101,13 @@ def scan_morning_gappers(top_n: int = None) -> dict:
     # 🟥 [G7] cands 는 passed 순 정렬이라, 유동성까지 통과한 종목이 10위 밖에
     #   있을 수 있다. 그러면 추천에 올라가고도 '오른 이유' 가 빈칸이 된다.
     #   추천 목록은 무조건 포함시킨다.
-    _need_reason = {c["symbol"]: c for c in (picks + cands[:10])}
+    # 🟥 [G12] 2군(조건 1개 미달 + 유동성 통과)도 시트에 실리므로 뉴스가 필요하다.
+    #    cands 정렬 키에 liq 가 없어서, 유동성 미달 종목이 앞을 다 차지하면
+    #    2군이 cands[:10] 밖으로 밀려 '오른 이유' 가 빈칸이 된다 (G7 과 같은 함정).
+    _tier2_pre = [c for c in cands
+                  if c.get("liq") and not c.get("all_ok")
+                  and c.get("passed", 0) >= c.get("applicable", 5) - 1][:GAP_TOP_N]
+    _need_reason = {c["symbol"]: c for c in (picks + _tier2_pre + cands[:10])}
     for c in _need_reason.values():
         c["reason"] = _gap_reason(c["symbol"])
 
@@ -8022,14 +8149,30 @@ def _write_gap_sheet(cands: list, now_ny, phase: str, skipped: dict, n_pick: int
 
     # 🟥 [G6] 예전엔 여기서 GAP_TOP_N 으로 다시 잘라, ?top=5 로 불러도 시트는 3개만 썼다
     picks = [c for c in cands if c.get("all_ok")][:(top_n or GAP_TOP_N)]
-    out.append([f"■ 추천 {len(picks)}개 (5개 조건 전부 통과)"])
+    out.append([f"■ 1군 추천 {len(picks)}개 (5개 조건 전부 통과)"])
     if picks:
         out.append(HEADERS)
         for c in picks:
             out.append(_gap_row(c))
     else:
-        out.append(["조건을 전부 만족한 종목이 없습니다. 오늘은 건너뛰는 게 맞습니다."])
+        out.append(["전부 통과한 종목이 없습니다. 아래 2군을 보세요."])
     out.append([])
+
+    # 🟥 [G12] 2군 — 유동성은 통과했고 조건만 딱 1개 모자란 것들
+    if GAP_TIER2_ENABLED:
+        _picked = {c["symbol"] for c in picks}
+        tier2 = [c for c in cands
+                 if c.get("liq") and not c.get("all_ok")
+                 and c.get("passed", 0) >= c.get("applicable", 5) - 1
+                 and c["symbol"] not in _picked][:(top_n or GAP_TOP_N)]
+        out.append([f"■ 2군 관찰 {len(tier2)}개 (유동성 통과 · 조건 1개 미달)"])
+        if tier2:
+            out.append(HEADERS)
+            for c in tier2:
+                out.append(_gap_row(c))
+        else:
+            out.append(["해당 없음"])
+        out.append([])
 
     out.append(["■ 전체 후보 (통과 개수 순)"])
     out.append(HEADERS)
@@ -8041,6 +8184,10 @@ def _write_gap_sheet(cands: list, now_ny, phase: str, skipped: dict, n_pick: int
                 f"(허용오차 {GAP_HIGH_TOL_PCT:g}%). 개장 전에는 ④가 '—' 입니다."])
     out.append(["※ ⑤추세정렬 = 현재가 > 50일선 > 200일선"])
     out.append(["※ 갭 종목은 뉴스로 움직입니다. '오른 이유' 가 비어 있으면 특히 조심하세요."])
+    out.append(["※ 조건 5개는 서로 독립이 아닙니다. ②200일선↔⑤추세정렬, ③장전고가↔④당일고가 가 "
+                "각각 거의 같은 것을 봅니다 — 실질 조건 수는 2~3개입니다."])
+    out.append(["※ 관찰 기간에는 1군·2군을 모두 기록하세요. 둘의 성적 차이가 실제로 있는지는 "
+                "표본이 쌓여야 알 수 있습니다. 지금 '몇 개 통과면 된다' 는 답은 아무도 모릅니다."])
 
     width = max(len(r) for r in out)
     out = [r + [""] * (width - len(r)) for r in out]
@@ -8141,40 +8288,45 @@ def _oanda_price_quick(instrument: str):
 #   ★ OANDA 상품(금·원유·채권·지수·통화)이 여기 같이 들어간다.
 #     AI 주식 8개를 아무리 늘려도 분산이 안 되지만, 원유 하나는 진짜 분산이 된다.
 # ------------------------------------------------------------
+# 🟥 [FIX-DV2] OANDA 계좌가 통화쌍만 거래 가능하다는 게 확인됐다(실측: 68개 전부 CURRENCY).
+#    금·은·원유·천연가스·채권·지수 CFD 는 전부 주문이 불가능하므로, 추천해봐야 BLOCKED 만 쌓인다.
+#    → 같은 노출을 Alpaca 에서 살 수 있는 ETF 로 전부 갈아끼운다. 통화쌍만 OANDA 로 남긴다.
+#    ⚠️ ETF 는 미국 장중에만 거래된다. 24시간 상품이 아니므로 주식 경로(시간필터·장마감청산)를 탄다.
 DIVERSIFIER_UNIVERSE = {
     "귀금속": [
-        ("XAU_USD", "OANDA", "금. 주식과 상관이 낮고 위기 때 반대로 움직인다. 추세추종이 가장 잘 통하는 상품 중 하나"),
-        ("XAG_USD", "OANDA", "은. 금과 같은 방향이지만 변동성이 더 크다 (금을 이미 들었다면 중복)"),
+        ("GLD", "Alpaca", "금 ETF. 주식과 상관이 낮고 위기 때 반대로 움직인다. 금 노출의 표준"),
+        ("IAU", "Alpaca", "금 ETF(보수 더 저렴). GLD 와 사실상 같은 것 — 둘 중 하나만"),
+        ("SLV", "Alpaca", "은 ETF. 금과 같은 방향이지만 변동성이 더 크다"),
     ],
-    "원유": [
-        ("WTICO_USD", "OANDA", "WTI 원유. AI·테크와 상관 거의 없음. 지정학 이벤트에 독립적으로 움직인다"),
-        ("BCO_USD", "OANDA", "브렌트유. WTI와 거의 같이 움직이므로 둘 중 하나만"),
-    ],
-    "천연가스": [
-        ("NATGAS_USD", "OANDA", "천연가스. 계절성이 강하고 다른 무엇과도 상관이 낮다. 대신 변동성이 매우 크다"),
+    "원유·에너지": [
+        ("XLE", "Alpaca", "에너지 섹터 ETF. 유가와 연동되면서 USO 같은 롤오버 손실이 없다 — 원유 노출은 이걸 우선"),
+        ("USO", "Alpaca", "WTI 원유 선물 ETF. 유가를 직접 따라가지만 콘탱고일 때 장기보유 손실이 난다"),
+        ("BNO", "Alpaca", "브렌트유 ETF. USO 와 거의 같이 움직이므로 둘 중 하나만"),
     ],
     "채권": [
-        ("USB10Y_USD", "OANDA", "미국 10년 국채. 주식이 무너질 때 반대로 가는 대표 자산"),
-        ("USB02Y_USD", "OANDA", "미국 2년 국채. 금리 정책에 민감, 10년물보다 변동성 작음"),
+        ("TLT", "Alpaca", "미국 20년+ 국채 ETF. 주식이 무너질 때 반대로 가는 대표 자산, 유동성 최상위"),
+        ("IEF", "Alpaca", "미국 7~10년 국채 ETF. TLT 보다 변동성이 작다"),
+        ("SHY", "Alpaca", "미국 1~3년 국채 ETF. 사실상 현금 대용, 금리 정책에 민감"),
     ],
     "USD통화": [
         ("USD_JPY", "OANDA", "달러/엔. 유동성 최상위, 스프레드 최저. 단 개입 리스크 주의"),
         ("EUR_USD", "OANDA", "유로/달러. 세계 최대 거래량, 비용이 가장 싸다"),
-        ("AUD_USD", "OANDA", "호주달러. 원자재·중국 경기와 연동돼 EUR와는 다르게 움직인다"),
+        ("AUD_USD", "OANDA", "호주달러. 원자재·중국 경기와 연동돼 EUR 와는 다르게 움직인다"),
         ("USD_CAD", "OANDA", "캐나다달러. 유가와 연동. 원유 대신 쓸 수도 있다"),
     ],
     "미국지수": [
-        ("SPX500_USD", "OANDA", "S&P500. 나스닥보다 넓어 AI 편중이 덜하다"),
-        ("US2000_USD", "OANDA", "러셀2000 소형주. 대형 테크와 다르게 움직이는 구간이 있다"),
+        ("SPY", "Alpaca", "S&P500 ETF. 나스닥보다 넓어 AI 편중이 덜하다. 세계에서 가장 유동성 높은 종목"),
+        ("IWM", "Alpaca", "러셀2000 소형주 ETF. 대형 테크와 다르게 움직이는 구간이 있다"),
+        ("RSP", "Alpaca", "S&P500 동일가중 ETF. 시총가중 SPY 와 달리 대형 테크 쏠림이 없다"),
     ],
-    "아시아지수": [
-        ("JP225_USD", "OANDA", "닛케이225. 엔화 방향과 미국장 양쪽에 반응, 시간대가 달라 분산 효과"),
-    ],
-    "유럽지수": [
-        ("DE30_EUR", "OANDA", "독일 DAX. 산업재 비중이 높아 미국 테크지수와 구성이 다르다"),
+    "해외지수": [
+        ("EWJ", "Alpaca", "일본 주식 ETF. 엔화 방향과 미국장 양쪽에 반응, 구성이 완전히 다르다"),
+        ("VGK", "Alpaca", "유럽 주식 ETF. 산업재·금융 비중이 높아 미국 테크지수와 구성이 다르다"),
+        ("EEM", "Alpaca", "신흥국 ETF. 달러 방향과 반대로 움직이는 경향"),
     ],
     "산업금속": [
-        ("XCU_USD", "OANDA", "구리. 제조업 경기 지표. 금과도 테크와도 다르게 움직인다"),
+        ("CPER", "Alpaca", "구리 ETF. 제조업 경기 지표, 금과도 테크와도 다르게 움직인다. 거래량은 얇은 편"),
+        ("XME", "Alpaca", "금속·광업 ETF. CPER 보다 유동성이 낫지만 주식이라 증시와 상관이 좀 더 높다"),
     ],
     "금융": [
         ("JPM", "Alpaca", "JP모건. 금리 상승 국면에서 테크와 반대로 움직이는 대표 종목"),
