@@ -1951,6 +1951,11 @@ STOCK_EOD_FLATTEN_HHMM = int(os.getenv("STOCK_EOD_FLATTEN_HHMM", "1550"))
 FX_SL_ATR_MULT = float(os.getenv("FX_SL_ATR_MULT", "1.5"))
 FX_RR_RATIO = float(os.getenv("FX_RR_RATIO", "1.6"))
 
+# 🟥 [FIX-TO1] 캔들 조회 타임아웃 (연결, 읽기) 초.
+#   TradingView 알림은 몰릴 수 있으므로 넉넉하되 무한대는 절대 안 된다.
+CANDLE_CONNECT_TIMEOUT = float(os.getenv("CANDLE_CONNECT_TIMEOUT", "5"))
+CANDLE_READ_TIMEOUT = float(os.getenv("CANDLE_READ_TIMEOUT", "20"))
+
 STOCK_SL_ATR_MULT = float(os.getenv("STOCK_SL_ATR_MULT", "1.5"))
 # 목표 손익비(Reward:Risk). TP 거리 = SL 거리 × 이 값.
 STOCK_RR_RATIO = float(os.getenv("STOCK_RR_RATIO", "1.6"))
@@ -2502,9 +2507,20 @@ def process_webhook_sync(raw: bytes):
     candle_count = len(candles) if candles is not None else 0
     print(f"📊 [{pair}] 캔들 수신: {candle_count}개")
     if candles is None or candles.empty or candle_count < 14:
+        # 🟥 [FIX-TO1] 예전엔 여기서 400 만 뱉고 끝나서 시트에 한 줄도 안 남았다.
+        #   형님 눈에는 "알람은 울렸는데 아무 일도 없음" 으로 보이고,
+        #   로그를 뒤지지 않으면 원인을 알 방법이 없었다. 이제 시트에 남긴다.
+        _why = f"NO_CANDLES: {pair} {base_granularity_for(pair)} {candle_count}개 (ATR14에 최소 14개 필요)"
+        print(f"❌ [캔들부족] {_why}")
+        try:
+            _log_blocked_alert(pair, data.get("signal"), strategy_name, _why)
+        except Exception as _e:
+            print(f"⚠️ [캔들부족] 시트 기록 실패: {_e}")
         return JSONResponse(
-            content={"error": f"캔들 데이터 부족: {pair} {candle_count}개 (ATR(14) 계산에 최소 14개 필요)"},
-            status_code=400
+            content={"status": "blocked", "reason": "no_candles",
+                     "pair": pair, "bars": candle_count,
+                     "note": "브로커에서 캔들을 못 받았습니다. 잠시 뒤 자동 재시도되지 않으니 로그를 확인하세요."},
+            status_code=200
         )
     print("✅ STEP 4: 캔들 데이터 수신")
     # 동적 지지/저항선 계산 (파동 기반)
@@ -3678,11 +3694,22 @@ def get_candles(pair, granularity, count):
     url = f"{OANDA_BASE_URL}/v3/instruments/{pair}/candles"   # 🟥 [FIX-E2] 하드코딩 제거
     headers = {"Authorization": f"Bearer {OANDA_API_KEY}"}
     params = {"granularity": granularity, "count": count, "price": "M"}
-    
+
+    # 🟥 [FIX-TO1] timeout 이 없으면 requests 는 **영원히** 기다린다.
+    #   실제로 겪은 일: AUD_USD 알림이 STEP 3 까지 찍히고 그대로 멈췄다.
+    #   시트 기록도, 거래도, 심지어 '처리 완료' 로그(= finally 블록)도 안 나왔다.
+    #   OANDA 가 응답을 안 주면 이 스레드가 통째로 멈춰 서기 때문이다.
+    #   더 나쁜 건 그 스레드가 영영 안 죽는다는 것 — 알림이 올 때마다 하나씩
+    #   쌓여서 결국 스레드 풀이 마르고 **모든 웹훅이 멈춘다.**
     try:
-        r = requests.get(url, headers=headers, params=params)
+        r = requests.get(url, headers=headers, params=params,
+                         timeout=(CANDLE_CONNECT_TIMEOUT, CANDLE_READ_TIMEOUT))
         r.raise_for_status()
         candles = r.json().get("candles", [])
+    except requests.exceptions.Timeout:
+        print(f"❗ 캔들 요청 시간초과 ({CANDLE_READ_TIMEOUT}초): {pair} {granularity} "
+              f"— OANDA 응답 없음. 이번 알림은 건너뜁니다.")
+        return pd.DataFrame(columns=["time", "open", "high", "low", "close", "volume"])
     except Exception as e:
         print(f"❗ 캔들 요청 실패: {e}")
         return pd.DataFrame(columns=["time", "open", "high", "low", "close", "volume"])
@@ -7933,7 +7960,14 @@ GAP_HIGH_TOL_PCT = float(os.getenv("GAP_HIGH_TOL_PCT", "0.5"))   # '고가 유�
 #     09:45 / 10:15 에 다시 돌려 밀린 종목을 걸러낸다.
 #   ⚠️ 09:30 '이전' 스캔은 무료(IEX) 로는 신뢰할 수 없다. IEX 는 프리마켓 체결이
 #      거의 없어 갭을 제대로 못 잰다. 진짜 개장 전 스캔은 SIP(유료) 가 있어야 한다.
-GAP_SCAN_TIMES = os.getenv("GAP_SCAN_TIMES", "0932,0945,1015")   # ET 기준 실행 시각들
+# 🟥 [G13] 개장 전 스캔을 기본에 넣는다.
+#   09:32 에 목록을 받으면 알람을 거는 데 2~3분이 더 걸리고, 그때는 이미
+#   갭 무브의 앞부분이 지나간 뒤다. 장전 고가는 개장 전에 이미 확정되므로
+#   09:25 에 목록을 뽑아 **개장 전에 알람을 미리 걸어둘 수 있다.**
+#     0915 = 미리보기(장전 고가가 아직 움직임)
+#     0925 = ★ 실전 목록. 이걸 보고 알람을 건다
+#     0935/1000 = 개장 후 재확인(④당일고가까지 포함한 전체 판정)
+GAP_SCAN_TIMES = os.getenv("GAP_SCAN_TIMES", "0915,0925,0935,1000")   # ET 기준
 
 #: 무료 플랜은 iex. 유료면 ALPACA_FEED=sip 로 바꿀 것 (프리마켓 데이터 품질이 크게 달라진다)
 ALPACA_FEED = os.getenv("ALPACA_FEED", "iex")
@@ -8287,7 +8321,7 @@ def _fmt_ck(v):
 
 def _write_gap_sheet(cands: list, now_ny, phase: str, skipped: dict, n_pick: int,
                      top_n: int = None):
-    HEADERS = ["종목", "현재가", "갭 %", "오른 이유",
+    HEADERS = ["종목", "현재가", "갭 %", "돌파선(장전고가)", "오른 이유",
                "①어제고가", "②200일선", "③장전고가", "④당일고가", "⑤추세정렬",
                "유동성", "통과", "판정", "출처"]
     try:
@@ -8346,6 +8380,12 @@ def _write_gap_sheet(cands: list, now_ny, phase: str, skipped: dict, n_pick: int
     out.append([])
     out.append(["※ ③장전고가/④당일고가 는 '고점에서 밀리지 않았나' 를 봅니다 "
                 f"(허용오차 {GAP_HIGH_TOL_PCT:g}%). 개장 전에는 ④가 '—' 입니다."])
+    if phase == "개장 전":
+        out.append(["★ 개장 전 목록입니다. ④당일고가는 아직 존재하지 않아 4개 조건으로만 판정했습니다."])
+        out.append(["★ '돌파선(장전고가)' 이 GAP AND GO G2 의 진입 트리거 가격입니다. "
+                    "개장 전에 이미 확정된 값이라, 지금 알람을 걸어두면 09:35 에 바로 진입할 수 있습니다."])
+        out.append(["★ 알람: 종목 차트 5분봉 → GAP AND GO G2 → alert() function calls only "
+                    "→ Webhook URL 은 반드시 '/webhook'"])
     out.append(["※ ⑤추세정렬 = 현재가 > 50일선 > 200일선"])
     out.append(["※ 갭 종목은 뉴스로 움직입니다. '오른 이유' 가 비어 있으면 특히 조심하세요."])
     out.append(["※ 조건 5개는 서로 독립이 아닙니다. ②200일선↔⑤추세정렬, ③장전고가↔④당일고가 가 "
@@ -8376,10 +8416,13 @@ def _gap_row(c: dict) -> list:
         verdict = "🟡 1개 미달"
     else:
         verdict = "❌ 조건 미달"
+    _pmh = c.get("pm_high")
     return [
         c["symbol"],
         round(c["price"], 2),
         f"{c['gap']:.1f}%",
+        # 🟥 [G13] G2 전략의 진입 트리거 가격. 개장 전에 이미 확정돼 있다.
+        round(_pmh, 2) if _pmh else "—",
         c.get("reason", ""),
         _fmt_ck(c.get("c1")), _fmt_ck(c.get("c2")), _fmt_ck(c.get("c3")),
         _fmt_ck(c.get("c4")), _fmt_ck(c.get("c5")),
@@ -9379,12 +9422,18 @@ async def oanda_instruments_endpoint(q: str = "", refresh: int = 1):
 
 @app.post("/check_data_delay")
 @app.get("/check_data_delay")
-async def check_data_delay_endpoint(symbol: str = "SPY"):
+async def check_data_delay_endpoint(request: Request, symbol: str = "SPY"):
     """🟥 [G9] 내 계정의 실제 데이터 지연이 몇 분인지 측정한다.
 
     장중(09:30~16:00 ET)에 호출해야 의미가 있다.
     0~2분이면 개장 직후 스캔이 가능하고, 15분 이상이면 그만큼 미뤄야 한다.
     """
+    if await _warn_if_alert_body(request, "/check_data_delay"):
+        return JSONResponse(content={
+            "status": "wrong_url",
+            "오류": "매매 알림이 잘못된 주소로 왔습니다.",
+            "고칠_것": "트레이딩뷰 알람 → Notifications → Webhook URL 을 '/webhook' 으로 바꾸세요.",
+        }, status_code=200)
     _delay_probe["minutes"] = None            # 캐시 무효화 후 재측정
     d = await asyncio.to_thread(measure_data_delay, symbol)
     ny = datetime.now(ZoneInfo("America/New_York"))
@@ -9404,13 +9453,54 @@ async def check_data_delay_endpoint(symbol: str = "SPY"):
 
 @app.post("/scan_morning_gappers")
 @app.get("/scan_morning_gappers")
-async def scan_morning_gappers_endpoint(top: int = 0):
+async def scan_morning_gappers_endpoint(request: Request, top: int = 0):
     """🟥 [FIX-G10] 아침 갭 스캔을 지금 바로 실행.
 
     자동 실행은 GAP_SCAN_TIMES(기본 09:20 / 10:00 ET). 이건 수동 트리거다.
     """
+    if await _warn_if_alert_body(request, "/scan_morning_gappers"):
+        return {"status": "wrong_url",
+                "고칠_것": "트레이딩뷰 알람의 Webhook URL 을 '/webhook' 으로 바꾸세요."}
     res = await asyncio.to_thread(scan_morning_gappers, top or None)
     return res
+
+
+# ============================================================
+# 🟥 [FIX-WJ2] 알람이 '엉뚱한 주소' 로 갔을 때 조용히 넘어가지 않는다.
+# ------------------------------------------------------------
+#  실제로 겪은 일: 트레이딩뷰 알람의 Webhook URL 이 /webhook 이 아니라
+#  /check_data_delay 로 되어 있었다. 그 엔드포인트는 본문을 읽지도 않고
+#  200 OK 를 돌려준다 → 트레이딩뷰는 '전송 성공' 으로 표시하고,
+#  봇은 아무것도 하지 않고, 시트에는 한 줄도 안 남는다.
+#  어디를 봐도 정상인데 거래만 안 되는, 제일 찾기 어려운 종류의 고장이다.
+#
+#  ⚠️ 미들웨어로 모든 POST 본문을 가로채는 방법은 쓰지 않는다.
+#     Starlette 미들웨어에서 body 를 읽으면 아래 핸들러가 본문을 다시 못 읽어
+#     **웹훅 전체가 멈출 수** 있다. 오타로 붙일 만한 주소에만 직접 검사를 단다.
+# ============================================================
+_ALERT_LIKE_KEYS = (b'"signal"', b'"strategy_name"', b'"alert_name"', b'"tf"')
+
+
+async def _warn_if_alert_body(request, path: str):
+    """이 주소로 매매 알림이 잘못 온 거면 로그와 장부에 남기고 True 를 돌려준다."""
+    try:
+        if request is None or request.method != "POST":
+            return False
+        body = await request.body()
+        if not body or not any(k in body for k in _ALERT_LIKE_KEYS):
+            return False
+        print("=" * 70)
+        print(f"🚨 [주소오류] 매매 알림이 '{path}' 로 왔습니다. 여기는 알림 처리 주소가 아닙니다.")
+        print(f"   트레이딩뷰 알람의 Webhook URL 을 '/webhook' 으로 고쳐야 합니다.")
+        print(f"   본문: {body[:200].decode('utf-8', 'ignore')}")
+        print("=" * 70)
+        _journal_outcome(
+            _journal_webhook(body, f"⚠️ 잘못된 주소 {path}"),
+            f"❌ 처리 안 됨 — Webhook URL 이 '{path}' 입니다. '/webhook' 으로 고치세요.")
+        return True
+    except Exception as e:
+        print(f"⚠️ [주소오류 감지] 건너뜀: {e}")
+        return False
 
 
 @app.post("/recent_webhooks")
