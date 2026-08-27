@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone as _tz   # 🟥 [FIX-G10] _tz
 import openai
 import numpy as np
 import gspread
+from collections import deque   # 🟥 [FIX-WJ1] 웹훅 도착 장부
 import threading
 from concurrent.futures import ThreadPoolExecutor
 import ta
@@ -2254,6 +2255,54 @@ _bg_lock = threading.Lock()
 _bg_running = 0
 
 
+# ============================================================
+# 🟥 [FIX-WJ1] 도착한 웹훅을 전부 기록해 두는 짧은 장부
+# ------------------------------------------------------------
+#  "트레이딩뷰에서 알람은 울렸는데 시트에 아무것도 없다" 를 지금까지는
+#  Render 로그를 뒤져서 추측할 수밖에 없었다. 그런데 로그는 금방 흘러가고,
+#  '요청이 아예 안 온 것' 과 '와서 조용히 죽은 것' 이 구분이 안 된다.
+#  이 둘은 고치는 방법이 완전히 다르다(트레이딩뷰 설정 vs 봇 코드).
+#  → 도착한 모든 요청을 메모리에 200건까지 남기고 /recent_webhooks 로 본다.
+#    여기에 없으면 **요청이 안 온 것이다** — 봇 문제가 아니라는 뜻.
+# ============================================================
+_WEBHOOK_JOURNAL_MAX = int(os.getenv("WEBHOOK_JOURNAL_MAX", "200"))
+_webhook_journal: deque = deque(maxlen=_WEBHOOK_JOURNAL_MAX)
+_wj_lock = threading.Lock()
+
+
+def _journal_webhook(raw: bytes, source: str = "/webhook"):
+    """요청 도착 즉시 기록. 이후 결과는 _journal_outcome() 이 채운다."""
+    try:
+        body = (raw or b"")[:400].decode("utf-8", "ignore")
+        try:
+            sym = (json.loads(body or "{}") or {}).get("symbol") \
+                  or (json.loads(body or "{}") or {}).get("pair") or "?"
+        except Exception:
+            sym = "?(JSON파싱실패)"
+        rec = {
+            "seq": len(_webhook_journal) + 1,
+            "도착": datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M:%S ET"),
+            "심볼": sym,
+            "경로": source,
+            "본문": body,
+            "결과": "처리중",
+        }
+        with _wj_lock:
+            _webhook_journal.append(rec)
+        return rec
+    except Exception as e:
+        print(f"⚠️ [웹훅장부] 기록 실패(무시): {e}")
+        return None
+
+
+def _journal_outcome(rec, outcome: str):
+    if rec is not None:
+        try:
+            rec["결과"] = str(outcome)[:200]
+        except Exception:
+            pass
+
+
 def _run_webhook_bg(raw: bytes):
     """백그라운드 실행 래퍼 — 예외를 삼키지 않고 로그로 남긴다."""
     global _bg_running
@@ -2263,10 +2312,18 @@ def _run_webhook_bg(raw: bytes):
     if n > 10:
         print(f"⚠️ [웹훅] 동시 처리 {n}건 — 알림이 몰리고 있습니다(처리 지연 가능)")
     _t0 = _t.time()
+    _rec = _journal_webhook(raw, "/webhook")
     try:
-        return process_webhook_sync(raw)
+        _out = process_webhook_sync(raw)
+        try:
+            _body = getattr(_out, "body", b"") or b""
+            _journal_outcome(_rec, _body[:180].decode("utf-8", "ignore") or "완료")
+        except Exception:
+            _journal_outcome(_rec, "완료")
+        return _out
     except Exception as e:
         import traceback
+        _journal_outcome(_rec, f"❌ 예외: {e}")
         print(f"❌ [웹훅 백그라운드] 처리 중 예외: {e}")
         traceback.print_exc()
     finally:
@@ -6413,6 +6470,88 @@ def _generate_outcome_note(outcome: str, reasons_text: str, decision_text: str, 
     return ""
 
 
+EOD_EVAL_BUFFER_MIN = int(os.getenv("EOD_EVAL_BUFFER_MIN", "15"))
+
+
+def _eval_window_minutes(pair: str, entry_time, default_minutes: int) -> float:
+    """
+    🟥 [FIX-PN1] 가상 평가를 '언제까지' 볼지.
+
+    기존엔 무조건 240분이었다. 그런데 봇은 주식을 15:50 전량청산까지 들고 간다.
+    10:00 진입이면 실제 보유는 350분인데 240분만 보고 'TIMEOUT' 으로 끊어버렸다.
+    그래서 시트의 total_pnl 과 실제 체결 손익의 **부호가 반대로** 나오는 일이 생겼다.
+      · CEG  시트 +5.25  ↔ 실제 -26.80  (실제 SL 은 293분에 맞음)
+      · GEV  시트 -2.60  ↔ 실제 +48.84  (실제 청산은 351분)
+    → 주식은 그날 장마감 청산 시각까지로 창을 늘린다.
+    """
+    if not is_stock_pair(pair) or entry_time is None:
+        return float(default_minutes)
+    if not (STOCK_EOD_FLATTEN_ENABLED and STOCK_EOD_FLATTEN_HHMM > 0):
+        return float(default_minutes)
+    try:
+        et = entry_time.astimezone(ZoneInfo("America/New_York")) if entry_time.tzinfo else entry_time
+        eod = et.replace(hour=STOCK_EOD_FLATTEN_HHMM // 100,
+                         minute=STOCK_EOD_FLATTEN_HHMM % 100, second=0, microsecond=0)
+        # ⚠️ 청산 루프는 5분마다 돌고 체결도 몇 초 늦는다. 실제 청산은 15:50 이 아니라
+        #    15:51~15:55 에 찍힌다. 창을 15:50 에 딱 맞추면 그 1~2분 때문에 또 놓친다.
+        #    (실측: GEV 351.4분, PLTR 321.5분 — 둘 다 '정확히 15:50' 창 밖이었다)
+        eod = eod + timedelta(minutes=EOD_EVAL_BUFFER_MIN)
+        mins = (eod - et).total_seconds() / 60.0
+        # ⚠️ max(기본값, mins) 로 하면 안 된다. 14:30 진입은 실제 보유가 80분인데
+        #    240분 창이 살아남아 장마감 3시간 뒤(19:00)까지 평가하게 된다.
+        #    주식은 무조건 '그날 청산 시각까지' 다. 너무 짧을 때만 최소치를 둔다.
+        return float(default_minutes) if mins <= 0 else max(20.0, mins)
+    except Exception:
+        return float(default_minutes)
+
+
+_ccy_rate_cache: dict = {}          # ccy -> (계수, 저장시각)  1시간 캐시
+
+
+def _quote_ccy_to_usd(pair: str, price: float):
+    """
+    🟥 [FIX-PN2] FX 손익을 '호가통화' 에서 USD 로 환산하는 계수.
+
+    XXX_YYY 의 가격은 'XXX 1단위 = YYY 얼마' 다. 그래서
+        손익(YYY) = 가격차 × units
+    이고, YYY 가 USD 가 아니면 그대로 USD 로 쓰면 안 된다.
+    실제로 USD_JPY 손익이 시트에 -11,000 으로 찍혔는데 OANDA 실현손익은 -76.23 USD 였다.
+    (-11,000 JPY ÷ 159 ≈ -69 USD — 자릿수가 통째로 틀렸던 것)
+
+    환산 계수를 못 구하면 1.0 이 아니라 None 을 돌려준다.
+    1.0 을 쓰면 엔화 손익이 150배로 부풀려진 채 조용히 기록된다 — 그게 원래 버그였다.
+    못 구하면 total_pnl 을 아예 안 쓰는 게 맞다.
+    """
+    try:
+        s = str(pair).upper().strip()
+        if "_" not in s and len(s) == 6:
+            s = f"{s[:3]}_{s[3:]}"          # 구형 기록 'USDJPY' 도 처리
+        parts = s.split("_")
+        if len(parts) != 2 or not all(parts):
+            return None
+        base, quote = parts
+        if quote == "USD":
+            return 1.0                      # EUR_USD, AUD_USD … 이미 USD
+        if base == "USD":
+            return (1.0 / float(price)) if price and float(price) > 0 else None
+
+        # 크로스(EUR_GBP 등) — quote 통화의 USD 환산율. 1시간 캐시.
+        hit = _ccy_rate_cache.get(quote)
+        if hit and (_t.time() - hit[1]) < 3600:
+            return hit[0]
+        for sym, inv in ((f"{quote}_USD", False), (f"USD_{quote}", True)):
+            px = _oanda_price_quick(sym)
+            if px and float(px) > 0:
+                val = (1.0 / float(px)) if inv else float(px)
+                _ccy_rate_cache[quote] = (val, _t.time())
+                return val
+        _ccy_rate_cache[quote] = (None, _t.time())     # 실패도 캐시 — 매 행마다 재시도 방지
+        return None
+    except Exception as e:
+        print(f"⚠️ [환산] {pair} 실패: {e}")
+        return None
+
+
 def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes: int = 5):
     """
     구글시트에서 아직 결과가 안 채워진 행들을 찾아서,
@@ -6496,6 +6635,8 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
             continue  # 아직 너무 따끈따끈한 신호 → 다음 시간에 다시 체크
 
         checked += 1
+        # 🟥 [FIX-PN1] 이 행에 적용할 평가 창 (주식은 그날 15:50 전량청산 시각까지)
+        _win = _eval_window_minutes(pair, entry_time, max_window_minutes)
 
         # 🟦 거래 수량 — FX는 고정 100,000 units, 주식은 Alpaca 실제 체결 수량을 그대로 사용.
         #    이게 없으면 PNL이 "1주(또는 1단위) 기준" 가격차이로만 계산돼서 실제 손익과 안 맞는다.
@@ -6518,7 +6659,7 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
             entry_time_iso = entry_time.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%SZ") if entry_time.tzinfo else entry_time.strftime("%Y-%m-%dT%H:%M:%SZ")
             filled, filled_price, filled_at, filled_qty = get_alpaca_fill_status(pair, entry_time_iso)
             if not filled:
-                if elapsed_minutes > max_window_minutes:
+                if elapsed_minutes > _win:
                     # 🟦 체결 안 됐지만 TP/SL 값이 있으면 가상 평가를 계속 진행한다.
                     #    실제 거래가 없었다는 사실만 표시하고, 캔들 기반으로 "만약 들어갔다면"을 평가해서
                     #    나중에 "14시 차단이 잘한 건지, 쿨다운이 너무 빡빡한지" 분석할 수 있게 한다.
@@ -6555,7 +6696,7 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
         candles = get_candles(pair, gran, max(50, bars_capped))
         if candles is None or candles.empty:
             # 캔들 자체를 못 가져온 경우 — 그래도 4시간 넘었으면 더 기다릴 의미 없으니 시간초과로 정리
-            if elapsed_minutes > max_window_minutes:
+            if elapsed_minutes > _win:
                 was_executed = _was_sent   # 🟥 [FIX-D8]
                 note = _generate_outcome_note("TIMEOUT_NO_HIT", reasons_text, decision_text, was_executed)
                 try:
@@ -6572,6 +6713,13 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
             entry_time_utc = entry_time.astimezone(ZoneInfo("UTC")) if entry_time.tzinfo else entry_time
             after = candles[candles["time_dt"] >= entry_time_utc]
 
+            # 🟥 [FIX-PN1b] 창은 '언제 확정할지' 뿐 아니라 '어디까지 볼지' 도 정해야 한다.
+            #    안 그러면 장마감(15:50 청산) 뒤의 시간외 봉까지 훑어서,
+            #    이미 청산된 포지션이 시간외에 SL 을 스쳤다고 SL_HIT 을 찍는다.
+            #    (IEX 분봉은 20:00 까지 있다 — 얇고 스프레드가 넓어 헛발이 잘 난다)
+            _cut_dt = entry_time_utc + timedelta(minutes=float(_win))
+            after = after[after["time_dt"] <= _cut_dt]
+
             # 🟦 안전장치: 가져온 캔들의 "가장 이른" 시점이 진입 시점보다 늦으면
             #    (=진입 직후 구간이 통째로 누락된 것) 잘못된 판정(특히 거짓 TP_HIT)을 낼 수 있다.
             #    ⚠️ 방향 주의: earliest_fetched가 entry_time보다 "나중"일 때만 문제다.
@@ -6579,7 +6727,7 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
             earliest_fetched = candles["time_dt"].min()
             gap_minutes = (earliest_fetched - entry_time_utc).total_seconds() / 60
             if gap_minutes > _gran_minutes * 2:
-                if elapsed_minutes > max_window_minutes and bars_needed > bars_capped:
+                if elapsed_minutes > _win and bars_needed > bars_capped:
                     # 너무 오래된 신호라 캡에 걸려 영영 못 덮는 경우 → 시간초과로 정리하고 끝
                     was_executed = _was_sent   # 🟥 [FIX-D8]
                     note = _generate_outcome_note("TIMEOUT_NO_HIT", reasons_text, decision_text, was_executed)
@@ -6612,7 +6760,7 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
                     break
 
         if outcome == "PENDING":
-            if elapsed_minutes > max_window_minutes:
+            if elapsed_minutes > _win:
                 outcome = "TIMEOUT_NO_HIT"
             else:
                 continue  # 아직 더 기다려야 함 (다음 시간에 재평가)
@@ -6636,7 +6784,13 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
             # 🟥 [FIX-D9] FX 폴백도 100,000 하드코딩 대신 FX_FALLBACK_UNITS를 따른다.
             trade_qty = (get_tiered_qty(price_f) if is_stock_pair(pair)
                          else float(os.getenv("FX_FALLBACK_UNITS", "10000")))
-        total_pnl_value = round(pnl_value * trade_qty, 2)
+        # 🟥 [FIX-PN2] FX 는 호가통화 손익 → USD 환산. 안 하면 JPY 쌍이 150배 부풀려진다.
+        _fx_mult = 1.0 if is_stock_pair(pair) else _quote_ccy_to_usd(pair, price_f)
+        if _fx_mult is None:
+            total_pnl_value = ""            # 환율을 못 구했으면 틀린 숫자를 쓰느니 비워둔다
+            print(f"⚠️ [결과추적] {pair} USD 환산 실패 → total_pnl 기록 생략")
+        else:
+            total_pnl_value = round(pnl_value * trade_qty * _fx_mult, 2)
 
         # 🟦 NOT_FILLED 가상 평가: 실제 거래(TP_HIT/SL_HIT)와 구분하기 위해 앞에 NOT_FILLED_ 붙임.
         #    이렇게 하면 나중에 "필터로 막은 거래들이 실제로 어떻게 됐을지" 별도로 집계해서
@@ -6656,6 +6810,16 @@ def evaluate_pending_outcomes(max_window_minutes: int = 240, min_elapsed_minutes
                   f"(1단위pnl={pnl_value:.5f}, 수량={trade_qty}, 총손익={total_pnl_value})")
         except Exception as e:
             print(f"❌ [결과추적] row {i} 시트 업데이트 실패: {e}")
+
+    # 🟥 [FIX-D1b] 알람 탭에도 날짜 구분선을 긋는다 (거래내역 탭들과 동일).
+    try:
+        _ss = _get_spreadsheet()
+        if _ss is not None and all_rows:
+            _ncols = max(len(r) for r in all_rows[:50]) if all_rows else 1
+            _draw_date_separators(_ss, sheet, all_rows, date_col=0,
+                                  ncols=_ncols, tag="알람탭구분선")
+    except Exception as e:
+        print(f"⚠️ [알람탭 구분선] 실패(무시): {e}")
 
     # 🟥 [FIX-F1] 루프 동안 모아둔 셀 업데이트를 여기서 한 번에 flush.
     #    행 300개 × 5셀 = 1,500번의 개별 쓰기가 batch_update 4회로 줄어든다.
@@ -8427,6 +8591,28 @@ def sync_top_active_candidates(top_n: int = 12):
     # ── 후보 점수화 ─────────────────────────────────────────
     #  분산 점수 = 100 - (내 포트폴리오와 겹치는 정도 %) × 3
     #  이미 보유 중이면 -40. 한도를 이미 넘긴 종목은 0점.
+    # ============================================================
+    # 🟥 [FIX-WATCH1] '보유 여부' 가 항상 '없음' 으로 나오던 문제.
+    #   이 칸은 지금까지 '열린 포지션이 있나' 만 봤다. 그래서 트레이딩뷰에 종목을
+    #   넣고 알람까지 걸어놨어도, 그 순간 포지션이 없으면 전부 '없음' 이었다.
+    #   봇은 트레이딩뷰 감시목록을 볼 수 없다 — 하지만 **알람이 왔었는지**는 안다.
+    #   최근 N일 안에 알람이 한 번이라도 온 종목은 '감시 중' 으로 표시한다.
+    #   (그게 사실상 "내가 트레이딩뷰에 넣어둔 종목" 과 같은 뜻이다)
+    # ============================================================
+    WATCH_LOOKBACK_DAYS = int(os.getenv("WATCH_LOOKBACK_DAYS", "14"))
+    watching: set = set()
+    try:
+        _sh = _get_sheet()
+        if _sh is not None:
+            _cut = (datetime.now(ZoneInfo("America/New_York"))
+                    - timedelta(days=WATCH_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+            for _r in _sh.get_all_values()[1:]:
+                if len(_r) > 1 and _r[0] and str(_r[0])[:10] >= _cut and _r[1]:
+                    watching.add(str(_r[1]).strip().upper())
+        print(f"👀 [추천후보] 최근 {WATCH_LOOKBACK_DAYS}일 알람 온 종목 {len(watching)}개")
+    except Exception as e:
+        print(f"⚠️ [추천후보] 감시목록 조회 실패(무시): {e}")
+
     rows: list[list] = []
     for grp, items in DIVERSIFIER_UNIVERSE.items():
         for sym, venue, reason in items:
@@ -8452,6 +8638,8 @@ def sync_top_active_candidates(top_n: int = 12):
                 verdict = f"⛔ 한도 초과 — 이미 {ov:.1f}% 겹침 (상한 {PORTFOLIO_GROUP_MAX_PCT:.0f}%)"
             elif held:
                 verdict = "🔁 이미 보유 — 추가하면 같은 베팅이 커진다"
+            elif sym.upper() in watching:
+                verdict = "👀 이미 감시 중 — 알람은 걸려 있고 지금 포지션만 없다"
             elif ov <= 2.0:
                 verdict = "⭐ 최우선 — 지금 포트폴리오와 거의 안 겹친다"
             elif ov < PORTFOLIO_GROUP_MAX_PCT / 2:
@@ -8465,7 +8653,7 @@ def sync_top_active_candidates(top_n: int = 12):
                 reason,
                 f"{ov:.1f}%",
                 top_peer,
-                "보유 중" if held else "없음",
+                ("보유 중" if held else ("👀 감시 중" if sym.upper() in watching else "없음")),
                 score,
                 verdict,
             ])
@@ -8534,6 +8722,9 @@ def sync_top_active_candidates(top_n: int = 12):
     out.append(["※ '겹침'은 분야 이름이 아니라 **실제 일봉 상관계수**로 계산합니다. "
                 "새 종목을 트레이딩뷰에 추가만 하면 자동으로 반영됩니다 (코드 수정 불필요)."])
     out.append(["※ '분산 점수'가 높을수록 지금 포트폴리오와 안 겹치는 종목입니다."])
+    out.append([f"※ '보유 여부' — 보유 중: 지금 포지션이 있음 / 👀 감시 중: 최근 "
+                f"{WATCH_LOOKBACK_DAYS}일 안에 알람이 온 적 있음(=트레이딩뷰에 넣어둔 종목) / "
+                f"없음: 둘 다 아님. 봇은 트레이딩뷰 감시목록을 직접 볼 수 없어서 알람 이력으로 판단합니다."])
     out.append([f"※ 한 분야 상한 {PORTFOLIO_GROUP_MAX_PCT:.0f}% / 전체 상한 {PORTFOLIO_TOTAL_MAX_PCT:.0f}% "
                 f"(환경변수 PORTFOLIO_GROUP_MAX_PCT / PORTFOLIO_TOTAL_MAX_PCT 로 조정)"])
     out.append(["※ 같은 분야에 이미 차 있으면 알람이 울려도 봇이 자동으로 수량을 줄이거나 건너뜁니다."])
@@ -9220,6 +9411,33 @@ async def scan_morning_gappers_endpoint(top: int = 0):
     """
     res = await asyncio.to_thread(scan_morning_gappers, top or None)
     return res
+
+
+@app.post("/recent_webhooks")
+@app.get("/recent_webhooks")
+async def recent_webhooks_endpoint(n: int = 30, s: str = ""):
+    """🟥 [FIX-WJ1] 최근 도착한 웹훅 목록.
+
+    "알람은 울렸는데 아무 일도 안 일어났다" 를 판정하는 용도다.
+        /recent_webhooks          최근 30건
+        /recent_webhooks?s=SPY    SPY 만
+        /recent_webhooks?n=100    최근 100건
+    여기에 안 보이면 요청이 봇에 도착하지 않은 것 → 트레이딩뷰 쪽 문제다.
+    """
+    with _wj_lock:
+        items = list(_webhook_journal)
+    if s:
+        key = s.strip().upper()
+        items = [r for r in items if key in str(r.get("심볼", "")).upper()
+                 or key in str(r.get("본문", "")).upper()]
+    items = items[-max(1, min(n, _WEBHOOK_JOURNAL_MAX)):]
+    items.reverse()                     # 최신이 위로
+    return {
+        "총_보관중": len(_webhook_journal),
+        "보관_한도": _WEBHOOK_JOURNAL_MAX,
+        "주의": "재배포/재시작하면 이 목록은 초기화됩니다(메모리 보관).",
+        "목록": items,
+    }
 
 
 @app.post("/check_symbol")
