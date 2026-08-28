@@ -1733,8 +1733,12 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
             confirmed_bottom_break = recent.iloc[-1]['close'] < (box_low - buf_price)
             retest_resist = (recent.iloc[-1]['high'] < box_low + buf_price) and (near_low_pips <= NEAR_PIPS)
             if near_low_pips <= NEAR_PIPS and not (confirmed_bottom_break or retest_resist):
-                signal_score -= 1.5
-                reasons.append("⚠️ 박스 하단 근접 매도 위험 (감점-1.5)")
+                # 🟥 [FIX-ROLE1] BUY 쪽만 풀면 SELL 신호만 감점이 남아 방향 편향이 생긴다.
+                if SETUP_RECHECK_ENABLED:
+                    signal_score -= 1.5
+                    reasons.append("⚠️ 박스 하단 근접 매도 위험 (감점-1.5)")
+                else:
+                    reasons.append("ℹ️ 박스 하단 근접 (참고) — 이탈 전략의 진입 자리라 감점하지 않음")
                 
     # 상승 연속 양봉 패턴 보정 BUY
     if (
@@ -1997,6 +2001,29 @@ CANDLE_READ_TIMEOUT = float(os.getenv("CANDLE_READ_TIMEOUT", "20"))
 # ============================================================
 SETUP_RECHECK_ENABLED = os.getenv("SETUP_RECHECK_ENABLED", "false").strip().lower() == "true"
 
+# ============================================================
+# 🟥 [FIX-SLTP1] 어떤 전략은 손절을 'ATR' 이 아니라 '구조' 에서 잡는다
+# ------------------------------------------------------------
+#  개장 09:31 의 1분봉 ATR(14) 은 직전 14분 = 거의 거래 없는 장전 봉이다.
+#  그 값으로 손절을 잡으면 폭이 비정상적으로 좁아 몇 초 만에 잘린다.
+#  Gap-and-Go 교본이 ATR 대신 '첫 1분봉의 저가' 를 쓰는 이유가 이것이다.
+#  → 아래 목록에 든 전략은 알림이 보낸 tp/sl 을 그대로 존중한다.
+#    단, 값이 이상하면(방향 반대·0·비정상적으로 멀거나 좁음) ATR 로 되돌린다.
+# ============================================================
+ALERT_SLTP_STRATEGIES = set(
+    s.strip().upper() for s in
+    os.getenv("ALERT_SLTP_STRATEGIES", "GAP_AND_GO_G3").split(",") if s.strip()
+)
+#  ⚠️ 상한을 넉넉히 잡으면 안 된다. 기본 사이징(tiered)은 수량을 '가격'으로만 정하고
+#     손절 거리를 보지 않는다. 즉 손절이 넓어져도 주식 수가 그대로라 **위험만 커진다.**
+#     ($20 주식 60주에 8% 손절 = 1회 $95 손실. ATR 손절이었다면 $4 수준)
+#     → G3 자체 상한(3%)과 같은 값으로 맞춘다.
+ALERT_SL_MAX_PCT = float(os.getenv("ALERT_SL_MAX_PCT", "3"))
+#  ⚠️ 하한도 G3 자체 하한(0.15%)과 맞춘다. 0.05% 는 $20 주식에서 1센트라 사실상 무의미.
+ALERT_SL_MIN_PCT = float(os.getenv("ALERT_SL_MIN_PCT", "0.15"))
+#  알림이 계산한 가격과 봇이 다시 받은 가격이 이보다 벌어지면 구조값을 못 믿는다
+ALERT_SLTP_MAX_DRIFT_PCT = float(os.getenv("ALERT_SLTP_MAX_DRIFT_PCT", "0.5"))
+
 STOCK_SL_ATR_MULT = float(os.getenv("STOCK_SL_ATR_MULT", "1.5"))
 # 목표 손익비(Reward:Risk). TP 거리 = SL 거리 × 이 값.
 STOCK_RR_RATIO = float(os.getenv("STOCK_RR_RATIO", "1.6"))
@@ -2200,6 +2227,10 @@ FX_BASE_GRANULARITY = os.getenv("FX_BASE_GRANULARITY", "M30")
 
 #: 이번 웹훅 요청의 시간축. 요청마다 독립적으로 유지된다.
 _ALERT_TF = contextvars.ContextVar("alert_tf", default=None)
+
+#: 🟥 [FIX-SLTP1] 이번 주문의 TP/SL 이 '구조적 레벨' 인가(=거리가 아니라 가격).
+#   True 면 주문 직전 실시간가 보정에서 TP/SL 을 밀지 않는다.
+_STRUCTURAL_SLTP = contextvars.ContextVar("structural_sltp", default=False)
 
 #: TradingView timeframe.period → 봇 granularity
 _TV_TF_MAP = {
@@ -2840,7 +2871,10 @@ def process_webhook_sync(raw: bytes):
     #    역행만 있고 골든크로스 없을 때는 68% 승률 +$172로 오히려 좋음
     #    → 이 두 가지가 같이 오면 "추세와 반대 방향으로 강하게 올라온 것"을 의미
     #      골든크로스가 실제 추세 전환이 아닌 단기 과열 신호일 가능성이 높음
-    _has_opp_reverse = any("opportunity_score 역행" in r for r in reasons)
+    # 🟥 [FIX-ROLE1] '역행' 사유는 SETUP_RECHECK_ENABLED 가 꺼지면 생성되지 않는다.
+    #   그대로 두면 살아있는 것처럼 보이는 죽은 코드가 된다.
+    _has_opp_reverse = (SETUP_RECHECK_ENABLED
+                        and any("opportunity_score 역행" in r for r in reasons))
     _has_golden = any("골든크로스(강)" in r for r in reasons)
     if _has_opp_reverse and _has_golden:
         signal_score -= 1.5
@@ -3178,8 +3212,12 @@ def process_webhook_sync(raw: bytes):
                 return f if f == f and abs(f) != float("inf") else None
             except (TypeError, ValueError):
                 return None
-        _fx_tp = _fnum(alert_data.get("tp")) if isinstance(alert_data, dict) else None
-        _fx_sl = _fnum(alert_data.get("sl")) if isinstance(alert_data, dict) else None
+        # ⚠️ 같은 함정 — 알림의 tp/sl 은 최상위 키다.
+        def _fpick(k):
+            v = alert_data.get(k) if isinstance(alert_data, dict) else None
+            return v if v not in (None, "") else data.get(k)
+        _fx_tp = _fnum(_fpick("tp"))
+        _fx_sl = _fnum(_fpick("sl"))
         _fx_src = "알림값"
         if _fx_tp is None or _fx_sl is None:
             try:
@@ -3216,7 +3254,56 @@ def process_webhook_sync(raw: bytes):
             print(f"⚠️ [FX 평가용] {pair} TP/SL 값이 이상해서 기록 생략 "
                   f"(tp={_fx_tp}, sl={_fx_sl}, price={price}, dir={_calc_direction})")
 
-    if is_stock_pair(pair) and _calc_direction and price is not None and atr is not None:
+    # 🟥 [FIX-SLTP1] 구조적 손절을 쓰는 전략은 알림이 보낸 값을 그대로 쓴다.
+    _use_alert_sltp = False
+    if (is_stock_pair(pair) and _calc_direction and price is not None
+            and _normalize_strategy_name(strategy_name) in ALERT_SLTP_STRATEGIES):
+        def _n(v):
+            try:
+                f = float(str(v).strip())
+                return f if f == f and abs(f) != float("inf") and f > 0 else None
+            except (TypeError, ValueError):
+                return None
+        # ⚠️ Pine 알림은 tp/sl 을 **최상위 키**로 보낸다. alert_data 안에 있지 않다.
+        #    alert_data 만 보면 영원히 None 이라 이 기능 전체가 죽은 코드가 된다.
+        def _pick(k):
+            v = alert_data.get(k) if isinstance(alert_data, dict) else None
+            return v if v not in (None, "") else data.get(k)
+        _a_tp = _n(_pick("tp"))
+        _a_sl = _n(_pick("sl"))
+        # ⚠️ 검증은 '알림이 계산할 때 쓴 가격' 기준으로 해야 한다.
+        #    price 는 봇이 나중에 캔들로 다시 받은 값이라 몇 초~몇십 초 뒤 가격이다.
+        #    그걸로 재면 손절이 코앞인 주문도 통과해버린다(즉시 손절).
+        _alert_px = _n(data.get("price")) or price
+        _drift = abs(price - _alert_px) / _alert_px * 100.0 if _alert_px else 999.0
+        if _a_tp is not None and _a_sl is not None:
+            _ok_dir = (_a_tp > _alert_px > _a_sl) if _calc_direction == "BUY" else (_a_sl > _alert_px > _a_tp)
+            _risk_pct = abs(_alert_px - _a_sl) / _alert_px * 100.0 if _alert_px else 0.0
+            if _drift > ALERT_SLTP_MAX_DRIFT_PCT:
+                print(f"⚠️ [구조손절] {pair} 알림가 {_alert_px} → 현재가 {price} "
+                      f"({_drift:.2f}% 이동, 한도 {ALERT_SLTP_MAX_DRIFT_PCT}%) → 구조값 못 믿음, ATR 로 계산")
+            elif _ok_dir and ALERT_SL_MIN_PCT <= _risk_pct <= ALERT_SL_MAX_PCT:
+                _use_alert_sltp = True
+                _STRUCTURAL_SLTP.set(True)
+                if final_decision in ("BUY", "SELL"):
+                    final_tp, final_sl = _a_tp, _a_sl
+                    tp, sl = final_tp, final_sl
+                gpt_feedback += (f"\n🟦 [{strategy_name}] 구조적 TP/SL 사용 — "
+                                 f"TP={_a_tp}, SL={_a_sl} (위험폭 {_risk_pct:.2f}%). ATR 재계산 안 함")
+                print(f"🎯 [구조손절] {pair} {strategy_name} → TP={_a_tp} SL={_a_sl} "
+                      f"(위험 {_risk_pct:.2f}%)")
+                try:
+                    correct_sheet_trade_prices(sheet_row_idx, price, _a_tp, _a_sl)
+                except Exception as _e:
+                    print(f"⚠️ [구조손절] 시트 기록 실패: {_e}")
+            else:
+                print(f"⚠️ [구조손절] {pair} 알림 TP/SL 거부 "
+                      f"(tp={_a_tp}, sl={_a_sl}, 알림가={_alert_px}, 위험 {_risk_pct:.2f}%, "
+                      f"허용 {ALERT_SL_MIN_PCT}~{ALERT_SL_MAX_PCT}%) → ATR 로 계산")
+        else:
+            print(f"⚠️ [구조손절] {pair} 알림에 tp/sl 이 없음 (tp={_a_tp}, sl={_a_sl}) → ATR 로 계산")
+
+    if (not _use_alert_sltp) and is_stock_pair(pair) and _calc_direction and price is not None and atr is not None:
         _stock_atr = float(atr.iloc[-1]) if hasattr(atr, "iloc") else float(atr)
         if _stock_atr and _stock_atr > 0:
             _digits = price_round_digits(pair)
@@ -5451,6 +5538,14 @@ def place_order_alpaca(symbol, side, notional_usd, ref_price, tp, sl, digits=2, 
                 "fresh_price": fresh_price,
             }
 
+        # 🟥 [FIX-SLTP1] 구조적 손절(첫 1분봉 저가 등)은 '거리'가 아니라 '가격 레벨'이다.
+        #   delta 만큼 밀면 손절이 그 캔들 저가 '위' 로 올라가 의미가 사라진다.
+        #   ATR 손절은 거리 개념이라 미는 게 맞다 — 그래서 종류에 따라 다르게 처리한다.
+        structural_sltp = _STRUCTURAL_SLTP.get()
+        if delta and structural_sltp:
+            print(f"[Alpaca] {symbol} 가격 갱신 Δ{delta:+.4f} — 구조적 TP/SL 이라 "
+                  f"이동하지 않고 원래 레벨 유지 (TP={tp}, SL={sl})")
+            delta = 0.0
         if delta:
             print(f"[Alpaca] {symbol} 가격 갱신: 신호가={ref_price} → 실시간가={fresh_price} "
                   f"(Δ{delta:+.4f}, {gap_pct:.2f}%) — TP/SL을 동일 거리만큼 이동")
