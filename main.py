@@ -391,13 +391,15 @@ def must_capture_opportunity(rsi, stoch_rsi, macd, macd_signal, pattern, candles
     # ==================================================
     # 8️⃣ 최종 방향 충돌 필터 (조기 차단)
     # ==================================================
-    if is_buy and opportunity_score < 0:
-        opportunity_score -= 1.5
-        reasons.append("⚠️ BUY 기대 방향 대비 opportunity_score 역행 → 신호 약화 (-1.5)")
-    
-    if is_sell and opportunity_score < 0:
-        opportunity_score -= 1.5
-        reasons.append("⚠️ SELL 기대 방향 대비 opportunity_score 역행 → 신호 약화 (-1.5)")
+    # 🟥 [FIX-ROLE1] 지표 합이 음수라고 방향을 다시 뒤집는 건 셋업 재판단이다.
+    #   게다가 이미 음수인 점수를 한 번 더 깎아 이중 처벌이 된다.
+    if SETUP_RECHECK_ENABLED:
+        if is_buy and opportunity_score < 0:
+            opportunity_score -= 1.5
+            reasons.append("⚠️ BUY 기대 방향 대비 opportunity_score 역행 → 신호 약화 (-1.5)")
+        if is_sell and opportunity_score < 0:
+            opportunity_score -= 1.5
+            reasons.append("⚠️ SELL 기대 방향 대비 opportunity_score 역행 → 신호 약화 (-1.5)")
 
     return opportunity_score, reasons
     
@@ -873,8 +875,10 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
 
     # RSI 중립 구간 (45~55) + 추세 중립 → 공통 감점
     if 45 <= rsi <= 55 and trend == "NEUTRAL":
-        score -= 0.3
-        reasons.append("⚠️ RSI 중립(45~55) + 트렌드 NEUTRAL → 진입 신호 약화 (-0.3)")
+        # 🟥 [FIX-ROLE1] 전략이 이미 RSI 하한을 걸어서 알람을 낸 것이다. 중복 감점.
+        if SETUP_RECHECK_ENABLED:
+            score -= 0.3
+            reasons.append("⚠️ RSI 중립(45~55) + 트렌드 NEUTRAL → 진입 신호 약화 (-0.3)")
     
     # =========================
     # BUY 전용 감점 로직
@@ -916,7 +920,12 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
     # 🟥 [FIX-B8] 이제 r_ratio가 실제 구조 손익비를 반영하므로 이 감점이 살아난다.
     #    다만 -4.0은 다른 항목(대부분 ±1~2)에 비해 과도해서 단독으로 점수를 지배한다.
     #    → -2.0으로 낮추고, 구간을 나눠 완만하게 적용한다.
-    if r_ratio < 1.0:
+    # 🟥 [FIX-ROLE1] 돌파 전략에서는 '저항까지 남은 거리' 로 감점하면 안 된다.
+    #   진입 자리가 저항 바로 아래인 게 돌파 전략의 정의이기 때문이다.
+    #   참고용으로 사유에는 남기되 점수는 깎지 않는다.
+    if not SETUP_RECHECK_ENABLED:
+        reasons.append("ℹ️ 구조 손익비 %.2f (참고) — 돌파 전략이라 감점하지 않음" % r_ratio)
+    elif r_ratio < 1.0:
         signal_score -= 2.0
         reasons.append("📉 구조 손익비 매우 낮음 (%.2f < 1.0) → 감점 -2.0" % r_ratio)
     elif r_ratio < 1.4:
@@ -1711,8 +1720,13 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
             confirmed_top_break = recent.iloc[-1]['close'] > (box_high + buf_price)
             retest_support = (recent.iloc[-1]['low'] > box_high - buf_price) and (near_top_pips <= NEAR_PIPS)
             if near_top_pips <= NEAR_PIPS and not (confirmed_top_break or retest_support):
-                signal_score -= 1.5
-                reasons.append("⚠️ 박스 상단 근접 매수 위험 (감점-1.5)")
+                # 🟥 [FIX-ROLE1] 돌파 전략은 '박스 상단' 을 노리고 들어간다. 그걸 감점하면
+                #   전략이 잡으라고 만든 자리를 전부 거부하게 된다.
+                if SETUP_RECHECK_ENABLED:
+                    signal_score -= 1.5
+                    reasons.append("⚠️ 박스 상단 근접 매수 위험 (감점-1.5)")
+                else:
+                    reasons.append("ℹ️ 박스 상단 근접 (참고) — 돌파 전략의 진입 자리라 감점하지 않음")
 
         # 하단 근접 매도 금지 (확정 이탈 or 리테스트만 허용)
         if signal == "SELL" and box_info.get("in_box") and box_info.get("breakout") is None:
@@ -1955,6 +1969,33 @@ FX_RR_RATIO = float(os.getenv("FX_RR_RATIO", "1.6"))
 #   TradingView 알림은 몰릴 수 있으므로 넉넉하되 무한대는 절대 안 된다.
 CANDLE_CONNECT_TIMEOUT = float(os.getenv("CANDLE_CONNECT_TIMEOUT", "5"))
 CANDLE_READ_TIMEOUT = float(os.getenv("CANDLE_READ_TIMEOUT", "20"))
+
+# ============================================================
+# 🟥 [FIX-ROLE1] '셋업 판단' 과 '상황 판단' 을 분리한다
+# ------------------------------------------------------------
+#  ■ 무엇이 문제였나
+#    Pine 전략이 이미 "이게 내 셋업이다" 라고 판단해서 알람을 울렸는데,
+#    봇의 점수 엔진이 **같은 것을 반대 기준으로 다시 판단**하고 있었다.
+#
+#      A12 는 돌파 전략이다 — "최근 고점을 뚫을 때 산다"
+#      그런데 점수 엔진은 "저항에 가까우면 감점" 을 한다
+#      → 돌파하는 순간에는 저항이 코앞이다. 그게 돌파의 정의다.
+#
+#    실측: 알람 100건 중 구조 손익비가 1.4 를 넘은 적이 **0건**.
+#          76번 측정해서 최댓값 1.34. 즉 조건부 필터가 아니라
+#          거의 모든 신호에 -2.0 을 붙이는 **상수 오프셋**이었다.
+#
+#  ■ 어떻게 바꾸나
+#    · 셋업을 다시 판단하는 항목은 끈다 (구조 손익비 / 박스 상단 근접 /
+#      RSI 중립 감점 / opportunity_score 역행)
+#    · 전략이 볼 수 없는 것만 남긴다:
+#      뉴스, 상위 시간축 충돌, 진짜 극단(RSI 80+ 등), 변동성 이상,
+#      유동성 나쁜 시간대, 캔들 소진 신호
+#
+#  ■ 되돌리려면
+#    SETUP_RECHECK_ENABLED=true 로 두면 예전 동작으로 돌아간다.
+# ============================================================
+SETUP_RECHECK_ENABLED = os.getenv("SETUP_RECHECK_ENABLED", "false").strip().lower() == "true"
 
 STOCK_SL_ATR_MULT = float(os.getenv("STOCK_SL_ATR_MULT", "1.5"))
 # 목표 손익비(Reward:Risk). TP 거리 = SL 거리 × 이 값.
@@ -6072,10 +6113,37 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
                 "- 각 지표의 상승/하락 추세, 변화 속도, 과매수/과매도 여부, 꺾임 여부 등을 분석해\n"
                 "- 가능하면 수치적인 기준 또는 '강세', '약세', '중립' 등의 판단 용어를 사용해 설명하라.\n\n"
 
+                # 🟥 [FIX-ROLE1] 너의 역할을 분명히 한다.
+                "\n"
+                "════════ 너의 역할 (이게 제일 중요하다) ════════\n"
+                "이 신호는 이미 검증된 매매 전략이 자기 규칙에 따라 낸 것이다.\n"
+                "'진입 자리가 맞는지' 는 **전략이 이미 판단했다. 다시 판단하지 마라.**\n"
+                "\n"
+                "특히 아래는 감점 사유가 아니다 — 전략의 설계 그 자체다:\n"
+                "  · 가격이 저항선/박스 상단에 가깝다  → 돌파 전략은 원래 거기서 산다\n"
+                "  · 최근 고점 근처다                → 그게 돌파의 정의다\n"
+                "  · RSI 가 중립이다                 → 전략이 이미 RSI 하한을 걸고 통과시켰다\n"
+                "  · 추세가 NEUTRAL 이다             → 그것만으로 거부하지 마라\n"
+                "이런 이유로 WAIT 을 내면 전략이 잡으라고 만든 자리를 전부 거부하게 된다.\n"
+                "\n"
+                "네가 봐야 할 것은 **전략이 볼 수 없는 것** 뿐이다:\n"
+                "  ① 뉴스·이벤트 — 실적발표, 금리결정, 급등 원인이 일회성 뉴스인가\n"
+                "  ② 상위 시간축과 정면 충돌 — H4/일봉이 강하게 반대 방향인가\n"
+                "  ③ 진짜 극단 — RSI 80 이상 / 20 이하, Stoch 0.98 이상 같은 명백한 소진\n"
+                "  ④ 변동성 이상 — ATR 이 평소 대비 비정상적으로 크거나(패닉) 작다(비용이 먹는다)\n"
+                "  ⑤ 시간대 — FX 는 19~23시(ET) 유동성이 최악이라 스프레드가 벌어진다\n"
+                "  ⑥ 캔들 소진 — 긴 윗꼬리 연속, 대량 거래 후 힘 빠짐 같은 그림\n"
+                "\n"
+                "WAIT 은 위 ①~⑥ 중 **구체적으로 짚을 수 있는 위험이 있을 때만** 내라.\n"
+                "'확신이 부족하다', '모멘텀이 약하다' 같은 막연한 이유로는 WAIT 하지 마라.\n"
+                "짚을 위험이 없으면 전략의 판단을 존중해서 그대로 BUY/SELL 을 내라.\n"
+                "WAIT 을 낼 때는 reason 에 위 ①~⑥ 중 어느 것인지 번호를 반드시 밝혀라.\n"
+                "══════════════════════════════════════════\n\n"
+
                 "(5) 전략 리포트는 자유롭게 작성하되 반드시 아래 4단계 형식을 따르라:\n"
-                "1️⃣ 전략 요약 (BUY/SELL 이유 요약)\n"
-                "2️⃣ 기술 지표 분석 요약\n"
-                "3️⃣ TP/SL 설정 근거 및 리스크 관리\n"
+                "1️⃣ 이 신호가 왜 나왔나 (전략의 규칙 — 재판단 말고 요약만)\n"
+                "2️⃣ 지금 시장 상황 (캔들 흐름·상위 시간축·변동성)\n"
+                "3️⃣ 위 ①~⑥ 위험 점검 — 해당 없으면 '해당 없음' 이라고 명시\n"
                 "4️⃣ 최종 판단 및 이유\n\n"
 
                 "(6) 마지막에는 반드시 아래 JSON 의사결정 블록을 작성하라. 양식은 정확히 아래처럼!\n\n"
@@ -6084,7 +6152,7 @@ def analyze_with_gpt(payload, current_price, pair, candles, base64_image=None):
                 "  \"tp\": <숫자>,       // 반드시 숫자(float). 따옴표 금지. 예: 1.1745\n"
                 "  \"sl\": <숫자>,       // 반드시 숫자(float). 따옴표 금지.\n"
                 "  \"wait_confidence\": <0~100 정수>,  // WAIT일 때만 의미 있음. WAIT이 아니면 0.\n"
-                "  \"reason\": \"<간단한 핵심 이유 하나만 간결하게>\"\n"
+                "  \"reason\": \"<핵심 이유 하나. WAIT 이면 위험 번호(①~⑥)를 반드시 포함>\"\n"
                 "}\n\n"
                 "‼️ 출력 시 유의사항:\n"
                 "- 코드블럭(````json .... ````) 사용 금지. 마크다운 태그 금지.\n"
