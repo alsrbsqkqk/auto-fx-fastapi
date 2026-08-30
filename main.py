@@ -1500,7 +1500,8 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
             #    데이터(14건): 이 필터 있어도 실거래 36% 승률 -$85 → 감점이 부족해서 threshold 통과 중
             #    -3으로 올리면 threshold -2.5 기준 대부분 차단됨
             signal_score -= 3.0
-            reasons.append("⛔ BUY 차단: Stoch RSI 과열 + MACD 약화(macd<signal) → 추격 매수 위험 강감점 -3")
+            # 🟥 [FIX-HB1] 감점이 아니라 진짜 차단
+            reasons.append(f"{HARD_BLOCK_TAG}|BUY 차단: Stoch RSI 과열 + MACD 약화(macd<signal) → 추격 매수 위험")
     
         # 2) SELL 추격 방지 (과매도 + MACD 약화)  ✅ 여기서부터 보완이 핵심
         if signal == "SELL" and stoch_rsi < 0.2 and macd < macd_signal:
@@ -1518,7 +1519,10 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
             # (C) 나머지(상승/횡보 성격): 과매도 숏은 반등에 말릴 확률 높음 → 기존처럼 강차단
             else:
                 signal_score -= 2.0
-                reasons.append("⛔ SELL 차단: 과매도(Stoch<0.2) + MACD 약화 + 추세 불리 → 추격 매도 위험 감점 -2")
+                # 🟥 [FIX-HB1] 감점이 아니라 진짜 차단.
+                #   ⚠️ 이 append 는 반드시 else 안에 있어야 한다. 한 칸 밖으로 나가면
+                #      위 (A)DOWNTREND·(B)NEUTRAL 분기까지 전부 차단돼 버린다.
+                reasons.append(f"{HARD_BLOCK_TAG}|SELL 차단: 과매도(Stoch<0.2) + MACD 약화 + 추세 불리 → 추격 매도 위험")
    
     # 🟦 breakout_confirmed/near_resistance를 stoch_rsi>=0.95 체크보다 먼저 계산해서,
     #    "추세 라벨(UPTREND)"이 아니라 "실제 돌파 확정 여부"로 과열 판정을 보완할 수 있게 함.
@@ -1741,8 +1745,11 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
                     reasons.append("ℹ️ 박스 하단 근접 (참고) — 이탈 전략의 진입 자리라 감점하지 않음")
                 
     # 상승 연속 양봉 패턴 보정 BUY
+    #   🟥 [FIX-HB1] is_buy 가드 필수. 감점일 때는 다른 가점이 상쇄해서 티가 안 났지만,
+    #      하드 차단이 된 뒤로는 이게 없으면 상승 3봉 구간의 SELL 신호까지 전부 죽는다.
     if (
-        all(last_3["close"] > last_3["open"]) 
+        is_buy
+        and all(last_3["close"] > last_3["open"]) 
         and trend == "UPTREND" 
         and pattern in ["NEUTRAL", "LONG_BODY_BULL", "INVERTED_HAMMER"]
     ):
@@ -1762,10 +1769,11 @@ def score_signal_with_filters(rsi, macd, macd_signal, stoch_rsi, prev_stoch_rsi,
             # 🟦 데이터 분석(6/22~7/8): RSI<70 + 3봉양봉 케이스 15건 승률 20%, 손익 -$215
             #    모멘텀이 약한 상태에서의 3봉 연속 양봉은 오히려 추격 진입 신호.
             #    스코어 감점으로는 해결 안 됨(다른 가점들이 상쇄) → 하드 차단
+            # 🟥 [FIX-HB1] 실측 15건 승률 20% 짜리 패턴. 감점으로는 다른 가점에 상쇄된다.
+            #    (8/28 TLT 2건이 정확히 이 조건에 걸렸고 둘 다 손절)
             reasons.append(
-                "⛔ 3봉 연속 양봉이지만 RSI<70(모멘텀 부족) → 추격 진입 위험, 진입 차단"
+                f"{HARD_BLOCK_TAG}|3봉 연속 양봉이지만 RSI<70(모멘텀 부족) → 추격 진입 위험"
             )
-            # should_execute는 이 함수 밖에서 결정되므로, 강한 감점으로 threshold 이하로 내림
             signal_score -= 3.0
 
         else:
@@ -2000,6 +2008,130 @@ CANDLE_READ_TIMEOUT = float(os.getenv("CANDLE_READ_TIMEOUT", "20"))
 #    SETUP_RECHECK_ENABLED=true 로 두면 예전 동작으로 돌아간다.
 # ============================================================
 SETUP_RECHECK_ENABLED = os.getenv("SETUP_RECHECK_ENABLED", "false").strip().lower() == "true"
+
+# ============================================================
+# 🟥 [FIX-HB1] '차단' 이라고 써놓고 점수만 깎던 것을 진짜 차단으로
+# ------------------------------------------------------------
+#  ■ 무엇이 문제였나 (2026-08-28 실측)
+#    코드에 이렇게 돼 있었다:
+#        # 스코어 감점으로는 해결 안 됨(다른 가점들이 상쇄) → 하드 차단
+#        reasons.append("⛔ ... 진입 차단")
+#        signal_score -= 3.0        ← 실제로는 그냥 감점
+#    주석은 '하드 차단' 인데 구현은 감점이고, 진짜 차단은 threshold 가
+#    대신 해주기를 기대하고 있었다. 그런데 threshold 를 -99 로 내리면서
+#    이 장치들이 통째로 죽었다.
+#
+#    8/28 결과: TLT(-$4.26) + MU(-$59.86) = -$64.12
+#    그날 손실 -$116.08 의 55% 가 여기서 나왔다.
+#    (그중 '3봉양봉 + RSI<70' 은 실측 15건 승률 20% 로 만든 장치였다)
+#
+#  ■ 어떻게 고쳤나
+#    reasons 에 기계가 읽을 수 있는 표식을 넣고, 실행 판정에서 그것만 보고 막는다.
+#    threshold 와 완전히 무관해진다 → threshold 는 -99 로 둬도 안전하다.
+# ============================================================
+# ============================================================
+# 🟥 [FIX-MACRO1] 거시 뉴스는 한 종목의 뉴스가 아니다
+# ------------------------------------------------------------
+#  ■ 무엇이 문제였나 (2026-08-28)
+#    SPY 뉴스에 이게 잡혔다:
+#      "Fed Funds Futures Now Price A September Rate Hike As More Likely Than A Hold"
+#    그런데 봇은 그걸 SPY 개별 뉴스로만 취급해 점수 0 으로 흘렸고,
+#    같은 시각 EUR_USD·AUD_USD·TLT 에는 '영향 있는 뉴스 없음' 이라고 기록했다.
+#
+#    실제로는 그 하나가 전부를 움직였다:
+#      달러 강세 → EUR_USD·AUD_USD 하락
+#      금리 상승 → TLT 하락
+#      주식 하락 → META·MU·SPY 하락
+#    그날 8건 전부 손절. 8개의 실패가 아니라 **하나의 사건에 8번 부딪힌 것**이다.
+#
+#  ■ 어떻게 고쳤나
+#    어느 종목에서든 거시 키워드가 잡히면 '시장 전체 경보' 를 켜고,
+#    그 시간 동안은 모든 종목의 신규 진입을 막는다.
+# ============================================================
+# ============================================================
+# 🟥 [FIX-COST1] 비용을 'ATR 대비' 로 잰다
+# ------------------------------------------------------------
+#  ■ 8/28 실측 (알림가 → 실제 체결가)
+#      SPY   슬립 $0.010 / ATR 1.32   =  0.8%  ✅
+#      META  슬립 $0.135 / ATR 3.99   =  3.4%  ✅
+#      MU    슬립 $0.503 / ATR 9.72   =  5.2%  ✅
+#      TLT   슬립 $0.015 / ATR 0.092  = 16.3%  ❌
+#      EWJ   슬립 $0.064 / ATR 0.246  = 26.0%  ❌
+#
+#    처음엔 'ATR/주가가 낮으면 문제' 라고 봤는데 틀렸다.
+#    SPY 는 ATR/주가가 0.17% 로 낮은데도 가장 저렴하고,
+#    EWJ 는 0.25% 로 더 큰데 26% 를 먹는다. **유동성이 결정한다.**
+#    → 주문 직전 '신호가 대비 현재가 이동폭' 을 ATR 로 나눠서 판정한다.
+#      (이 값은 이미 place_order_alpaca 가 계산하고 있다 — 기준만 바꾼다)
+# ============================================================
+COST_ATR_GATE_ENABLED = os.getenv("COST_ATR_GATE_ENABLED", "true").strip().lower() != "false"
+COST_ATR_MAX_PCT = float(os.getenv("COST_ATR_MAX_PCT", "12"))   # 이동폭이 ATR 의 12% 넘으면 스킵
+
+MACRO_NEWS_ENABLED = os.getenv("MACRO_NEWS_ENABLED", "true").strip().lower() != "false"
+MACRO_BLOCK_MINUTES = int(os.getenv("MACRO_BLOCK_MINUTES", "90"))
+
+#: 시장 전체를 움직이는 주제. 한 종목에서 잡혀도 전 종목에 적용한다.
+_MACRO_KEYWORDS = [
+    "fed ", "fomc", "federal reserve", "rate hike", "rate cut", "interest rate",
+    "fed funds", "powell", "cpi", "inflation", "pce", "jobs report", "payroll",
+    "nonfarm", "unemployment", "gdp", "recession", "tariff", "central bank",
+    "ecb", "boj", "treasury yield", "연준", "금리", "물가", "고용지표", "관세",
+]
+
+#: {"until": epoch, "headline": str, "source": symbol}
+_macro_alert = {"until": 0.0, "headline": "", "source": ""}
+
+
+def _scan_macro_news(symbol: str, news_text: str):
+    """뉴스에 거시 키워드가 있으면 시장 전체 경보를 켠다."""
+    if not (MACRO_NEWS_ENABLED and news_text):
+        return
+    low = str(news_text).lower()
+    # ⚠️ 단순 부분일치는 오탐이 난다: "fed " 는 "briefed ", "beefed " 에도 걸린다.
+    #    짧고 모호한 단어는 단어경계(\b)로 검사한다. 한 번 오탐하면 90분간 전 종목이 막힌다.
+    hit = None
+    for k in _MACRO_KEYWORDS:
+        kk = k.strip()
+        if len(kk) <= 4 and kk.isascii():
+            if _re.search(r"\b" + _re.escape(kk) + r"\b", low):
+                hit = kk; break
+        elif kk in low:
+            hit = kk; break
+    if not hit:
+        return
+    _macro_alert["until"] = _t.time() + MACRO_BLOCK_MINUTES * 60
+    _macro_alert["headline"] = str(news_text)[:200]
+    _macro_alert["source"] = symbol
+    print("=" * 70)
+    print(f"🌐 [거시경보] {symbol} 뉴스에서 '{hit.strip()}' 감지 → "
+          f"앞으로 {MACRO_BLOCK_MINUTES}분간 **모든 종목** 신규 진입 차단")
+    print(f"   {str(news_text)[:160]}")
+    print("=" * 70)
+
+
+def _macro_block_active() -> tuple[bool, str]:
+    if not MACRO_NEWS_ENABLED:
+        return False, ""
+    left = _macro_alert["until"] - _t.time()
+    if left <= 0:
+        return False, ""
+    return True, (f"거시 뉴스 경보({_macro_alert['source']} 발) — "
+                  f"{left/60:.0f}분 남음: {_macro_alert['headline'][:110]}")
+
+
+HARD_BLOCK_TAG = "⛔HARDBLOCK"
+HARD_BLOCK_ENABLED = os.getenv("HARD_BLOCK_ENABLED", "true").strip().lower() != "false"
+
+
+def _hard_blocked(reasons) -> tuple[bool, str]:
+    """reasons 안에 하드 차단 표식이 있으면 (True, 사유)."""
+    if not HARD_BLOCK_ENABLED:
+        return False, ""
+    for r in reasons or []:
+        s = str(r)
+        if s.startswith(HARD_BLOCK_TAG):
+            return True, s.split("|", 1)[-1].strip()
+    return False, ""
 
 # ============================================================
 # 🟥 [FIX-SLTP1] 어떤 전략은 손절을 'ATR' 이 아니라 '구조' 에서 잡는다
@@ -2689,9 +2821,21 @@ def process_webhook_sync(raw: bytes):
         if news_headlines:
             news_msg += " — " + " / ".join(news_headlines[:2])
         news = news_msg
+        _macro_src = " ".join(str(x) for x in (news_headlines or []))
     else:
-        news_score, news_msg = news_risk_score(pair)
+        news_score, news_msg, _fx_titles = news_risk_score(pair)
         news = news_msg
+        _macro_src = " ".join(str(x) for x in (_fx_titles or []))
+
+    # 🟥 [FIX-MACRO1] 거시 스캔은 **뉴스를 받은 직후 즉시** 해야 한다.
+    #   예전엔 GPT 호출(최대 3회 재시도) 뒤에 했는데, 8/28 처럼 알림이 동시에 몰리면
+    #   SPY 스레드가 GPT 를 끝내기 전에 다른 7종목이 이미 주문을 넣어버린다.
+    #   경보는 '가장 먼저 뉴스를 본 스레드' 가 즉시 켜야 나머지를 막을 수 있다.
+    #   ⚠️ 표시용 요약이 아니라 **헤드라인 원문**을 넘긴다(요약엔 2건만 들어간다).
+    try:
+        _scan_macro_news(pair, f"{news} {_macro_src}")
+    except Exception as _e:
+        print(f"⚠️ [거시경보] 스캔 실패(무시): {_e}")
     high_low_analysis = analyze_highs_lows(candles)
     atr = float(atr_series.dropna().iloc[-1]) if not atr_series.dropna().empty else 0.0
     fibo_levels = calculate_fibonacci_levels(candles["high"].max(), candles["low"].min())
@@ -3384,6 +3528,22 @@ def process_webhook_sync(raw: bytes):
         final_decision in ["BUY", "SELL"]
         and signal_score >= threshold
     )
+
+    # 🟥 [FIX-MACRO1] 다른 종목에서 켜진 경보라도 여기서 막는다
+    _mb, _mb_why = _macro_block_active()
+    if should_execute and _mb:
+        should_execute = False
+        _block_label = f"MACRO_NEWS: {_mb_why}"
+        print(f"🌐 [거시차단] {pair} — {_mb_why}")
+        reasons.append(f"🌐 거시 뉴스 경보로 진입 차단 — {_mb_why}")
+
+    # 🟥 [FIX-HB1] threshold 와 무관한 하드 차단. 점수가 아무리 높아도 막는다.
+    _hb, _hb_why = _hard_blocked(reasons)
+    if should_execute and _hb:
+        should_execute = False
+        _block_label = f"HARD_BLOCK: {_hb_why}"
+        print(f"⛔ [하드차단] {pair} — {_hb_why} (점수 {signal_score:.2f} 와 무관하게 차단)")
+        reasons.append(f"⛔ 위 조건으로 진입을 실제로 차단했습니다 (점수 {signal_score:.2f})")
     
     # 2️⃣ RSI 극단값 필터 (❗ 차단만 가능, True로 되살리지 않음)
     # 🟦 주식은 이 필터를 적용하지 않음 — Pine 전략(BUY STOCK PORTFOLIO)이 돌파/모멘텀
@@ -4180,15 +4340,17 @@ def filter_relevant_news(pair, within_minutes=90):
     return relevant
 
 def news_risk_score(pair):
+    """🟥 [FIX-MACRO1] 세 번째로 '실제 이벤트 제목 리스트' 를 같이 돌려준다.
+    예전엔 고정 문구 4개만 반환해서, 거시 키워드 스캔이 FX 에서는 절대 걸리지 않았다."""
     relevant = filter_relevant_news(pair)
     if any("High" in title for title in relevant):
-        return -2, "⚠️ 고위험 뉴스 임박"
+        return -2, "⚠️ 고위험 뉴스 임박", relevant
     elif any("Medium" in title for title in relevant):
-        return -1, "⚠️ 중간위험 뉴스 임박"
+        return -1, "⚠️ 중간위험 뉴스 임박", relevant
     elif relevant:
-        return 0, "🟢 뉴스 있음 (낮은 영향)"
+        return 0, "🟢 뉴스 있음 (낮은 영향)", relevant
     else:
-        return 0, "🟢 영향 있는 뉴스 없음"
+        return 0, "🟢 영향 있는 뉴스 없음", relevant
 
 def fetch_forex_news():
     try:
@@ -5528,6 +5690,25 @@ def place_order_alpaca(symbol, side, notional_usd, ref_price, tp, sl, digits=2, 
 
         # 🟦 신호가 vs 실시간가 차이가 비정상적으로 크면(예: 알림 자체가 묵혀있다가 늦게 도착한 경우),
         #    TP/SL을 억지로 끼워맞춰 체결시키는 대신 그냥 스킵한다 — 신호가 더 이상 신뢰할 수 없기 때문.
+        # 🟥 [FIX-COST1] 퍼센트가 아니라 ATR 대비로 본다.
+        #   같은 0.02% 이동이라도 ATR 이 큰 종목엔 무시할 수준이고
+        #   ATR 이 작은 종목(TLT·EWJ)엔 손익을 좌우한다.
+        # ⚠️ 개장 직후 전략(G3)은 제외한다. 09:31 의 1분봉 ATR 은 장전 봉을 재서
+        #    비정상적으로 좁고, 그 값으로 비율을 내면 정상 주문까지 전부 막힌다.
+        #    그 전략은 애초에 ATR 을 안 쓰려고 구조적 손절을 쓰는 것이다.
+        _cost_exempt = _STRUCTURAL_SLTP.get()
+        if COST_ATR_GATE_ENABLED and not _cost_exempt and atr and float(atr) > 0 and delta:
+            _cost_ratio = abs(float(delta)) / float(atr) * 100.0
+            if _cost_ratio > COST_ATR_MAX_PCT:
+                print(f"⛔ [비용차단] {symbol} 신호가→현재가 이동 {abs(delta):.4f} 이 "
+                      f"ATR({float(atr):.4f}) 의 {_cost_ratio:.1f}% — 한도 {COST_ATR_MAX_PCT}% 초과 → 주문 스킵")
+                return {
+                    "status": "skipped",
+                    "reason": f"cost_atr_{_cost_ratio:.1f}pct_exceeds_{COST_ATR_MAX_PCT}pct",
+                    "ref_price": ref_price, "fresh_price": fresh_price,
+                    "atr": float(atr),
+                }
+
         if gap_pct > ALPACA_MAX_PRICE_GAP_PCT:
             print(f"⛔ [Alpaca] {symbol} 가격 갱신 폭({gap_pct:.2f}%)이 한도({ALPACA_MAX_PRICE_GAP_PCT}%) 초과 "
                   f"(신호가={ref_price} → 실시간가={fresh_price}) → 주문 스킵 (신호 신뢰 불가)")
