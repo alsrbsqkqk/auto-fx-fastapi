@@ -1934,7 +1934,8 @@ OUTCOME_TRACKER_INTERVAL_MINUTES = int(os.getenv("OUTCOME_TRACKER_INTERVAL_MINUT
 # ------------------------------------------------------------
 #  90분 컷오프는 TP=ATR×2.4 목표와 수학적으로 모순이었다.
 #    · 실거래 데이터: TP=ATR×1.0 도달까지 중앙 21분
-#    · TP 거리를 2.4배로 늘리면 필요 시간은 약 2.4² ≈ 5.8배 → 중앙 122분
+#    · TP 거리를 2.0배로 늘리면 필요 시간은 약 2.0² = 4배 → 중앙 약 85분
+#      (2.4 배였을 때는 2.4² ≈ 5.8배 → 중앙 122분 이었다)
 #    · 즉 90분(15분봉 6개) 안에 2.4 ATR을 달성하라는 요구가 되어,
 #      이길 거래의 절반 이상을 TP 도달 전에 강제로 잘라낸다.
 #  게다가 실측상 90분 초과 보유 구간이 유일한 흑자 구간이었다:
@@ -1970,7 +1971,8 @@ STOCK_EOD_FLATTEN_HHMM = int(os.getenv("STOCK_EOD_FLATTEN_HHMM", "1550"))
 #     파생시켜, 어떤 파라미터를 만져도 손익비가 절대 무너지지 않게 한다.
 #     (기존 구조는 TP/SL 배수를 따로 두어 손익비가 조용히 1.0으로 붕괴했다.)
 #
-#  기본값: SL 1.5×ATR, RR 1.6 → TP 2.4×ATR. 손익분기 필요 승률 38.5%.
+#  기본값: SL 1.5×ATR, TP 2.0×ATR (RR 1.333). 손익분기 필요 승률 42.9%.
+#  (2026-08-31 실측 156건 기준 실제 승률 50.0% — 여유 7.1%p)
 #  ⚠️ TradingView Pine 전략의 tpATR/slATR 입력값도 같이 맞춰야 정렬이 유지된다.
 # ============================================================
 # 🟥 [FIX-FX3] FX 가상 TP/SL 계산용 (알림에 tp/sl 이 없을 때만 사용)
@@ -2065,7 +2067,13 @@ SETUP_RECHECK_ENABLED = os.getenv("SETUP_RECHECK_ENABLED", "false").strip().lowe
 #      (이 값은 이미 place_order_alpaca 가 계산하고 있다 — 기준만 바꾼다)
 # ============================================================
 COST_ATR_GATE_ENABLED = os.getenv("COST_ATR_GATE_ENABLED", "true").strip().lower() != "false"
-COST_ATR_MAX_PCT = float(os.getenv("COST_ATR_MAX_PCT", "12"))   # 이동폭이 ATR 의 12% 넘으면 스킵
+# 🟥 [FIX-COST3] 12 → 20 (2026-08-31)
+#  12 는 내가 데이터 없이 정한 값이었다. 실측하니 알람 124건 중 이 게이트가 막은 건
+#  4건(3.2%) 뿐이고, 그중 3건은 09:45 개장 직후의 ATR stale 버그(=FIX-COST2 로 수정)였다.
+#  즉 "대부분을 막고 있다"는 아니었지만, 12 라는 숫자 자체에 근거가 없었던 것도 사실이다.
+#  이제 ATR 과 무관한 절대 상한(COST_MAX_DRIFT_PCT)이 실질 방어선이므로 20 으로 완화한다.
+#  (ATR 1% 종목 기준 20% = 0.2% 이동. 여전히 충분히 빡빡하다)
+COST_ATR_MAX_PCT = float(os.getenv("COST_ATR_MAX_PCT", "20"))
 
 # ============================================================
 # 🟥 [FIX-COST2] 개장 직후 ATR 은 '밤새 조용한 봉' 을 잰 값이라 분모로 쓰면 안 된다.
@@ -2194,10 +2202,29 @@ ALERT_SL_FX_MAX_PCT = float(os.getenv("ALERT_SL_FX_MAX_PCT", "0.60"))   # 159.9 
 ALERT_SLTP_FX_MAX_DRIFT_PCT = float(os.getenv("ALERT_SLTP_FX_MAX_DRIFT_PCT", "0.05"))  # 약 8pip
 
 STOCK_SL_ATR_MULT = float(os.getenv("STOCK_SL_ATR_MULT", "1.5"))
-# 목표 손익비(Reward:Risk). TP 거리 = SL 거리 × 이 값.
-STOCK_RR_RATIO = float(os.getenv("STOCK_RR_RATIO", "1.6"))
-# TP 배수는 파생값 — 직접 설정하지 말 것. (하위호환용으로 이름만 유지)
-STOCK_TP_ATR_MULT = STOCK_SL_ATR_MULT * STOCK_RR_RATIO
+# ============================================================
+# 🟥 [FIX-TP1] TP 배수를 1차 손잡이로 승격 (2026-08-31)
+# ------------------------------------------------------------
+#  기존: RR(1.6) 이 기준이고 TP 배수는 파생값 → 사용자는 "TP = ATR×2.4" 로 생각하는데
+#        손잡이는 1.6 이라 직관과 어긋났다. 이제 TP 배수를 직접 설정한다.
+#  변경: TP = ATR×2.4 → ATR×2.0 (RR 1.6 → 1.333)
+#
+#  근거 (Alpaca 실거래 156건, 2026-08-31 실측):
+#    · TP 도달 58건 / SL 도달 67건 / TIME_EXIT 31건, 승률 50.0%, PF 1.257
+#    · TP 를 0.833배(2.4→2.0) 로 줄였을 때의 하한 시뮬레이션:
+#        총 수익률합 +13.55% → +3.27%  (손절건의 TP 전환을 0으로 놓은 최악 가정)
+#      본전이 되려면 손절 67건 중 6.3건(9%)만 TP 로 바뀌면 된다. 낮은 문턱이다.
+#    · 손익분기 승률 38.5% → 42.9%. 실제 승률 50.0% 이므로 여전히 여유가 있다.
+#  ⚠️ 단, MFE(손절 전 최대 유리 이동)를 아직 기록하지 않아 전환 건수를 정확히 셀 수 없다.
+#     250건 시점에 재측정할 것. MFE 추적이 붙으면 이 값을 근거 있게 확정할 수 있다.
+STOCK_TP_ATR_MULT = float(os.getenv("STOCK_TP_ATR_MULT", "2.0"))
+#  하위호환: STOCK_RR_RATIO 를 환경변수로 직접 넣으면 그쪽이 이긴다.
+_rr_env = os.getenv("STOCK_RR_RATIO", "").strip()
+if _rr_env:
+    STOCK_RR_RATIO = float(_rr_env)
+    STOCK_TP_ATR_MULT = STOCK_SL_ATR_MULT * STOCK_RR_RATIO
+else:
+    STOCK_RR_RATIO = STOCK_TP_ATR_MULT / STOCK_SL_ATR_MULT if STOCK_SL_ATR_MULT else 1.6
 
 # FX(OANDA)측 최소 손익비. adjust_tp_sl_for_structure 에서 강제한다.
 FX_MIN_RR_RATIO = float(os.getenv("FX_MIN_RR_RATIO", "1.8"))
