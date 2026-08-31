@@ -2067,6 +2067,26 @@ SETUP_RECHECK_ENABLED = os.getenv("SETUP_RECHECK_ENABLED", "false").strip().lowe
 COST_ATR_GATE_ENABLED = os.getenv("COST_ATR_GATE_ENABLED", "true").strip().lower() != "false"
 COST_ATR_MAX_PCT = float(os.getenv("COST_ATR_MAX_PCT", "12"))   # 이동폭이 ATR 의 12% 넘으면 스킵
 
+# ============================================================
+# 🟥 [FIX-COST2] 개장 직후 ATR 은 '밤새 조용한 봉' 을 잰 값이라 분모로 쓰면 안 된다.
+# ------------------------------------------------------------
+#  실측 (2026-08-31 09:45, 15분봉):
+#    TSLA  ATR 1.60  vs  09:30~09:45 봉 실제 범위 약 15  → 9.4배
+#    PANW  ATR 2.09  vs  약 14                        → 6.7배
+#    PLTR  ATR 0.84  vs  약 3.5                       → 4.2배
+#  15분봉 ATR(14) 은 3시간 반을 보는데, 09:45 시점엔 그 14봉 중 12봉이 시간외 봉이다.
+#  그래서 정상적인 $0.66 (TSLA 기준 0.185%) 이동이 "ATR 의 41.4%" 로 읽혀
+#  멀쩡한 주문이 전부 차단됐다. 판단 문제가 아니라 측정 오류다.
+#
+#  보정: 개장 직후 구간만 한도를 올린다. 배수는 위 실측의 '가장 약한' 왜곡(4.2배)에
+#        맞춘다 → 12% × 4 ≈ 50%. (오늘 값에 맞춘 게 아니라 왜곡 배수에서 유도한 값)
+COST_ATR_OPEN_MAX_PCT   = float(os.getenv("COST_ATR_OPEN_MAX_PCT", "50"))
+COST_ATR_OPEN_UNTIL_HHMM = int(os.getenv("COST_ATR_OPEN_UNTIL_HHMM", "1015"))
+#  ⚠️ 한도를 푸는 만큼, ATR 과 무관한 절대 상한을 하나 둔다.
+#     ATR 이 아무리 stale 해도 가격의 0.30% 넘게 밀렸으면 신호가 낡은 것이다.
+#     (이 값은 항상 적용된다 — 개장 직후에도)
+COST_MAX_DRIFT_PCT = float(os.getenv("COST_MAX_DRIFT_PCT", "0.30"))
+
 MACRO_NEWS_ENABLED = os.getenv("MACRO_NEWS_ENABLED", "true").strip().lower() != "false"
 MACRO_BLOCK_MINUTES = int(os.getenv("MACRO_BLOCK_MINUTES", "90"))
 
@@ -2155,6 +2175,23 @@ ALERT_SL_MAX_PCT = float(os.getenv("ALERT_SL_MAX_PCT", "3"))
 ALERT_SL_MIN_PCT = float(os.getenv("ALERT_SL_MIN_PCT", "0.15"))
 #  알림이 계산한 가격과 봇이 다시 받은 가격이 이보다 벌어지면 구조값을 못 믿는다
 ALERT_SLTP_MAX_DRIFT_PCT = float(os.getenv("ALERT_SLTP_MAX_DRIFT_PCT", "0.5"))
+
+# ============================================================
+# 🟥 [FIX-FXSL1] FX 도 알림의 TP/SL 을 쓸 수 있게 한다.
+# ------------------------------------------------------------
+#  기존: 위 구조적 TP/SL 블록에 is_stock_pair(pair) 게이트가 걸려 있어서
+#        FX 는 Pine 이 보낸 tp/sl 이 **주문에 단 한 번도 반영되지 않았다.**
+#        FX 의 실제 TP/SL 은 (1) GPT 가 말한 값, 아니면
+#        (2) calculate_realistic_tp_sl() + adjust_tp_sl_for_structure()
+#            → FX_MIN_RR_RATIO(1.8) 강제 확대, 로 정해졌다.
+#        즉 스캘핑처럼 'TP/SL 자체가 전략'인 경우 백테스트와 실전이 완전히 달라진다.
+#  수정: 전략 이름이 ALERT_SLTP_STRATEGIES 에 있으면 FX 도 알림값을 존중한다.
+#  ⚠️ 임계값은 주식과 같이 쓰면 안 된다. 주식 하한 0.15% 는 USD/JPY 159.9 에서
+#     24pip 이라 스캘핑 손절(6~15pip)이 전부 거부된다. FX 전용 값을 따로 둔다.
+ALERT_SL_FX_MIN_PCT = float(os.getenv("ALERT_SL_FX_MIN_PCT", "0.02"))   # 159.9 기준 약 3.2pip
+ALERT_SL_FX_MAX_PCT = float(os.getenv("ALERT_SL_FX_MAX_PCT", "0.60"))   # 159.9 기준 약 96pip
+#  드리프트 한도도 마찬가지. 0.5% = 80pip 은 FX 에서 사실상 무제한이라 의미가 없다.
+ALERT_SLTP_FX_MAX_DRIFT_PCT = float(os.getenv("ALERT_SLTP_FX_MAX_DRIFT_PCT", "0.05"))  # 약 8pip
 
 STOCK_SL_ATR_MULT = float(os.getenv("STOCK_SL_ATR_MULT", "1.5"))
 # 목표 손익비(Reward:Risk). TP 거리 = SL 거리 × 이 값.
@@ -3400,7 +3437,13 @@ def process_webhook_sync(raw: bytes):
 
     # 🟥 [FIX-SLTP1] 구조적 손절을 쓰는 전략은 알림이 보낸 값을 그대로 쓴다.
     _use_alert_sltp = False
-    if (is_stock_pair(pair) and _calc_direction and price is not None
+    # 🟥 [FIX-FXSL1] is_stock_pair() 게이트 제거 — FX 도 통과시킨다.
+    #    대신 아래에서 상품 유형별 임계값(_sl_min/_sl_max/_drift_max)을 갈라 쓴다.
+    _sltp_is_stock = is_stock_pair(pair)
+    _sl_min   = ALERT_SL_MIN_PCT if _sltp_is_stock else ALERT_SL_FX_MIN_PCT
+    _sl_max   = ALERT_SL_MAX_PCT if _sltp_is_stock else ALERT_SL_FX_MAX_PCT
+    _drift_max = ALERT_SLTP_MAX_DRIFT_PCT if _sltp_is_stock else ALERT_SLTP_FX_MAX_DRIFT_PCT
+    if (_calc_direction and price is not None
             and _normalize_strategy_name(strategy_name) in ALERT_SLTP_STRATEGIES):
         def _n(v):
             try:
@@ -3423,10 +3466,10 @@ def process_webhook_sync(raw: bytes):
         if _a_tp is not None and _a_sl is not None:
             _ok_dir = (_a_tp > _alert_px > _a_sl) if _calc_direction == "BUY" else (_a_sl > _alert_px > _a_tp)
             _risk_pct = abs(_alert_px - _a_sl) / _alert_px * 100.0 if _alert_px else 0.0
-            if _drift > ALERT_SLTP_MAX_DRIFT_PCT:
+            if _drift > _drift_max:
                 print(f"⚠️ [구조손절] {pair} 알림가 {_alert_px} → 현재가 {price} "
-                      f"({_drift:.2f}% 이동, 한도 {ALERT_SLTP_MAX_DRIFT_PCT}%) → 구조값 못 믿음, ATR 로 계산")
-            elif _ok_dir and ALERT_SL_MIN_PCT <= _risk_pct <= ALERT_SL_MAX_PCT:
+                      f"({_drift:.3f}% 이동, 한도 {_drift_max}%) → 구조값 못 믿음, ATR 로 계산")
+            elif _ok_dir and _sl_min <= _risk_pct <= _sl_max:
                 _use_alert_sltp = True
                 _STRUCTURAL_SLTP.set(True)
                 if final_decision in ("BUY", "SELL"):
@@ -3443,7 +3486,7 @@ def process_webhook_sync(raw: bytes):
             else:
                 print(f"⚠️ [구조손절] {pair} 알림 TP/SL 거부 "
                       f"(tp={_a_tp}, sl={_a_sl}, 알림가={_alert_px}, 위험 {_risk_pct:.2f}%, "
-                      f"허용 {ALERT_SL_MIN_PCT}~{ALERT_SL_MAX_PCT}%) → ATR 로 계산")
+                      f"허용 {_sl_min}~{_sl_max}%) → ATR 로 계산")
         else:
             print(f"⚠️ [구조손절] {pair} 알림에 tp/sl 이 없음 (tp={_a_tp}, sl={_a_sl}) → ATR 로 계산")
 
@@ -5699,12 +5742,33 @@ def place_order_alpaca(symbol, side, notional_usd, ref_price, tp, sl, digits=2, 
         _cost_exempt = _STRUCTURAL_SLTP.get()
         if COST_ATR_GATE_ENABLED and not _cost_exempt and atr and float(atr) > 0 and delta:
             _cost_ratio = abs(float(delta)) / float(atr) * 100.0
-            if _cost_ratio > COST_ATR_MAX_PCT:
-                print(f"⛔ [비용차단] {symbol} 신호가→현재가 이동 {abs(delta):.4f} 이 "
-                      f"ATR({float(atr):.4f}) 의 {_cost_ratio:.1f}% — 한도 {COST_ATR_MAX_PCT}% 초과 → 주문 스킵")
+            # 🟥 [FIX-COST2] 개장 직후(09:30~COST_ATR_OPEN_UNTIL_HHMM)는 ATR 이 시간외 봉을
+            #    재고 있어 분모가 4~9배 작다. 그 구간만 한도를 올린다.
+            try:
+                _et = datetime.now(ZoneInfo("America/New_York"))
+                _et_hhmm = _et.hour * 100 + _et.minute
+            except Exception:
+                _et_hhmm = 0
+            _in_open_window = 930 <= _et_hhmm <= COST_ATR_OPEN_UNTIL_HHMM
+            _limit = COST_ATR_OPEN_MAX_PCT if _in_open_window else COST_ATR_MAX_PCT
+            # ATR 과 무관한 절대 상한 — stale ATR 로도 못 뚫는 안전장치
+            try:
+                _drift_pct = abs(float(delta)) / float(ref_price) * 100.0 if float(ref_price) else 0.0
+            except Exception:
+                _drift_pct = 0.0
+            _over_atr   = _cost_ratio > _limit
+            _over_drift = _drift_pct > COST_MAX_DRIFT_PCT
+            if _over_atr or _over_drift:
+                _why = "ATR비율" if _over_atr else "절대이동"
+                print(f"⛔ [비용차단/{_why}] {symbol} 신호가→현재가 이동 {abs(delta):.4f} "
+                      f"({_drift_pct:.3f}%) = ATR({float(atr):.4f}) 의 {_cost_ratio:.1f}% "
+                      f"— 한도 ATR {_limit}% / 절대 {COST_MAX_DRIFT_PCT}% "
+                      f"({'개장직후' if _in_open_window else '평시'}) → 주문 스킵")
                 return {
                     "status": "skipped",
-                    "reason": f"cost_atr_{_cost_ratio:.1f}pct_exceeds_{COST_ATR_MAX_PCT}pct",
+                    "reason": (f"cost_atr_{_cost_ratio:.1f}pct_exceeds_{_limit}pct"
+                               if _over_atr else
+                               f"cost_drift_{_drift_pct:.3f}pct_exceeds_{COST_MAX_DRIFT_PCT}pct"),
                     "ref_price": ref_price, "fresh_price": fresh_price,
                     "atr": float(atr),
                 }
