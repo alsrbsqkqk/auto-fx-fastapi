@@ -2051,7 +2051,8 @@ SETUP_RECHECK_ENABLED = os.getenv("SETUP_RECHECK_ENABLED", "false").strip().lowe
 #    그 시간 동안은 모든 종목의 신규 진입을 막는다.
 # ============================================================
 # ============================================================
-# 🟥 [FIX-COST1] 비용을 'ATR 대비' 로 잰다
+# 🟦 [FIX-COST1 — 폐기됨. 아래 FIX-COST4 로 대체] 비용을 'ATR 대비' 로 재던 시절의 기록.
+#    측정치(8/28 슬리피지)는 여전히 유효하므로 남겨둔다. 판정 방식만 바뀌었다.
 # ------------------------------------------------------------
 #  ■ 8/28 실측 (알림가 → 실제 체결가)
 #      SPY   슬립 $0.010 / ATR 1.32   =  0.8%  ✅
@@ -2063,36 +2064,37 @@ SETUP_RECHECK_ENABLED = os.getenv("SETUP_RECHECK_ENABLED", "false").strip().lowe
 #    처음엔 'ATR/주가가 낮으면 문제' 라고 봤는데 틀렸다.
 #    SPY 는 ATR/주가가 0.17% 로 낮은데도 가장 저렴하고,
 #    EWJ 는 0.25% 로 더 큰데 26% 를 먹는다. **유동성이 결정한다.**
-#    → 주문 직전 '신호가 대비 현재가 이동폭' 을 ATR 로 나눠서 판정한다.
-#      (이 값은 이미 place_order_alpaca 가 계산하고 있다 — 기준만 바꾼다)
+#    → 당시 결론: 이동폭을 ATR 로 나눠서 판정한다.
+#    ⚠️ 이 결론은 2026-08-31 에 폐기됐다. 개장 직후 ATR 이 시간외 봉을 재는 바람에
+#       ATR 기반 판정이 통째로 무의미해지는 게 확인됐기 때문이다. 지금은 이동폭을
+#       '가격의 %' 로만 본다 (FIX-COST4).
 # ============================================================
-COST_ATR_GATE_ENABLED = os.getenv("COST_ATR_GATE_ENABLED", "true").strip().lower() != "false"
-# 🟥 [FIX-COST3] 12 → 20 (2026-08-31)
-#  12 는 내가 데이터 없이 정한 값이었다. 실측하니 알람 124건 중 이 게이트가 막은 건
-#  4건(3.2%) 뿐이고, 그중 3건은 09:45 개장 직후의 ATR stale 버그(=FIX-COST2 로 수정)였다.
-#  즉 "대부분을 막고 있다"는 아니었지만, 12 라는 숫자 자체에 근거가 없었던 것도 사실이다.
-#  이제 ATR 과 무관한 절대 상한(COST_MAX_DRIFT_PCT)이 실질 방어선이므로 20 으로 완화한다.
-#  (ATR 1% 종목 기준 20% = 0.2% 이동. 여전히 충분히 빡빡하다)
-COST_ATR_MAX_PCT = float(os.getenv("COST_ATR_MAX_PCT", "20"))
-
 # ============================================================
-# 🟥 [FIX-COST2] 개장 직후 ATR 은 '밤새 조용한 봉' 을 잰 값이라 분모로 쓰면 안 된다.
+# 🟥 [FIX-COST4] ATR 비율 게이트 삭제 — 절대 이동폭 하나만 남긴다 (2026-08-31)
 # ------------------------------------------------------------
-#  실측 (2026-08-31 09:45, 15분봉):
-#    TSLA  ATR 1.60  vs  09:30~09:45 봉 실제 범위 약 15  → 9.4배
-#    PANW  ATR 2.09  vs  약 14                        → 6.7배
-#    PLTR  ATR 0.84  vs  약 3.5                       → 4.2배
-#  15분봉 ATR(14) 은 3시간 반을 보는데, 09:45 시점엔 그 14봉 중 12봉이 시간외 봉이다.
-#  그래서 정상적인 $0.66 (TSLA 기준 0.185%) 이동이 "ATR 의 41.4%" 로 읽혀
-#  멀쩡한 주문이 전부 차단됐다. 판단 문제가 아니라 측정 오류다.
+#  삭제 이유:
+#    · 12% → 20% 로 올렸지만, 두 숫자 다 내가 데이터 없이 정한 값이었다.
+#      "ATR 의 12%" 는 사람이 판단할 수 있는 단위가 아니다.
+#    · 실측: 알람 124건 중 이 게이트가 막은 건 4건(3.2%), 그중 3건은
+#      개장 직후 ATR stale 버그였다. 실질 효과가 거의 없었다.
+#    · 결정적으로 — 개장 직후엔 ATR 자체를 못 믿는다. ATR 에서 파생된 어떤 기준도
+#      그 시간대엔 무의미하다. 그래서 예외 창(09:30~10:15)까지 따로 만들어야 했다.
+#      기준을 ATR 에서 떼면 그 특수 케이스가 통째로 사라진다.
 #
-#  보정: 개장 직후 구간만 한도를 올린다. 배수는 위 실측의 '가장 약한' 왜곡(4.2배)에
-#        맞춘다 → 12% × 4 ≈ 50%. (오늘 값에 맞춘 게 아니라 왜곡 배수에서 유도한 값)
-COST_ATR_OPEN_MAX_PCT   = float(os.getenv("COST_ATR_OPEN_MAX_PCT", "50"))
-COST_ATR_OPEN_UNTIL_HHMM = int(os.getenv("COST_ATR_OPEN_UNTIL_HHMM", "1015"))
-#  ⚠️ 한도를 푸는 만큼, ATR 과 무관한 절대 상한을 하나 둔다.
-#     ATR 이 아무리 stale 해도 가격의 0.30% 넘게 밀렸으면 신호가 낡은 것이다.
-#     (이 값은 항상 적용된다 — 개장 직후에도)
+#  남기는 것: '신호가 대비 몇 % 밀렸나' 하나.
+#    단위가 명확하고(가격의 %), 개장이든 장중이든 똑같이 동작하며, 예외가 필요 없다.
+#    실측 참고(2026-08-31 09:45): TSLA 0.185% / PANW 0.116% / PLTR 0.059%
+#
+#  ⚠️ 알려진 구멍: ATR 이 아주 작은 종목(예: 채권 ETF, ATR 0.17%)에서는
+#     0.30% 이동이 ATR 을 통째로 넘는데도 통과한다. 지금 종목군(TSLA·PLTR·PANW·
+#     ANET·NVDA·META·GEV·MU·AMAT·APP·CRWV·TZA)은 전부 변동성이 커서 문제가 안 되지만,
+#     저변동성 종목을 편입하면 이 게이트를 다시 설계해야 한다.
+#
+#  ⚠️ 0.30 도 아직 근거 있는 값이 아니다. 그래서 이제 '차단 여부와 무관하게'
+#     매 주문의 실제 이동폭을 로그에 남긴다. 분포가 쌓이면 그때 숫자로 정한다.
+# ============================================================
+COST_DRIFT_GATE_ENABLED = os.getenv("COST_DRIFT_GATE_ENABLED",
+                                    os.getenv("COST_ATR_GATE_ENABLED", "true")).strip().lower() != "false"
 COST_MAX_DRIFT_PCT = float(os.getenv("COST_MAX_DRIFT_PCT", "0.30"))
 
 MACRO_NEWS_ENABLED = os.getenv("MACRO_NEWS_ENABLED", "true").strip().lower() != "false"
@@ -5766,39 +5768,25 @@ def place_order_alpaca(symbol, side, notional_usd, ref_price, tp, sl, digits=2, 
         # ⚠️ 개장 직후 전략(G3)은 제외한다. 09:31 의 1분봉 ATR 은 장전 봉을 재서
         #    비정상적으로 좁고, 그 값으로 비율을 내면 정상 주문까지 전부 막힌다.
         #    그 전략은 애초에 ATR 을 안 쓰려고 구조적 손절을 쓰는 것이다.
+        # 🟥 [FIX-COST4] 신호가 → 주문 시점 가격의 이동폭만 본다. ATR 은 쓰지 않는다.
+        #   G3 처럼 구조적 손절을 쓰는 전략은 면제 (자체 손절이 이미 구조에서 나온다).
         _cost_exempt = _STRUCTURAL_SLTP.get()
-        if COST_ATR_GATE_ENABLED and not _cost_exempt and atr and float(atr) > 0 and delta:
-            _cost_ratio = abs(float(delta)) / float(atr) * 100.0
-            # 🟥 [FIX-COST2] 개장 직후(09:30~COST_ATR_OPEN_UNTIL_HHMM)는 ATR 이 시간외 봉을
-            #    재고 있어 분모가 4~9배 작다. 그 구간만 한도를 올린다.
-            try:
-                _et = datetime.now(ZoneInfo("America/New_York"))
-                _et_hhmm = _et.hour * 100 + _et.minute
-            except Exception:
-                _et_hhmm = 0
-            _in_open_window = 930 <= _et_hhmm <= COST_ATR_OPEN_UNTIL_HHMM
-            _limit = COST_ATR_OPEN_MAX_PCT if _in_open_window else COST_ATR_MAX_PCT
-            # ATR 과 무관한 절대 상한 — stale ATR 로도 못 뚫는 안전장치
-            try:
-                _drift_pct = abs(float(delta)) / float(ref_price) * 100.0 if float(ref_price) else 0.0
-            except Exception:
-                _drift_pct = 0.0
-            _over_atr   = _cost_ratio > _limit
-            _over_drift = _drift_pct > COST_MAX_DRIFT_PCT
-            if _over_atr or _over_drift:
-                _why = "ATR비율" if _over_atr else "절대이동"
-                print(f"⛔ [비용차단/{_why}] {symbol} 신호가→현재가 이동 {abs(delta):.4f} "
-                      f"({_drift_pct:.3f}%) = ATR({float(atr):.4f}) 의 {_cost_ratio:.1f}% "
-                      f"— 한도 ATR {_limit}% / 절대 {COST_MAX_DRIFT_PCT}% "
-                      f"({'개장직후' if _in_open_window else '평시'}) → 주문 스킵")
-                return {
-                    "status": "skipped",
-                    "reason": (f"cost_atr_{_cost_ratio:.1f}pct_exceeds_{_limit}pct"
-                               if _over_atr else
-                               f"cost_drift_{_drift_pct:.3f}pct_exceeds_{COST_MAX_DRIFT_PCT}pct"),
-                    "ref_price": ref_price, "fresh_price": fresh_price,
-                    "atr": float(atr),
-                }
+        try:
+            _drift_pct = abs(float(delta)) / float(ref_price) * 100.0 if float(ref_price) else 0.0
+        except Exception:
+            _drift_pct = 0.0
+        # 차단 여부와 무관하게 항상 남긴다 — 나중에 분포를 보고 한도를 근거 있게 정하기 위해.
+        print(f"📏 [체결지연] {symbol} 신호가 {ref_price} → 주문시점 {fresh_price} "
+              f"({delta:+.4f}, {_drift_pct:.3f}%)")
+        if COST_DRIFT_GATE_ENABLED and not _cost_exempt and _drift_pct > COST_MAX_DRIFT_PCT:
+            print(f"⛔ [비용차단] {symbol} 이동 {_drift_pct:.3f}% > 한도 {COST_MAX_DRIFT_PCT}% "
+                  f"→ 신호가 낡았다고 보고 주문 스킵")
+            return {
+                "status": "skipped",
+                "reason": f"cost_drift_{_drift_pct:.3f}pct_exceeds_{COST_MAX_DRIFT_PCT}pct",
+                "ref_price": ref_price, "fresh_price": fresh_price,
+                "atr": float(atr) if atr else None,
+            }
 
         if gap_pct > ALPACA_MAX_PRICE_GAP_PCT:
             print(f"⛔ [Alpaca] {symbol} 가격 갱신 폭({gap_pct:.2f}%)이 한도({ALPACA_MAX_PRICE_GAP_PCT}%) 초과 "
@@ -7707,6 +7695,117 @@ def close_stale_positions(cutoff_minutes=None):
     return {"checked": checked, "closed": closed, "eod_flatten": eod_flatten}
 
 
+# ============================================================
+# 🟥 [FIX-MFE1] MFE / MAE 추적 (2026-08-31)
+# ------------------------------------------------------------
+#  왜 필요한가:
+#    "TP 배수를 2.4 로 둘까 2.0 으로 둘까"를 지금까지 추정으로만 답했다.
+#    진입가·청산가만 있으면 '손절난 거래가 잘리기 전에 어디까지 갔었나'를 알 수 없어서,
+#    "TP 를 좁히면 손절 몇 건이 승리로 바뀌는가"를 셀 수가 없다.
+#    MFE(최대 유리 이동)를 기록하면 그 질문에 정확히 답할 수 있다.
+#    MAE(최대 불리 이동)는 반대로 "SL 을 넓혔으면 살았을 거래"를 세게 해준다.
+#
+#  ⚠️ 정확도 한계 — 반드시 알고 쓸 것:
+#    무료(Basic) 플랜은 IEX 피드만 준다. IEX 는 전체 거래량의 2~10% 만 보므로
+#    1분봉의 고가/저가가 실제 전체시장 극단값보다 **작게** 나온다.
+#    즉 여기서 나오는 MFE 는 **하한**이다. 실제 MFE 는 이 값 이상이다.
+#    → "MFE 가 X% 였다" 는 보수적으로 읽고, 방향 판단(대부분이 TP 근처까지 갔나)에만 쓴다.
+#
+#  비용 관리: 청산된 거래 1건당 API 1회. 이미 계산된 값은 시트에서 읽어 재사용하고,
+#            한 번의 동기화에서 최대 MFE_MAX_FETCH_PER_SYNC 건만 새로 계산한다.
+#            (나머지는 다음 동기화에서 채워진다 — 시간이 지나면 전부 채워짐)
+# ============================================================
+MFE_TRACK_ENABLED = os.getenv("MFE_TRACK_ENABLED", "true").strip().lower() != "false"
+MFE_MAX_FETCH_PER_SYNC = int(os.getenv("MFE_MAX_FETCH_PER_SYNC", "40"))
+#  방금 닫힌 거래는 데이터가 아직 안 채워졌을 수 있어 잠깐 미룬다(다음 동기화에서 계산).
+MFE_MIN_AGE_MINUTES = int(os.getenv("MFE_MIN_AGE_MINUTES", "20"))
+#  ⚠️ 건수 한도만으로는 부족하다. 알파카가 느려지면 40건 × 타임아웃 = 수 분간 물린다.
+#     동기화 1회당 MFE 계산에 쓸 수 있는 총 시간을 벽시계로 못박는다.
+MFE_TIME_BUDGET_SEC = int(os.getenv("MFE_TIME_BUDGET_SEC", "60"))
+#  무료 플랜은 iex. 유료(SIP)면 환경변수로 sip 로 바꾸면 MFE 정확도가 크게 올라간다.
+ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "iex").strip().lower()
+#  ⚠️ 바 데이터가 아예 없는 거래(상장폐지·데이터 공백 등)는 영원히 재시도하며 API 를 먹는다.
+#     너무 오래된 거래는 아예 시도하지 않아 그 누수를 막는다.
+MFE_MAX_AGE_DAYS = int(os.getenv("MFE_MAX_AGE_DAYS", "45"))
+
+
+def _fetch_excursion(symbol, side, entry_price, entry_iso, exit_iso):
+    """보유 구간의 1분봉을 받아 (MFE%, MAE%) 를 돌려준다. 실패하면 (None, None).
+
+    MFE = 보유 중 '가장 유리했던' 지점까지의 이동 (BUY 면 최고가, SELL 이면 최저가)
+    MAE = 보유 중 '가장 불리했던' 지점까지의 이동 (부호는 음수)
+    """
+    if not (symbol and entry_price and entry_iso and exit_iso):
+        return None, None
+    try:
+        t1 = datetime.fromisoformat(str(entry_iso).replace("Z", "+00:00"))
+        t2 = datetime.fromisoformat(str(exit_iso).replace("Z", "+00:00"))
+    except Exception:
+        return None, None
+    if t2 <= t1:
+        return None, None
+    # ⚠️ 방금 끝난 거래는 건너뛴다 — 바 데이터가 아직 안 올라와 MFE 가 0 으로 굳어버린다.
+    _age = datetime.now(ZoneInfo("UTC")) - t2
+    if _age.total_seconds() < MFE_MIN_AGE_MINUTES * 60:
+        return None, None
+    if _age.days > MFE_MAX_AGE_DAYS:
+        return None, None
+
+    # 진입/청산 봉 자체를 포함시키려고 앞뒤로 1분씩 여유를 준다.
+    url = f"{ALPACA_DATA_BASE_URL}/v2/stocks/{symbol}/bars"
+    params = {
+        "timeframe": "1Min",
+        "start": (t1 - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "end":   (t2 + timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "adjustment": "raw",
+        "feed": ALPACA_DATA_FEED,
+        "limit": 10000,
+        "sort": "asc",
+    }
+    try:
+        r = requests.get(url, headers=ALPACA_HEADERS, params=params, timeout=(5, 10))
+        r.raise_for_status()
+        bars = r.json().get("bars") or []
+    except Exception as e:
+        print(f"⚠️ [MFE] {symbol} 바 조회 실패(무시): {e}")
+        return None, None
+    if not bars:
+        return None, None
+
+    try:
+        hi = max(float(b["h"]) for b in bars)
+        lo = min(float(b["l"]) for b in bars)
+        ep = float(entry_price)
+        if ep <= 0:
+            return None, None
+        if (side or "").upper() == "BUY":
+            mfe = (hi - ep) / ep * 100.0
+            mae = (lo - ep) / ep * 100.0
+        else:
+            mfe = (ep - lo) / ep * 100.0
+            mae = (ep - hi) / ep * 100.0
+        # MFE 는 0 이상, MAE 는 0 이하로 정리 (진입가가 그 봉 범위 밖일 때의 부호 뒤집힘 방지)
+        return round(max(mfe, 0.0), 3), round(min(mae, 0.0), 3)
+    except Exception:
+        return None, None
+
+
+def _mfe_over_tp(r):
+    """MFE 가 TP 거리의 몇 % 까지 갔는가. 100 이면 TP 도달, 80 이면 목표의 80% 까지 갔다는 뜻.
+    이 값이 '손절난 거래' 에서 크게 나오면 → TP 를 그만큼 좁혔을 때 승리로 바뀌었을 거래다."""
+    try:
+        mfe = r.get("mfe")
+        ep, tp = r.get("entry_price"), r.get("tp")
+        if mfe is None or not ep or not tp:
+            return ""
+        tp_dist_pct = abs(float(tp) - float(ep)) / float(ep) * 100.0
+        if tp_dist_pct <= 0:
+            return ""
+        return round(float(mfe) / tp_dist_pct * 100.0, 1)
+    except Exception:
+        return ""
+
+
 def sync_alpaca_trade_log():
     """
     Alpaca 주문 내역(원본 데이터)을 직접 조회해서 'Alpaca 거래내역' 탭에 깔끔하게 정리.
@@ -7717,7 +7816,9 @@ def sync_alpaca_trade_log():
     HEADERS = [
         "주문ID", "진입시각", "종목", "방향", "점수", "수량", "진입가",
         "TP가", "SL가", "상태", "청산가", "청산시각", "보유시간(분)",
-        "손익($)", "손익(%)", "누적손익($)"
+        "손익($)", "손익(%)", "누적손익($)",
+        # 🟥 [FIX-MFE1] TP/SL 배수를 데이터로 정하기 위한 3개 컬럼
+        "MFE(%)", "MAE(%)", "MFE/TP(%)"
     ]
 
     try:
@@ -7732,6 +7833,33 @@ def sync_alpaca_trade_log():
         except gspread.exceptions.WorksheetNotFound:
             ws = spreadsheet.add_worksheet(title="Alpaca 거래내역", rows=1000, cols=len(HEADERS))
             print("✅ [Alpaca거래내역] 탭이 없어서 새로 생성했습니다.")
+
+        # 🟥 [FIX-MFE1] ws.clear() 로 지우기 '전에' 기존 MFE/MAE 를 읽어 캐시한다.
+        #   청산된 거래의 MFE 는 두 번 다시 안 바뀌므로 한 번만 계산하면 된다.
+        #   이걸 안 하면 동기화할 때마다 157건 × API 1회를 다시 때려서 레이트리밋에 걸린다.
+        _mfe_cache = {}
+        try:
+            _old_vals = ws.get_all_values()
+            if _old_vals and len(_old_vals) > 1:
+                _hdr = _old_vals[0]
+                _i_id = _hdr.index("주문ID") if "주문ID" in _hdr else 0
+                _i_mfe = _hdr.index("MFE(%)") if "MFE(%)" in _hdr else None
+                _i_mae = _hdr.index("MAE(%)") if "MAE(%)" in _hdr else None
+                if _i_mfe is not None:
+                    for _row in _old_vals[1:]:
+                        if len(_row) <= _i_mfe:
+                            continue
+                        _oid = (_row[_i_id] or "").strip()
+                        _m = (_row[_i_mfe] or "").strip()
+                        _a = (_row[_i_mae] or "").strip() if (_i_mae is not None and len(_row) > _i_mae) else ""
+                        if _oid and _m != "":
+                            try:
+                                _mfe_cache[_oid] = (float(_m), float(_a) if _a != "" else None)
+                            except ValueError:
+                                pass
+                print(f"🗂️ [MFE] 기존 값 {len(_mfe_cache)}건 재사용")
+        except Exception as e:
+            print(f"⚠️ [MFE] 기존 값 읽기 실패(무시): {e}")
     except Exception as e:
         print(f"❌ [Alpaca거래내역] 시트 연결 실패: {e}")
         return
@@ -7841,6 +7969,33 @@ def sync_alpaca_trade_log():
         except Exception:
             return iso_str  # 변환 실패 시 원본 그대로
 
+    # 🟥 [FIX-MFE1] 청산된 행에 MFE/MAE 를 채운다. 캐시에 있으면 그대로, 없으면 계산.
+    _fetched = 0
+    _mfe_t0 = time.monotonic()
+    for r in rows:
+        r["mfe"], r["mae"] = None, None
+        if not MFE_TRACK_ENABLED:
+            continue
+        if r["status_kr"] in ("진행중",) or not r["exit_time"] or not r["entry_price"]:
+            continue
+        _oid = r.get("order_id") or ""
+        if _oid in _mfe_cache:
+            r["mfe"], r["mae"] = _mfe_cache[_oid]
+            continue
+        if _fetched >= MFE_MAX_FETCH_PER_SYNC:
+            continue   # 이번 회차 건수 한도 초과 — 다음 동기화에서 채운다
+        if time.monotonic() - _mfe_t0 > MFE_TIME_BUDGET_SEC:
+            continue   # 시간 예산 초과 — 나머지는 다음 회차
+        _m, _a = _fetch_excursion(r["symbol"], r["side"], r["entry_price"],
+                                  r["entry_time"], r["exit_time"])
+        if _m is not None:
+            r["mfe"], r["mae"] = _m, _a
+            _fetched += 1
+    if MFE_TRACK_ENABLED:
+        _todo = sum(1 for r in rows
+                    if r["status_kr"] != "진행중" and r["exit_time"] and r.get("mfe") is None)
+        print(f"📐 [MFE] 이번 회차 신규 {_fetched}건 계산 · 미계산 잔여 {_todo}건")
+
     sheet_rows = [HEADERS]
     cum_pnl = 0.0
     for r in rows:
@@ -7868,7 +8023,11 @@ def sync_alpaca_trade_log():
             r["exit_price"],
             _to_et(r["exit_time"]),    # 🟦 UTC → ET 변환
             hold_minutes,
-            r["pnl"], pnl_pct, round(cum_pnl, 2) if r["pnl"] is not None else ""
+            r["pnl"], pnl_pct, round(cum_pnl, 2) if r["pnl"] is not None else "",
+            # 🟥 [FIX-MFE1]
+            r.get("mfe") if r.get("mfe") is not None else "",
+            r.get("mae") if r.get("mae") is not None else "",
+            _mfe_over_tp(r),
         ])
 
     try:
