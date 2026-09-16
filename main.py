@@ -23,6 +23,7 @@ from playwright.sync_api import sync_playwright
 import time
 import time as _t
 import contextvars          # 🟥 [FIX-T1] 웹훅 요청별 시간축 보관용
+import re                   # 🟥 [PR-1] 공시 파싱용
 # 🟥 [FIX-E1] API 키 전문을 stdout에 출력하던 줄을 제거.
 #    Render/Docker 로그에 그대로 남아 유출 위험이 있었다.
 #    키가 로드됐는지만 확인할 수 있게 마스킹해서 찍는다.
@@ -9063,6 +9064,11 @@ async def _morning_gap_scan_loop():
             # 주말은 건너뛴다
             if datetime.now(ZoneInfo("America/New_York")).weekday() < 5:
                 await asyncio.to_thread(scan_morning_gappers)
+                # 🟥 [PR-2] 전일 공시 기록의 '다음날 시가/고가/결과' 를 같이 채운다
+                try:
+                    await asyncio.to_thread(pr_followup_next_day)
+                except Exception as _e:
+                    print(f"⚠️ [PR 후속] {_e}")
         except Exception as e:
             print(f"❌ [갭스캔 루프] {e}")
         await asyncio.sleep(90)
@@ -9919,6 +9925,584 @@ async def _time_exit_loop():
         await asyncio.sleep(max(60, TIME_EXIT_CHECK_MINUTES * 60))
 
 
+# ============================================================
+# 🟥 [PR-1] 시간외 공시(Press Release) 수집기
+# ------------------------------------------------------------
+#  목적: 장 마감 후 나오는 공시를 모아 '다음날 아침 갭 후보' 를 미리 잡는다.
+#        시간외 직접 거래가 아니라 **내일 아침 관심종목 준비**가 1차 목적이다.
+#
+#  왜 SEC EDGAR 8-K 를 쓰나:
+#    · 공식·무료·프로그래밍 접근용으로 설계된 피드다 (약관 문제 없음)
+#    · Item 코드가 구조화돼 있어 카테고리 분류가 키워드 추측보다 정확하다
+#        2.02 실적 / 1.01 계약 / 2.01 인수완료 / 1.03 파산 / 3.01 상장폐지
+#        5.02 임원 변동 / 8.01 기타 / 7.01 Reg-FD
+#    · CIK → 티커 매핑도 SEC 가 공식 파일로 제공한다
+#
+#  ⚠️ 무료(IEX) 피드의 한계
+#    IEX 는 08:00~17:00 ET 만 스트리밍한다. 즉 17:15 / 18:30 회차에서는
+#    시간외 가격이 갱신되지 않는다. 그 회차는 가격을 "17:00 기준"으로 적고
+#    시트에 그렇게 표시한다. 가격이 없다고 공시 자체를 버리지는 않는다.
+# ============================================================
+
+PR_SCAN_ENABLED   = os.getenv("PR_SCAN_ENABLED", "true").strip().lower() != "false"
+PR_SCAN_TIMES     = os.getenv("PR_SCAN_TIMES", "1605,1635,1715,1830")   # ET
+PR_MIN_PRICE      = float(os.getenv("PR_MIN_PRICE", "5"))
+PR_MAX_PRICE      = float(os.getenv("PR_MAX_PRICE", "100"))
+PR_MIN_AVG_VOL    = float(os.getenv("PR_MIN_AVG_VOL", "50000"))   # IEX 기준 ≈ 전체 50만
+PR_FETCH_LIMIT    = int(os.getenv("PR_FETCH_LIMIT", "120"))       # EDGAR 최근 N건
+PR_SHEET_TAB      = os.getenv("PR_SHEET_TAB", "PR 전략")
+PR_GPT_ENABLED    = os.getenv("PR_GPT_ENABLED", "true").strip().lower() != "false"
+PR_GPT_MAX        = int(os.getenv("PR_GPT_MAX", "12"))            # 한 회차 GPT 판정 상한
+
+PR_SEC_UA = os.getenv(
+    "PR_SEC_UA",
+    "minkyun-trading-bot leadbetterpeterseo@gmail.com",           # SEC 는 UA 에 연락처를 요구한다
+)
+PR_EDGAR_8K_URL = (
+    "https://www.sec.gov/cgi-bin/browse-edgar"
+    "?action=getcurrent&type=8-K&company=&dateb=&owner=include"
+    f"&count={PR_FETCH_LIMIT}&output=atom"
+)
+PR_CIK_MAP_URL = "https://www.sec.gov/files/company_tickers.json"
+
+# 8-K Item 코드 → (카테고리, 기록할 가치)
+#   False 인 것은 규칙 문서의 "버린다" 목록과 같다.
+PR_ITEM_MAP = {
+    "1.01": ("계약",   True),    # Entry into a Material Definitive Agreement
+    "1.02": ("계약",   True),    # Termination of a Material Agreement
+    "1.03": ("구조",   True),    # Bankruptcy or Receivership
+    "2.01": ("M&A",    True),    # Completion of Acquisition or Disposition
+    "2.02": ("실적",   True),    # Results of Operations and Financial Condition
+    "2.03": ("희석",   True),    # Creation of a Direct Financial Obligation
+    "2.04": ("구조",   True),    # Triggering Events That Accelerate an Obligation
+    "2.05": ("구조",   True),    # Costs Associated with Exit or Disposal
+    "2.06": ("구조",   True),    # Material Impairments
+    "3.01": ("구조",   True),    # Notice of Delisting / Failure to Satisfy Listing Rule
+    "3.02": ("희석",   True),    # Unregistered Sales of Equity Securities
+    "3.03": ("희석",   True),    # Material Modification to Rights of Security Holders
+    "4.01": ("구조",   True),    # Changes in Registrant's Certifying Accountant
+    "4.02": ("구조",   True),    # Non-Reliance on Previously Issued Financials
+    "5.01": ("M&A",    True),    # Changes in Control of Registrant
+    "5.02": ("인사",   False),   # 임원 임명/사임 — 기본은 버린다 (급작 사임만 GPT가 살린다)
+    "5.03": ("기타",   False),
+    "5.07": ("기타",   False),   # Submission of Matters to a Vote
+    "7.01": ("기타",   False),   # Reg FD Disclosure — 내용이 다양해 제목으로 2차 판정
+    "8.01": ("기타",   False),   # Other Events — 위와 같다
+    "9.01": ("기타",   False),   # Financial Statements and Exhibits (첨부만)
+}
+
+# 제목에 이것들이 들어가면 버린다 (규칙 문서 "버린다" 목록)
+PR_NOISE_KEYWORDS = (
+    "dividend", "distribution", "conference", "summit", "expo", "webcast",
+    "appoint", "appointment", "names ", "joins board", "award", "honored",
+    "net asset value", "nav update", "to present", "to attend", "participation",
+    "schedules", "to announce", "earnings date", "earnings call date",
+    "annual meeting", "esg report", "sustainability report", "repurchase program update",
+)
+# 이것들이 있으면 노이즈 키워드가 있어도 살린다
+#  ⚠️ 주의: SEC 의 Item 공식 제목이 요약문에 그대로 들어온다.
+#     예) Item 5.02 의 공식 제목 = "Departure of Directors or Certain Officers;
+#         Election of Directors; Appointment of Certain Officers"
+#     → "departure" 를 구제 키워드로 두면 단순 '임원 임명' 공시까지 전부 살아난다.
+#        (실측으로 확인한 버그) 그래서 실제 사건을 가리키는 단어만 남긴다.
+PR_RESCUE_KEYWORDS = (
+    "resign", "resigns", "resignation", "steps down", "stepping down",
+    "removed as", "ousted", "placed on leave",
+    "delist", "bankrupt", "chapter 11", "going concern", "restat",
+    "investigation", "subpoena", "material weakness",
+    "fda approv", "complete response letter", "clinical hold", "topline",
+    "acquisition", "merger", "to be acquired", "definitive agreement",
+    "guidance", "offering", "private placement",
+)
+
+_pr_cik_cache = {"t": 0.0, "map": {}}
+_pr_seen_ids: set[str] = set()          # 같은 회차 안에서 중복 방지
+_pr_seen_lock = threading.Lock()
+
+
+def _pr_cik_to_ticker() -> dict:
+    """SEC 공식 CIK↔티커 매핑. 24시간 캐시."""
+    now = _t.time()
+    if _pr_cik_cache["map"] and (now - _pr_cik_cache["t"]) < 86400:
+        return _pr_cik_cache["map"]
+    try:
+        r = requests.get(PR_CIK_MAP_URL, headers={"User-Agent": PR_SEC_UA}, timeout=20)
+        r.raise_for_status()
+        raw = r.json() or {}
+        m = {}
+        for _, v in raw.items():
+            try:
+                m[int(v["cik_str"])] = (v["ticker"].strip().upper(), v.get("title", ""))
+            except Exception:
+                continue
+        _pr_cik_cache["map"] = m
+        _pr_cik_cache["t"] = now
+        print(f"✅ [PR] CIK 매핑 {len(m):,}건 로드")
+    except Exception as e:
+        print(f"⚠️ [PR] CIK 매핑 실패: {e}")
+    return _pr_cik_cache["map"]
+
+
+def _pr_fetch_edgar() -> list[dict]:
+    """EDGAR 최근 8-K 목록. [{cik, ticker, company, title, items, when, link}]
+
+    🟥 feedparser 대신 표준 라이브러리(xml.etree)를 쓴다 —
+       feedparser 는 이 파일에서 함수 안 지역 import 로만 쓰이고 있어
+       requirements 에 없을 수 있다. 의존성을 늘리지 않는다.
+    """
+    import xml.etree.ElementTree as _ET
+
+    cikmap = _pr_cik_to_ticker()
+    out = []
+    try:
+        # SEC 는 User-Agent 에 연락처가 없으면 403 을 준다
+        r = requests.get(PR_EDGAR_8K_URL, headers={"User-Agent": PR_SEC_UA}, timeout=25)
+        if not r.ok:
+            print(f"⚠️ [PR] EDGAR status={r.status_code}")
+            return []
+        root = _ET.fromstring(r.content)
+    except Exception as e:
+        print(f"❌ [PR] EDGAR 조회 실패: {e}")
+        return []
+
+    _ns = {"a": "http://www.w3.org/2005/Atom"}
+    for e in root.findall("a:entry", _ns):
+        try:
+            title = (e.findtext("a:title", "", _ns) or "").strip()
+            summary = (e.findtext("a:summary", "", _ns) or "")
+            _lk = e.find("a:link", _ns)
+            link = (_lk.get("href") if _lk is not None else "") or ""
+            updated = (e.findtext("a:updated", "", _ns) or "")
+
+            # title 예: "8-K - ACME CORP (0001234567) (Filer)"
+            cik = None
+            mcik = re.search(r"\((\d{7,10})\)", title)
+            if mcik:
+                cik = int(mcik.group(1))
+            company = re.sub(r"^8-K(/A)?\s*-\s*", "", title)
+            company = re.sub(r"\s*\(\d{7,10}\)\s*\(Filer\)\s*$", "", company).strip()
+
+            ticker = ""
+            if cik and cik in cikmap:
+                ticker, full = cikmap[cik]
+                company = full or company
+
+            # summary 안에 "Items: 2.02, 9.01" 형태로 들어온다
+            items = re.findall(r"\b(\d\.\d{2})\b", summary)
+
+            out.append({
+                "cik": cik, "ticker": ticker, "company": company,
+                "title": title, "summary": summary, "items": items,
+                "when": updated, "link": link,
+            })
+        except Exception:
+            continue
+    return out
+
+
+def _pr_classify(rec: dict) -> tuple[str, bool]:
+    """(카테고리, 기록할지) — Item 코드 1차, 제목 키워드 2차."""
+    cat, keep = "기타", False
+    for it in rec.get("items", []):
+        c, k = PR_ITEM_MAP.get(it, ("기타", False))
+        if k and not keep:
+            cat, keep = c, True
+        elif not keep and c != "기타":
+            cat = c
+
+    text = f"{rec.get('title','')} {rec.get('summary','')}".lower()
+
+    # 노이즈 키워드가 있으면 버린다 — 단 구제 키워드가 있으면 살린다
+    if any(k in text for k in PR_NOISE_KEYWORDS) and not any(k in text for k in PR_RESCUE_KEYWORDS):
+        return cat, False
+
+    # Item 이 기타여도 구제 키워드가 있으면 살린다
+    if not keep and any(k in text for k in PR_RESCUE_KEYWORDS):
+        keep = True
+        if "fda" in text or "topline" in text or "clinical" in text:
+            cat = "임상"
+        elif "acquisition" in text or "merger" in text:
+            cat = "M&A"
+        elif "offering" in text or "placement" in text:
+            cat = "희석"
+        elif "guidance" in text:
+            cat = "가이던스"
+
+    return cat, keep
+
+
+def _pr_avg_vol(symbols: list[str]) -> dict:
+    """10일 평균 거래량. _alpaca_daily_bars 재사용."""
+    out = {}
+    try:
+        bars = _alpaca_daily_bars(symbols, limit=15)
+        for s, rows in (bars or {}).items():
+            vols = [float(b.get("v", 0) or 0) for b in rows[-10:]]
+            out[s] = (sum(vols) / len(vols)) if vols else 0.0
+    except Exception as e:
+        print(f"⚠️ [PR] 평균거래량 실패: {e}")
+    return out
+
+
+def _pr_price_block(symbols: list[str]) -> dict:
+    """{sym: {prev_close, last, ah_pct, day_high, spread_pct, stale}}"""
+    res = {}
+    if not symbols:
+        return res
+    snaps = _alpaca_snapshots(symbols) or {}
+    for s in symbols:
+        sn = snaps.get(s) or {}
+        try:
+            prev = (sn.get("prevDailyBar") or {}).get("c")
+            today = sn.get("dailyBar") or {}
+            last = (sn.get("latestTrade") or {}).get("p")
+            q = sn.get("latestQuote") or {}
+            bid, ask = q.get("bp"), q.get("ap")
+
+            # 정규장 종가가 있으면 그게 기준선. 없으면 전일 종가.
+            base = today.get("c") or prev
+            ah_pct = None
+            if base and last:
+                ah_pct = round((float(last) - float(base)) / float(base) * 100.0, 2)
+
+            spread = None
+            if bid and ask and float(bid) > 0:
+                spread = round((float(ask) - float(bid)) / float(bid) * 100.0, 3)
+
+            # latestTrade 시각이 30분 이상 묵었으면 stale 표시 (IEX 17:00 종료 대응)
+            stale = ""
+            ts = (sn.get("latestTrade") or {}).get("t")
+            if ts:
+                try:
+                    tt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+                    age_min = (datetime.now(_tz.utc) - tt).total_seconds() / 60.0
+                    if age_min > 30:
+                        stale = f"시세 {age_min:.0f}분 전"
+                except Exception:
+                    pass
+
+            res[s] = {
+                "prev_close": round(float(base), 4) if base else None,
+                "last": round(float(last), 4) if last else None,
+                "ah_pct": ah_pct,
+                "day_high": round(float(today.get("h")), 4) if today.get("h") else None,
+                "spread_pct": spread,
+                "stale": stale,
+            }
+        except Exception:
+            res[s] = {"prev_close": None, "last": None, "ah_pct": None,
+                      "day_high": None, "spread_pct": None, "stale": ""}
+    return res
+
+
+def _pr_pullback_pct(p: dict) -> float | None:
+    """되돌림% = (고가 − 현재) ÷ (고가 − 기준) × 100. 40% 초과면 과잉반영."""
+    try:
+        hi, last, base = p.get("day_high"), p.get("last"), p.get("prev_close")
+        if hi is None or last is None or base is None:
+            return None
+        rng = float(hi) - float(base)
+        if rng <= 0:
+            return None
+        return round((float(hi) - float(last)) / rng * 100.0, 1)
+    except Exception:
+        return None
+
+
+def _pr_reflection(p: dict) -> str:
+    """차트 반영도 — 규칙 문서 4번 표를 그대로 코드로."""
+    ah = p.get("ah_pct")
+    pb = _pr_pullback_pct(p)
+    if ah is None:
+        return "판정불가(시세없음)"
+    a = abs(ah)
+    if pb is not None and pb > 40 and a > 3:
+        return "⛔ 과잉반영"
+    if a < 1:
+        return "미반영"
+    if a < 5:
+        return "부분반영"
+    if a < 15:
+        return "완전반영"
+    return "완전반영(대형)"
+
+
+def _pr_gpt_judge(rows: list[dict]) -> dict:
+    """{ticker: (호재/악재/중립, 강도1~5, 한줄요약)} — 한 번에 묶어서 물어본다."""
+    if not (PR_GPT_ENABLED and rows):
+        return {}
+    items = []
+    for r in rows[:PR_GPT_MAX]:
+        items.append(f"- {r['ticker']} | {r['company']} | {r['cat']} | {r['title'][:160]}")
+    prompt = (
+        "다음은 미국 주식의 장 마감 후 8-K 공시 목록이다. 각 항목에 대해 판정하라.\n\n"
+        + "\n".join(items) +
+        "\n\n각 줄마다 아래 형식으로만 답하라. 설명 금지.\n"
+        "티커|호재 또는 악재 또는 중립|강도(1~5 정수)|한국어 한 줄 요약(40자 이내)\n\n"
+        "판정 기준:\n"
+        "- 강도 5: 주가가 10% 이상 움직일 만한 것 (파산, 상장폐지, FDA 승인/거절, 대형 인수)\n"
+        "- 강도 3~4: 실적 서프라이즈, 가이던스 변경, 유의미한 계약\n"
+        "- 강도 1~2: 영향이 미미하거나 이미 알려진 것\n"
+        "- 채권 발행은 주식 희석이 아니므로 보통 중립이다\n"
+        "- 임원 '임명'은 중립, '급작 사임'은 악재다\n"
+    )
+    try:
+        body = {
+            "model": os.getenv("GPT_MODEL", "gpt-4o-2024-11-20"),
+            "input": [{"role": "user", "content": prompt}],
+            "temperature": 0.2,
+            "max_output_tokens": 900,
+        }
+        r = requests.post(OPENAI_URL, headers=OPENAI_HEADERS, json=body, timeout=60)
+        r.raise_for_status()
+        text = ""
+        for item in (r.json() or {}).get("output", []):
+            for c in item.get("content", []):
+                if c.get("type") == "output_text":
+                    text += c.get("text", "")
+        out = {}
+        for line in text.splitlines():
+            parts = [x.strip() for x in line.split("|")]
+            if len(parts) >= 4 and parts[0]:
+                tk = parts[0].upper().lstrip("-").strip()
+                try:
+                    strength = int(re.sub(r"\D", "", parts[2]) or "0")
+                except Exception:
+                    strength = 0
+                out[tk] = (parts[1], strength, parts[3])
+        return out
+    except Exception as e:
+        print(f"⚠️ [PR] GPT 판정 실패: {e}")
+        return {}
+
+
+PR_HEADERS = [
+    "날짜", "시각(ET)", "티커", "회사", "카테고리", "공시요약", "호재악재", "강도",
+    "전일종가", "시간외가", "시간외변동%", "시간외고가", "되돌림%", "시간외거래량",
+    "가격게이트", "유동성게이트", "차트반영도", "판단근거",
+    "예상진입", "TP", "SL", "손익비", "다음날시가", "다음날고가", "결과", "메모",
+]
+
+
+def _pr_get_tab():
+    ss = _get_spreadsheet()
+    if ss is None:
+        return None
+    try:
+        return ss.worksheet(PR_SHEET_TAB)
+    except gspread.exceptions.WorksheetNotFound:
+        try:
+            ws = ss.add_worksheet(title=PR_SHEET_TAB, rows=2000, cols=len(PR_HEADERS))
+            ws.append_row(PR_HEADERS, insert_data_option="INSERT_ROWS", table_range="A1")
+            print(f"✅ [PR] '{PR_SHEET_TAB}' 탭 생성")
+            return ws
+        except Exception as e:
+            print(f"❌ [PR] 탭 생성 실패: {e}")
+            return None
+    except Exception as e:
+        print(f"❌ [PR] 탭 접근 실패: {e}")
+        return None
+
+
+def collect_press_releases(force: bool = False) -> dict:
+    """
+    EDGAR 8-K 수집 → 노이즈 제거 → 게이트 → 시세/반영도 → GPT 판정 → 시트 기록.
+    반환: {"total":n, "kept":m, "tradable":k, "rows":[...]}
+    """
+    if not PR_SCAN_ENABLED and not force:
+        return {"total": 0, "kept": 0, "tradable": 0, "rows": []}
+
+    ny = ZoneInfo("America/New_York")
+    now_ny = datetime.now(ny)
+    print(f"📰 [PR] 시작 — {now_ny:%Y-%m-%d %H:%M} ET")
+
+    raw = _pr_fetch_edgar()
+    if not raw:
+        print("❌ [PR] 공시를 하나도 못 받았다")
+        return {"total": 0, "kept": 0, "tradable": 0, "rows": []}
+
+    kept = []
+    for rec in raw:
+        cat, keep = _pr_classify(rec)
+        if not keep:
+            continue
+        if not rec.get("ticker"):          # 티커 매핑 실패 = 비상장/펀드류
+            continue
+        key = f"{rec['ticker']}|{rec.get('link','')}"
+        with _pr_seen_lock:
+            if key in _pr_seen_ids:
+                continue
+            _pr_seen_ids.add(key)
+            if len(_pr_seen_ids) > 3000:
+                _pr_seen_ids.clear()
+        kept.append({**rec, "cat": cat})
+
+    print(f"📰 [PR] 전체 {len(raw)} → 노이즈 제거 후 {len(kept)}")
+    if not kept:
+        return {"total": len(raw), "kept": 0, "tradable": 0, "rows": []}
+
+    syms = sorted({r["ticker"] for r in kept})
+    prices = _pr_price_block(syms)
+    avgvol = _pr_avg_vol(syms)
+    judge = _pr_gpt_judge(kept)
+
+    rows, tradable = [], 0
+    for r in kept:
+        s = r["ticker"]
+        p = prices.get(s, {})
+        av = avgvol.get(s, 0.0)
+        last = p.get("last")
+
+        # ── 게이트 ─────────────────────────────
+        if last is None:
+            gate_px = "판정불가"
+        elif last < PR_MIN_PRICE:
+            gate_px = f"❌ ${PR_MIN_PRICE:g} 미만"
+        elif last > PR_MAX_PRICE:
+            gate_px = f"❌ ${PR_MAX_PRICE:g} 초과"
+        else:
+            gate_px = "✅"
+        gate_liq = "✅" if av >= PR_MIN_AVG_VOL else f"❌ 평균 {av:,.0f}"
+        ok = gate_px == "✅" and gate_liq == "✅"
+        if ok:
+            tradable += 1
+
+        vd, strength, one = judge.get(s, ("", 0, ""))
+        refl = _pr_reflection(p) if ok else "-"
+        pb = _pr_pullback_pct(p)
+
+        note = []
+        if p.get("stale"):
+            note.append(p["stale"])
+        if p.get("spread_pct") is not None and p["spread_pct"] > 1.0:
+            note.append(f"스프레드 {p['spread_pct']}% — 가격 미발견")
+        if r.get("items"):
+            note.append("Item " + ",".join(r["items"]))
+
+        rows.append([
+            now_ny.strftime("%Y-%m-%d"),
+            now_ny.strftime("%H:%M"),
+            s,
+            r.get("company", "")[:60],
+            r.get("cat", ""),
+            (one or r.get("title", ""))[:200],
+            vd, strength or "",
+            p.get("prev_close") or "",
+            last or "",
+            p.get("ah_pct") if p.get("ah_pct") is not None else "",
+            p.get("day_high") or "",
+            pb if pb is not None else "",
+            "",                                   # 시간외 거래량 — IEX 로는 신뢰 불가
+            gate_px, gate_liq, refl,
+            "봇 자동 수집(EDGAR 8-K). 진입/TP/SL 은 Claude 분석 후 채움",
+            "", "", "", "",                       # 예상진입 TP SL 손익비
+            "", "", "",                           # 다음날시가 고가 결과
+            " · ".join(note),
+        ])
+
+    ws = _pr_get_tab()
+    if ws is not None and rows:
+        try:
+            ws.append_rows(rows, insert_data_option="INSERT_ROWS", table_range="A1")
+            print(f"✅ [PR] 시트 기록 {len(rows)}행 (거래가능 {tradable})")
+        except Exception as e:
+            print(f"❌ [PR] 시트 쓰기 실패: {e}")
+
+    print(f"📰 [PR] 완료 — 전체 {len(raw)} / 기록 {len(rows)} / 거래가능 {tradable}")
+    return {"total": len(raw), "kept": len(rows), "tradable": tradable, "rows": rows}
+
+
+def pr_followup_next_day():
+    """
+    🟥 [PR-2] 전일 기록분의 '다음날시가 / 다음날고가 / 결과' 를 채운다.
+    아침 갭스캔과 같은 시간대(개장 후)에 한 번 돌린다.
+    """
+    ws = _pr_get_tab()
+    if ws is None:
+        return
+    try:
+        vals = ws.get_all_values()
+    except Exception as e:
+        print(f"❌ [PR] 후속 기록 읽기 실패: {e}")
+        return
+    if len(vals) < 2:
+        return
+
+    ny = ZoneInfo("America/New_York")
+    today = datetime.now(ny).strftime("%Y-%m-%d")
+
+    targets = []      # (행번호, 티커)
+    for i, row in enumerate(vals[1:], start=2):
+        try:
+            d, tk = row[0], row[2]
+            nxt_open = row[22] if len(row) > 22 else ""
+            if d and tk and d < today and not nxt_open:
+                targets.append((i, tk))
+        except Exception:
+            continue
+    if not targets:
+        return
+
+    syms = sorted({t for _, t in targets})
+    snaps = _alpaca_snapshots(syms) or {}
+    updates = []
+    for idx, tk in targets:
+        sn = snaps.get(tk) or {}
+        db = sn.get("dailyBar") or {}
+        o, h, c = db.get("o"), db.get("h"), db.get("c")
+        if o is None:
+            continue
+        res = ""
+        try:
+            if o and c:
+                res = f"{(float(c)-float(o))/float(o)*100:+.2f}%"
+        except Exception:
+            pass
+        updates.append({"range": f"W{idx}:Y{idx}",
+                        "values": [[round(float(o), 4),
+                                    round(float(h), 4) if h else "",
+                                    res]]})
+    if updates:
+        try:
+            _flush_sheet_updates(ws, updates, label="PR 후속")
+            print(f"✅ [PR] 후속 기록 {len(updates)}행")
+        except Exception as e:
+            print(f"❌ [PR] 후속 기록 실패: {e}")
+
+
+async def _pr_scan_loop():
+    """PR_SCAN_TIMES(ET) 마다 공시 수집. 평일만."""
+    if not PR_SCAN_ENABLED:
+        print("⏸️ [PR] PR_SCAN_ENABLED=false — 수집기 꺼짐")
+        return
+    times = []
+    for t in PR_SCAN_TIMES.split(","):
+        t = t.strip()
+        if t.isdigit() and len(t) == 4:
+            times.append((int(t[:2]), int(t[2:])))
+    if not times:
+        times = [(16, 5), (16, 35), (17, 15), (18, 30)]
+    print(f"📰 [PR] 예약 시각(ET): {['%02d:%02d' % t for t in times]}")
+
+    while True:
+        ny = ZoneInfo("America/New_York")
+        now = datetime.now(ny)
+        nxt = None
+        for h, m in times:
+            cand = now.replace(hour=h, minute=m, second=0, microsecond=0)
+            if cand <= now:
+                cand += timedelta(days=1)
+            if nxt is None or cand < nxt:
+                nxt = cand
+        await asyncio.sleep(max(30, (nxt - now).total_seconds()))
+        try:
+            if datetime.now(ZoneInfo("America/New_York")).weekday() < 5:
+                await asyncio.to_thread(collect_press_releases)
+        except Exception as e:
+            print(f"❌ [PR 루프] {e}")
+        await asyncio.sleep(90)
+
+
 @app.on_event("startup")
 async def _start_background_tasks():
     asyncio.create_task(_hourly_outcome_tracker_loop())
@@ -9926,6 +10510,31 @@ async def _start_background_tasks():
     asyncio.create_task(_daily_top_movers_loop())
     asyncio.create_task(_morning_gap_scan_loop())   # 🟥 [FIX-G10] 아침 갭 스캔
     asyncio.create_task(_weekly_report_loop())
+    asyncio.create_task(_pr_scan_loop())            # 🟥 [PR-1] 시간외 공시 수집
+
+
+@app.post("/run_pr_scan")
+@app.get("/run_pr_scan")
+async def run_pr_scan_endpoint():
+    """🟥 [PR-1] 시간외 공시 수집을 지금 즉시 한 번 돌린다.
+    자동 실행은 PR_SCAN_TIMES(기본 16:05 / 16:35 / 17:15 / 18:30 ET)."""
+    try:
+        res = await asyncio.to_thread(collect_press_releases, True)
+        return JSONResponse({"ok": True, "total": res["total"], "kept": res["kept"],
+                             "tradable": res["tradable"], "tab": PR_SHEET_TAB})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.post("/run_pr_followup")
+@app.get("/run_pr_followup")
+async def run_pr_followup_endpoint():
+    """🟥 [PR-2] 전일 공시 기록의 '다음날 시가/고가/결과' 를 지금 채운다."""
+    try:
+        await asyncio.to_thread(pr_followup_next_day)
+        return JSONResponse({"ok": True})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
 @app.post("/run_outcome_tracker")
