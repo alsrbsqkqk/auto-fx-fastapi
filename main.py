@@ -10284,12 +10284,51 @@ PR_HEADERS = [
 ]
 
 
+# 🟥 [PR-3] 설정 추가 — 리포트 탭 / 외부 입력 토큰 / SMTP
+PR_REPORT_TAB   = os.getenv("PR_REPORT_TAB", "PR 리포트")
+PR_APPEND_TOKEN = os.getenv("PR_APPEND_TOKEN", "").strip()
+PR_SMTP_HOST    = os.getenv("PR_SMTP_HOST", "smtp.gmail.com").strip()
+PR_SMTP_PORT    = int(os.getenv("PR_SMTP_PORT", "587"))
+PR_SMTP_USER    = os.getenv("PR_SMTP_USER", "").strip()
+PR_SMTP_PASS    = os.getenv("PR_SMTP_PASS", "").strip()
+PR_EMAIL_TO     = os.getenv("PR_EMAIL_TO", "leadbetterpeterseo@gmail.com").strip()
+
+PR_REPORT_HEADERS = ["날짜", "회차", "한줄요약", "리포트 전문", "기록시각(ET)"]
+
+
+def _pr_ensure_headers(ws, headers):
+    """🟥 [PR-3] 버그 수정: 이미 존재하는 탭에도 헤더가 없으면 채워 넣는다.
+    종전에는 탭을 '새로 만들 때'만 헤더를 써서, 사용자가 수동으로 만든 탭은
+    영원히 컬럼명이 비어 있었다."""
+    try:
+        if ws.col_count < len(headers):
+            ws.resize(rows=max(ws.row_count, 500), cols=len(headers))
+    except Exception:
+        pass
+    try:
+        first = ws.row_values(1)
+    except Exception:
+        first = []
+    if first and str(first[0]).strip() == headers[0]:
+        return
+    try:
+        if any(str(c).strip() for c in first):
+            ws.insert_row(headers, 1)
+        else:
+            ws.update("A1", [headers])
+        print(f"✅ [PR] '{ws.title}' 헤더 기록 완료")
+    except Exception as e:
+        print(f"⚠️ [PR] 헤더 기록 실패({ws.title}): {e}")
+
+
 def _pr_get_tab():
     ss = _get_spreadsheet()
     if ss is None:
         return None
     try:
-        return ss.worksheet(PR_SHEET_TAB)
+        ws = ss.worksheet(PR_SHEET_TAB)
+        _pr_ensure_headers(ws, PR_HEADERS)      # 🟥 [PR-3]
+        return ws
     except gspread.exceptions.WorksheetNotFound:
         try:
             ws = ss.add_worksheet(title=PR_SHEET_TAB, rows=2000, cols=len(PR_HEADERS))
@@ -10302,6 +10341,52 @@ def _pr_get_tab():
     except Exception as e:
         print(f"❌ [PR] 탭 접근 실패: {e}")
         return None
+
+
+def _pr_get_report_tab():
+    """🟥 [PR-4] 리포트 전문을 쌓는 별도 탭."""
+    ss = _get_spreadsheet()
+    if ss is None:
+        return None
+    try:
+        ws = ss.worksheet(PR_REPORT_TAB)
+    except gspread.exceptions.WorksheetNotFound:
+        try:
+            ws = ss.add_worksheet(title=PR_REPORT_TAB, rows=500, cols=len(PR_REPORT_HEADERS))
+            print(f"✅ [PR] '{PR_REPORT_TAB}' 탭 생성")
+        except Exception as e:
+            print(f"❌ [PR] 리포트 탭 생성 실패: {e}")
+            return None
+    except Exception as e:
+        print(f"❌ [PR] 리포트 탭 접근 실패: {e}")
+        return None
+    _pr_ensure_headers(ws, PR_REPORT_HEADERS)
+    return ws
+
+
+def _pr_send_email(subject: str, body: str) -> bool:
+    """🟥 [PR-5] SMTP 직접 발송. PR_SMTP_USER / PR_SMTP_PASS 없으면 건너뛴다."""
+    if not (PR_SMTP_USER and PR_SMTP_PASS and PR_EMAIL_TO):
+        print("ℹ️ [PR] SMTP 미설정 — 이메일 건너뜀")
+        return False
+    try:
+        import smtplib
+        from email.message import EmailMessage
+        msg = EmailMessage()
+        msg["Subject"] = (subject or "[PR 전략]")[:200]
+        msg["From"] = PR_SMTP_USER
+        msg["To"] = PR_EMAIL_TO
+        msg.set_content(body or "(내용 없음)")
+        with smtplib.SMTP(PR_SMTP_HOST, PR_SMTP_PORT, timeout=30) as s:
+            s.ehlo()
+            s.starttls()
+            s.login(PR_SMTP_USER, PR_SMTP_PASS)
+            s.send_message(msg)
+        print(f"✅ [PR] 이메일 발송 → {PR_EMAIL_TO}")
+        return True
+    except Exception as e:
+        print(f"❌ [PR] 이메일 실패: {e}")
+        return False
 
 
 def collect_press_releases(force: bool = False) -> dict:
@@ -10535,6 +10620,100 @@ async def run_pr_followup_endpoint():
         return JSONResponse({"ok": True})
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.post("/pr_append")
+async def pr_append_endpoint(request: Request):
+    """🟥 [PR-4] 예약 작업(Claude)이 분석 결과를 밀어 넣는 입구.
+    body 예:
+      {"token":"...", "rows":[[26열], ...],
+       "report":{"date":"2026-09-17","round":"4차 마감","summary":"...","body":"..."},
+       "email": true}
+    rows 는 TSV 문자열도 받는다."""
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "JSON 파싱 실패"}, status_code=400)
+
+    if PR_APPEND_TOKEN and str(payload.get("token", "")) != PR_APPEND_TOKEN:
+        return JSONResponse({"ok": False, "error": "token 불일치"}, status_code=401)
+
+    def _work():
+        out = {"rows_written": 0, "report_written": False, "email_sent": False}
+
+        rows = payload.get("rows") or []
+        if isinstance(rows, str):
+            rows = [ln for ln in rows.strip().splitlines() if ln.strip()]
+        clean = []
+        for r in rows:
+            if isinstance(r, str):
+                r = r.split("\t")
+            r = [("" if c is None else str(c)) for c in r][:len(PR_HEADERS)]
+            r = r + [""] * (len(PR_HEADERS) - len(r))
+            if any(c.strip() for c in r):
+                clean.append(r)
+        if clean:
+            ws = _pr_get_tab()
+            if ws is not None:
+                ws.append_rows(clean, value_input_option="USER_ENTERED",
+                               insert_data_option="INSERT_ROWS", table_range="A1")
+                out["rows_written"] = len(clean)
+
+        ny = datetime.now(ZoneInfo("America/New_York"))
+        rep = payload.get("report") or {}
+        if rep:
+            rws = _pr_get_report_tab()
+            if rws is not None:
+                rws.append_row(
+                    [str(rep.get("date", ny.strftime("%Y-%m-%d"))),
+                     str(rep.get("round", "")),
+                     str(rep.get("summary", ""))[:500],
+                     str(rep.get("body", ""))[:45000],
+                     ny.strftime("%H:%M")],
+                    value_input_option="USER_ENTERED",
+                    insert_data_option="INSERT_ROWS", table_range="A1")
+                out["report_written"] = True
+
+        if payload.get("email", True):
+            subj = "[PR 전략] {} {} — {}".format(
+                rep.get("date", ny.strftime("%Y-%m-%d")),
+                rep.get("round", ""),
+                rep.get("summary", "결과 기록"))
+            body = rep.get("body") or "시트에 {}행 기록했습니다.".format(out["rows_written"])
+            out["email_sent"] = _pr_send_email(subj, body)
+        return out
+
+    try:
+        res = await asyncio.to_thread(_work)
+        return JSONResponse({"ok": True, **res,
+                             "tab": PR_SHEET_TAB, "report_tab": PR_REPORT_TAB})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/pr_init_sheet")
+async def pr_init_sheet_endpoint():
+    """🟥 [PR-3] 두 탭을 지금 만들고 헤더를 박는다. 배포 직후 한 번 호출."""
+    def _w():
+        a = _pr_get_tab()
+        b = _pr_get_report_tab()
+        return {"data_tab": (a.title if a is not None else None),
+                "report_tab": (b.title if b is not None else None)}
+    try:
+        res = await asyncio.to_thread(_w)
+        return JSONResponse({"ok": True, **res})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/pr_test_email")
+async def pr_test_email_endpoint():
+    """🟥 [PR-5] SMTP 설정 확인용 테스트 메일."""
+    ok = await asyncio.to_thread(
+        _pr_send_email, "[PR 전략] 테스트 메일",
+        "이 메일이 보이면 SMTP 설정이 끝난 것입니다.")
+    return JSONResponse({"ok": ok, "to": PR_EMAIL_TO,
+                         "configured": bool(PR_SMTP_USER and PR_SMTP_PASS)})
 
 
 @app.post("/run_outcome_tracker")
