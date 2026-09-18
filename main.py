@@ -10691,6 +10691,113 @@ async def pr_append_endpoint(request: Request):
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
+@app.get("/pr_notify")
+async def pr_notify_endpoint(request: Request):
+    """🟥 [PR-6] GET 전용 수신구.
+    Claude 예약 작업은 셸 curl 로 외부 HTTP 를 못 쓴다(전면 차단). WebFetch(GET)만 가능하다.
+    그래서 요약 정보를 쿼리 파라미터로 받아 시트에 압축 행을 쓰고 이메일을 보낸다.
+    전체 리포트는 프로젝트 문서에 남고, 여기로는 '무엇을 볼지'만 넘어온다.
+
+    예:
+      /pr_notify?token=XXX&date=2026-09-18&round=4차마감
+        &summary=공시 108건 / 기록 26건 / 거래가능 0건
+        &watch=VSAT|73.02|75.21|미반영|ViaSat-3 F2 상용화;RTB|8.55||과잉반영|회피
+        &note=철강 섹터 동조 관찰
+        &doc=claude/PR전략-일일기록-2026-09-17-4차마감.md
+      watch 항목 = 티커|전일종가|3%컷|반영도|한줄촉매   (항목 구분 ';')
+    """
+    q = request.query_params
+    if PR_APPEND_TOKEN and str(q.get("token", "")) != PR_APPEND_TOKEN:
+        return JSONResponse({"ok": False, "error": "token 불일치"}, status_code=401)
+
+    ny = ZoneInfo("America/New_York")
+    now = datetime.now(ny)
+    date_s = (q.get("date") or now.strftime("%Y-%m-%d")).strip()
+    round_s = (q.get("round") or "").strip()
+    summary = (q.get("summary") or "").strip()
+    note = (q.get("note") or "").strip()
+    doc = (q.get("doc") or "").strip()
+    watch_raw = (q.get("watch") or "").strip()
+
+    items = []
+    for chunk in watch_raw.split(";"):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        f = [x.strip() for x in chunk.split("|")]
+        f = f + [""] * (5 - len(f))
+        items.append({"ticker": f[0], "prev": f[1], "cut": f[2],
+                      "reflect": f[3], "catalyst": f[4]})
+
+    def _work():
+        out = {"rows_written": 0, "email_sent": False}
+
+        rows = []
+        for it in items:
+            if not it["ticker"]:
+                continue
+            r = [""] * len(PR_HEADERS)
+            r[0]  = date_s
+            r[1]  = now.strftime("%H:%M")
+            r[2]  = it["ticker"]
+            r[4]  = round_s
+            r[5]  = it["catalyst"][:400]
+            r[8]  = it["prev"]
+            r[16] = it["reflect"]
+            r[17] = (f"3%컷 {it['cut']} · " if it["cut"] else "") + note[:300]
+            r[25] = (summary + (f" · 문서: {doc}" if doc else ""))[:400]
+            rows.append(r)
+
+        if rows:
+            ws = _pr_get_tab()
+            if ws is not None:
+                ws.append_rows(rows, value_input_option="USER_ENTERED",
+                               insert_data_option="INSERT_ROWS", table_range="A1")
+                out["rows_written"] = len(rows)
+        elif summary:
+            # 관심종목 0건이어도 하루 기록은 남긴다
+            ws = _pr_get_tab()
+            if ws is not None:
+                r = [""] * len(PR_HEADERS)
+                r[0], r[1], r[2], r[4] = date_s, now.strftime("%H:%M"), "—", round_s
+                r[5] = "관심종목 0건"
+                r[17] = note[:300]
+                r[25] = (summary + (f" · 문서: {doc}" if doc else ""))[:400]
+                ws.append_row(r, value_input_option="USER_ENTERED",
+                              insert_data_option="INSERT_ROWS", table_range="A1")
+                out["rows_written"] = 1
+
+        lines = [f"[PR 전략] {date_s} {round_s}", "", summary or "(요약 없음)", ""]
+        if items:
+            lines.append("── 관심종목 ──")
+            for it in items:
+                lines.append(
+                    f"  {it['ticker']}  전일종가 {it['prev'] or '-'}  "
+                    f"3%컷 {it['cut'] or '-'}  [{it['reflect'] or '-'}]")
+                if it["catalyst"]:
+                    lines.append(f"      {it['catalyst']}")
+            lines.append("")
+        else:
+            lines += ["── 관심종목 없음 ──", ""]
+        if note:
+            lines += [f"메모: {note}", ""]
+        if doc:
+            lines += [f"전체 리포트: 프로젝트 문서 {doc}", ""]
+        lines.append(f"(기록 {out['rows_written']}행 · {now:%Y-%m-%d %H:%M} ET)")
+        body = "\n".join(lines)
+
+        subj = f"[PR 전략] {date_s} {round_s} — {summary[:80] or '결과 기록'}"
+        out["email_sent"] = _pr_send_email(subj, body)
+        return out
+
+    try:
+        res = await asyncio.to_thread(_work)
+        return JSONResponse({"ok": True, **res, "watch_count": len(items),
+                             "tab": PR_SHEET_TAB})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
 @app.get("/pr_init_sheet")
 async def pr_init_sheet_endpoint():
     """🟥 [PR-3] 두 탭을 지금 만들고 헤더를 박는다. 배포 직후 한 번 호출."""
