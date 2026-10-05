@@ -9972,7 +9972,10 @@ PR_ITEM_MAP = {
     "1.02": ("계약",   True),    # Termination of a Material Agreement
     "1.03": ("구조",   True),    # Bankruptcy or Receivership
     "2.01": ("M&A",    True),    # Completion of Acquisition or Disposition
-    "2.02": ("실적",   True),    # Results of Operations and Financial Condition
+    # 🟩 [PR-7 / 수정4] Item 2.02 = 분기 실적발표. 날짜가 미리 공지되는 "예정된" 사건이라
+    #   공시 서프라이즈가 아니다. (MU / TSLA / WDAY / CCL 이 이걸로 잡혔다)
+    #   PR_KEEP_EARNINGS=true 로 두면 예전처럼 수집한다.
+    "2.02": ("실적",   os.getenv("PR_KEEP_EARNINGS", "false").strip().lower() == "true"),
     "2.03": ("희석",   True),    # Creation of a Direct Financial Obligation
     "2.04": ("구조",   True),    # Triggering Events That Accelerate an Obligation
     "2.05": ("구조",   True),    # Costs Associated with Exit or Disposal
@@ -10227,8 +10230,87 @@ def _pr_reflection(p: dict) -> str:
     return "완전반영(대형)"
 
 
+# ═══════════════════════════════════════════════════════════
+# 🟩 [PR-7 / 수정2] SPAC 유닛·워런트·라이트·우선주 제외
+#   실측: 725건 중 208건(28.7%) 이 거래 불가능한 파생 티커였다.
+#   (MTAKU, TLACU, QSEAU, BKHAU, IRHOU, SVAQW, IMAQW, SPKLW,
+#    AMODW, SZZLR, COLAR, RANGR, RIBBR, CETXP, PNAQ-UN, DBRG-PJ …)
+# ═══════════════════════════════════════════════════════════
+PR_JUNK_FILTER = os.getenv("PR_JUNK_FILTER", "true").strip().lower() != "false"
+
+# 🟩 5자 규칙에 억울하게 걸릴 수 있는 정상 보통주.
+#   오탐을 발견하면 여기 또는 ENV PR_JUNK_WHITELIST="TICK1,TICK2" 에 추가한다.
+PR_JUNK_SAFE: set = set()                    # 지금은 비어 있다
+PR_JUNK_WHITELIST = PR_JUNK_SAFE | {
+    s.strip().upper() for s in os.getenv("PR_JUNK_WHITELIST", "").split(",") if s.strip()
+}
+
+def _pr_is_junk_ticker(tk: str) -> bool:
+    """SPAC 유닛/워런트/라이트/우선주면 True."""
+    if not PR_JUNK_FILTER:
+        return False
+    t = (tk or "").strip().upper()
+    if not t or t in PR_JUNK_WHITELIST:
+        return False
+    # 클래스 구분자가 있는 것 — 우선주/워런트/유닛 (DBRG-PJ, AHT-PI, PNAQ-UN, VACI-WT)
+    if "-" in t or "." in t or "/" in t:
+        return True
+    # 5자 티커가 U(Unit) / W(Warrant) / R(Right) / P(Preferred) 로 끝나면 파생
+    if len(t) == 5 and t[-1] in ("U", "W", "R", "P"):
+        return True
+    # 6자 이상은 거의 전부 파생 클래스
+    if len(t) >= 6:
+        return True
+    return False
+
+
+# ═══════════════════════════════════════════════════════════
+# 🟩 [PR-7 / 수정3] 시간외 가격 — 분봉으로 직접 긁는다
+#   기존 문제: snapshot 의 latestTrade 는 IEX 가 17:00 에 멈춰서
+#     17:15 / 18:30 회차에서 정규장 종가와 같은 값이 들어왔다.
+#     → 실측 725건 중 722건(99.6%)이 시간외변동 0.00%
+#   해결: 16:00 ET 이후 1분봉을 직접 조회해 마지막가/고가/거래량을 쓴다.
+#   (IEX 로도 시간외 체결이 있으면 분봉이 나온다. 없으면 빈 값으로 남긴다)
+# ═══════════════════════════════════════════════════════════
+def _pr_afterhours_block(symbols: list[str]) -> dict:
+    """{sym: {ah_last, ah_high, ah_vol}} — 당일 16:00 ET 이후 분봉 기준."""
+    out = {}
+    if not symbols:
+        return out
+    ny = ZoneInfo("America/New_York")
+    now_ny = datetime.now(ny)
+    if now_ny.hour < 16:          # 아직 정규장 — 시간외 구간 자체가 없다
+        return out
+    start = now_ny.replace(hour=16, minute=0, second=0, microsecond=0)
+    for s in symbols:
+        try:
+            r = requests.get(
+                f"{ALPACA_DATA_BASE_URL}/v2/stocks/{s}/bars",
+                headers=ALPACA_HEADERS,
+                params={"timeframe": "1Min",
+                        "start": start.astimezone(_tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "end": _data_end_iso(),
+                        "feed": ALPACA_DATA_FEED,
+                        "limit": 1000, "adjustment": "raw"},
+                timeout=12)
+            if not r.ok:
+                continue
+            bars = (r.json() or {}).get("bars") or []
+            if not bars:
+                continue
+            hi = max(float(b["h"]) for b in bars)
+            last = float(bars[-1]["c"])
+            vol = sum(float(b.get("v", 0) or 0) for b in bars)
+            out[s] = {"ah_last": round(last, 4),
+                      "ah_high": round(hi, 4),
+                      "ah_vol": int(vol)}
+        except Exception:
+            continue
+    return out
+
+
 def _pr_gpt_judge(rows: list[dict]) -> dict:
-    """{ticker: (호재/악재/중립, 강도1~5, 한줄요약)} — 한 번에 묶어서 물어본다."""
+    """{ticker: (호재/악재/중립, 강도1~5, 한줄요약, 자금방향)} — 한 번에 묶어서 물어본다."""
     if not (PR_GPT_ENABLED and rows):
         return {}
     items = []
@@ -10238,13 +10320,28 @@ def _pr_gpt_judge(rows: list[dict]) -> dict:
         "다음은 미국 주식의 장 마감 후 8-K 공시 목록이다. 각 항목에 대해 판정하라.\n\n"
         + "\n".join(items) +
         "\n\n각 줄마다 아래 형식으로만 답하라. 설명 금지.\n"
-        "티커|호재 또는 악재 또는 중립|강도(1~5 정수)|한국어 한 줄 요약(40자 이내)\n\n"
+        "티커|호재 또는 악재 또는 중립|강도(1~5 정수)|한국어 한 줄 요약(40자 이내)|자금방향\n\n"
         "판정 기준:\n"
         "- 강도 5: 주가가 10% 이상 움직일 만한 것 (파산, 상장폐지, FDA 승인/거절, 대형 인수)\n"
         "- 강도 3~4: 실적 서프라이즈, 가이던스 변경, 유의미한 계약\n"
         "- 강도 1~2: 영향이 미미하거나 이미 알려진 것\n"
         "- 채권 발행은 주식 희석이 아니므로 보통 중립이다\n"
         "- 임원 '임명'은 중립, '급작 사임'은 악재다\n"
+        "\n"
+        # 🟩 [PR-7 / 수정5] 방향 판정의 핵심 — 돈과 주식이 어디로 움직이는가
+        "자금방향은 아래 5개 중 하나만 쓴다:\n"
+        "- 현금유출 : 회사가 현금을 쓴다 (현금 인수, 대규모 설비투자)\n"
+        "- 주식발행 : 신주를 발행한다 (주식 인수, 유상증자, 전환사채) = 희석\n"
+        "- 현금유입 : 회사가 현금을 받는다 (자산 매각, 피인수, 대금 수령)\n"
+        "- 희석제거 : 예정됐던 주식 발행이 현금으로 바뀌거나 자사주를 매입한다\n"
+        "- 중립     : 자금 이동이 없거나 규모가 미미하다\n"
+        "\n"
+        "실측 사례 — 같은 '인수 발표'라도 방향이 반대다:\n"
+        "- onsemi(2026-10-01): 70억달러 주식인수 → 57억달러 현금인수로 변경\n"
+        "  = 희석제거 → 다음날 +8%\n"
+        "- Grindr(2026-09-30): 현금 1.9억 + 주식 0.6억으로 PurposeMed 인수\n"
+        "  = 현금유출+주식발행 → 다음날 -8.8%\n"
+        "인수하는 쪽이라고 무조건 호재가 아니다. 돈이 나가면 보통 악재다.\n"
     )
     try:
         body = {
@@ -10269,7 +10366,8 @@ def _pr_gpt_judge(rows: list[dict]) -> dict:
                     strength = int(re.sub(r"\D", "", parts[2]) or "0")
                 except Exception:
                     strength = 0
-                out[tk] = (parts[1], strength, parts[3])
+                flow = parts[4] if len(parts) >= 5 else ""      # 🟩 [수정5] 자금방향
+                out[tk] = (parts[1], strength, parts[3], flow)
         return out
     except Exception as e:
         print(f"⚠️ [PR] GPT 판정 실패: {e}")
@@ -10281,6 +10379,7 @@ PR_HEADERS = [
     "전일종가", "시간외가", "시간외변동%", "시간외고가", "되돌림%", "시간외거래량",
     "가격게이트", "유동성게이트", "차트반영도", "판단근거",
     "예상진입", "TP", "SL", "손익비", "다음날시가", "다음날고가", "결과", "메모",
+    "자금방향",          # 🟩 [PR-7 / 수정5] 27번째 열. 기존 A~Z 번호는 그대로 둔다.
 ]
 
 
@@ -10310,6 +10409,14 @@ def _pr_ensure_headers(ws, headers):
     except Exception:
         first = []
     if first and str(first[0]).strip() == headers[0]:
+        # 🟩 [PR-7] 열이 추가됐으면(예: 27번째 '자금방향') 헤더 줄을 갱신한다.
+        #   종전에는 A1 만 보고 바로 return 해서 새 열 이름이 영원히 비어 있었다.
+        if len(first) < len(headers):
+            try:
+                ws.update("A1", [headers])
+                print(f"✅ [PR] '{ws.title}' 헤더 확장 {len(first)} → {len(headers)}열")
+            except Exception as e:
+                print(f"⚠️ [PR] 헤더 확장 실패({ws.title}): {e}")
         return
     try:
         if any(str(c).strip() for c in first):
@@ -10407,11 +10514,17 @@ def collect_press_releases(force: bool = False) -> dict:
         return {"total": 0, "kept": 0, "tradable": 0, "rows": []}
 
     kept = []
+    n_junk = 0                              # 🟩 [수정2] 정크로 버린 개수
     for rec in raw:
         cat, keep = _pr_classify(rec)
         if not keep:
             continue
         if not rec.get("ticker"):          # 티커 매핑 실패 = 비상장/펀드류
+            continue
+        # 🟩 [PR-7 / 수정2 배선] SPAC 유닛·워런트·라이트·우선주 제외.
+        #   9/16~10/2 시트 725행 중 208행(28.7%)이 이것 때문에 쓰레기였다.
+        if _pr_is_junk_ticker(rec["ticker"]):
+            n_junk += 1
             continue
         key = f"{rec['ticker']}|{rec.get('link','')}"
         with _pr_seen_lock:
@@ -10422,12 +10535,30 @@ def collect_press_releases(force: bool = False) -> dict:
                 _pr_seen_ids.clear()
         kept.append({**rec, "cat": cat})
 
-    print(f"📰 [PR] 전체 {len(raw)} → 노이즈 제거 후 {len(kept)}")
+    print(f"📰 [PR] 전체 {len(raw)} → 노이즈 제거 후 {len(kept)} "
+          f"(정크 티커 {n_junk}건 제외)")
     if not kept:
         return {"total": len(raw), "kept": 0, "tradable": 0, "rows": []}
 
     syms = sorted({r["ticker"] for r in kept})
     prices = _pr_price_block(syms)
+
+    # 🟩 [PR-7 / 수정3 배선] latestTrade(IEX) 는 16:00 이후 거의 갱신되지 않아
+    #   시간외변동% 가 725행 중 3행(0.4%)만 채워졌다. 16:00 ET 이후 1분봉으로 덮어쓴다.
+    ah = _pr_afterhours_block(syms)
+    for _s, _a in ah.items():
+        _p = prices.get(_s)
+        if not _p:
+            continue
+        _p["last"] = _a["ah_last"]                     # 시간외 현재가
+        _p["ah_high"] = _a["ah_high"]                  # 시간외 고가 (정규장 고가 아님)
+        _p["ah_vol"] = _a["ah_vol"]                    # 시간외 거래량
+        _p["day_high"] = _a["ah_high"]                 # 되돌림% 기준선도 시간외 고가로
+        _p["stale"] = ""                               # 분봉으로 확인했으니 stale 해제
+        _b = _p.get("prev_close")
+        if _b:
+            _p["ah_pct"] = round((_a["ah_last"] - float(_b)) / float(_b) * 100.0, 2)
+
     avgvol = _pr_avg_vol(syms)
     judge = _pr_gpt_judge(kept)
 
@@ -10452,7 +10583,8 @@ def collect_press_releases(force: bool = False) -> dict:
         if ok:
             tradable += 1
 
-        vd, strength, one = judge.get(s, ("", 0, ""))
+        # 🟩 [PR-7 / 수정5 배선] _pr_gpt_judge 가 4-tuple 을 돌려준다 (자금방향 추가)
+        vd, strength, one, flow = judge.get(s, ("", 0, "", ""))
         refl = _pr_reflection(p) if ok else "-"
         pb = _pr_pullback_pct(p)
 
@@ -10477,12 +10609,13 @@ def collect_press_releases(force: bool = False) -> dict:
             p.get("ah_pct") if p.get("ah_pct") is not None else "",
             p.get("day_high") or "",
             pb if pb is not None else "",
-            "",                                   # 시간외 거래량 — IEX 로는 신뢰 불가
+            p.get("ah_vol") or "",                # 🟩 [수정3] 시간외 거래량 (1분봉 합)
             gate_px, gate_liq, refl,
             "봇 자동 수집(EDGAR 8-K). 진입/TP/SL 은 Claude 분석 후 채움",
             "", "", "", "",                       # 예상진입 TP SL 손익비
             "", "", "",                           # 다음날시가 고가 결과
             " · ".join(note),
+            flow or "",                           # 🟩 [수정5] 27번째 열 = 자금방향
         ])
 
     ws = _pr_get_tab()
@@ -10497,10 +10630,61 @@ def collect_press_releases(force: bool = False) -> dict:
     return {"total": len(raw), "kept": len(rows), "tradable": tradable, "rows": rows}
 
 
+def _pr_daily_bars_after(symbols: list[str], date_str: str) -> dict:
+    """🟩 [PR-7 / 수정1] date_str(YYYY-MM-DD) **다음** 거래일의 일봉을 뽑는다.
+    {sym: {"d":"2026-10-02","o":..,"h":..,"l":..,"c":..,"v":..}}
+    기존 코드는 _alpaca_snapshots 의 dailyBar(=오늘)만 봤기 때문에
+    이틀 이상 지난 행을 채우면 엉뚱한 날짜의 숫자가 들어갔다. 그걸 고친다."""
+    out = {}
+    if not symbols or not date_str:
+        return out
+    try:
+        d0 = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except Exception:
+        return out
+    start = (d0 + timedelta(days=1)).strftime("%Y-%m-%d")
+    end = (d0 + timedelta(days=8)).strftime("%Y-%m-%d")
+
+    for i in range(0, len(symbols), 100):
+        chunk = symbols[i:i + 100]
+        try:
+            r = requests.get(
+                f"{ALPACA_DATA_BASE_URL}/v2/stocks/bars",
+                headers=ALPACA_HEADERS,
+                params={"symbols": ",".join(chunk), "timeframe": "1Day",
+                        "start": start, "end": end,
+                        "feed": ALPACA_DATA_FEED,
+                        "limit": 2000, "adjustment": "raw"},
+                timeout=20)
+            if not r.ok:
+                print(f"⚠️ [PR 후속] 일봉 조회 {r.status_code}: {r.text[:120]}")
+                continue
+            bars = (r.json() or {}).get("bars") or {}
+            for sym, arr in bars.items():
+                if not arr:
+                    continue
+                b = arr[0]                     # start 이후 첫 거래일
+                out[sym] = {"d": str(b.get("t", ""))[:10],
+                            "o": b.get("o"), "h": b.get("h"),
+                            "l": b.get("l"), "c": b.get("c"),
+                            "v": b.get("v")}
+        except Exception as e:
+            print(f"⚠️ [PR 후속] 일봉 예외: {e}")
+            continue
+    return out
+
+
 def pr_followup_next_day():
     """
-    🟥 [PR-2] 전일 기록분의 '다음날시가 / 다음날고가 / 결과' 를 채운다.
-    아침 갭스캔과 같은 시간대(개장 후)에 한 번 돌린다.
+    🟥 [PR-2] / 🟩 [PR-7 수정1] 기록분의 '다음날시가 / 다음날고가 / 결과' 를 채운다.
+
+    결과 칸을 숫자로 만든다 — 이게 승률 측정의 전부다.
+      "갭 +6.8% / 시고 +2.1% / 시종 +1.0% / 📈"
+        갭   = (다음날시가 − 전일종가) ÷ 전일종가      ← 공시가 갭을 만들었나
+        시고 = (다음날고가 − 다음날시가) ÷ 다음날시가   ← 갭앤고가 됐나 (TP 도달 여부)
+        시종 = (다음날종가 − 다음날시가) ÷ 다음날시가   ← 하루 들고 있었으면
+      📈 시고 ≥ +3% (TP 도달)  /  ⚖️ 그 사이  /  📉 시종 ≤ −2%
+    전일종가(I열)가 비어 있으면 갭은 생략하고 나머지만 쓴다.
     """
     ws = _pr_get_tab()
     if ws is None:
@@ -10516,43 +10700,82 @@ def pr_followup_next_day():
     ny = ZoneInfo("America/New_York")
     today = datetime.now(ny).strftime("%Y-%m-%d")
 
-    targets = []      # (행번호, 티커)
+    # 날짜별로 묶는다 — 날짜가 다르면 봐야 할 "다음 거래일"도 다르다.
+    by_date: dict = {}                       # {"2026-10-01": [(행번호, 티커, 전일종가)]}
     for i, row in enumerate(vals[1:], start=2):
         try:
-            d, tk = row[0], row[2]
-            nxt_open = row[22] if len(row) > 22 else ""
-            if d and tk and d < today and not nxt_open:
-                targets.append((i, tk))
+            d = (row[0] or "").strip()
+            tk = (row[2] or "").strip().upper()
+            nxt_open = (row[22] if len(row) > 22 else "") or ""
+            if not d or not tk or d >= today or nxt_open.strip():
+                continue
+            pc = None
+            try:
+                raw_pc = (row[8] if len(row) > 8 else "") or ""
+                raw_pc = str(raw_pc).replace("$", "").replace(",", "").strip()
+                if raw_pc:
+                    pc = float(raw_pc)
+                    if pc <= 0:
+                        pc = None
+            except Exception:
+                pc = None
+            by_date.setdefault(d, []).append((i, tk, pc))
         except Exception:
             continue
-    if not targets:
+    if not by_date:
+        print("ℹ️ [PR] 후속 채울 행 없음")
         return
 
-    syms = sorted({t for _, t in targets})
-    snaps = _alpaca_snapshots(syms) or {}
-    updates = []
-    for idx, tk in targets:
-        sn = snaps.get(tk) or {}
-        db = sn.get("dailyBar") or {}
-        o, h, c = db.get("o"), db.get("h"), db.get("c")
-        if o is None:
-            continue
-        res = ""
-        try:
-            if o and c:
-                res = f"{(float(c)-float(o))/float(o)*100:+.2f}%"
-        except Exception:
-            pass
-        updates.append({"range": f"W{idx}:Y{idx}",
-                        "values": [[round(float(o), 4),
-                                    round(float(h), 4) if h else "",
-                                    res]]})
+    updates, n_skip = [], 0
+    for d in sorted(by_date):
+        items = by_date[d]
+        syms = sorted({tk for _, tk, _ in items})
+        bars = _pr_daily_bars_after(syms, d)
+        for idx, tk, pc in items:
+            b = bars.get(tk) or {}
+            o, h, c = b.get("o"), b.get("h"), b.get("c")
+            if o is None:
+                n_skip += 1
+                continue
+            try:
+                o = float(o)
+                h = float(h) if h is not None else None
+                c = float(c) if c is not None else None
+            except Exception:
+                n_skip += 1
+                continue
+
+            parts = []
+            if pc:
+                parts.append(f"갭 {(o - pc) / pc * 100:+.1f}%")
+            oh = ((h - o) / o * 100.0) if (h is not None and o) else None
+            oc = ((c - o) / o * 100.0) if (c is not None and o) else None
+            if oh is not None:
+                parts.append(f"시고 {oh:+.1f}%")
+            if oc is not None:
+                parts.append(f"시종 {oc:+.1f}%")
+            if oh is not None and oh >= 3.0:
+                parts.append("📈")
+            elif oc is not None and oc <= -2.0:
+                parts.append("📉")
+            else:
+                parts.append("⚖️")
+            if b.get("d") and b["d"] != d:
+                parts.append(b["d"][5:])          # 실제로 본 날짜 (MM-DD)
+
+            updates.append({"range": f"W{idx}:Y{idx}",
+                            "values": [[round(o, 4),
+                                        round(h, 4) if h is not None else "",
+                                        " / ".join(parts)]]})
+
     if updates:
         try:
             _flush_sheet_updates(ws, updates, label="PR 후속")
-            print(f"✅ [PR] 후속 기록 {len(updates)}행")
+            print(f"✅ [PR] 후속 기록 {len(updates)}행 (건너뜀 {n_skip})")
         except Exception as e:
             print(f"❌ [PR] 후속 기록 실패: {e}")
+    else:
+        print(f"ℹ️ [PR] 후속 기록 0행 (건너뜀 {n_skip})")
 
 
 async def _pr_scan_loop():
