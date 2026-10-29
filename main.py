@@ -11579,7 +11579,7 @@ _GG_COLS = ["날짜", "종목", "전일종가", "장전고가", "장전저가", 
             "MFE$", "MAE$", "10시가", "10시손익$", "마감가", "비고"]
 
 
-# ⚠️ async def 금지 — 안에서 requests 블로킹 호출을 한다 (이벤트 루프 정지 방지)
+# ⚠️ async def 금지 — 안에서 requests 바로호출 (이벤트루프 정지 방지)
 @app.get("/gapgo_check")
 def gapgo_check_endpoint(items: str = "", tp: float = 5.0, sl: float = 8.0,
                                cash: float = 508.58, cut: int = 1130,
@@ -11853,22 +11853,20 @@ def _gs_prog_save(p: dict):
 
 def _gs_stage1_step(from_d, to_d, feed: str, pmin: float, pmax: float,
                     avgvol_min: float, n_chunks: int,
-                    chunk: int = 200, budget_s: float = 55.0) -> dict:
+                    gap_min: float = 1.0, vr_min: float = 1.5,
+                    chunk: int = 200, budget_s: float = 25.0) -> dict:
     """1단계를 '몇 덩어리씩' 전진시킨다. Render 요청 타임아웃을 피하려고 끊어서 돈다.
 
     진행상태는 /tmp 에 저장 → 다음 호출이 이어받는다.
     반환: {"완료":bool, "처리심볼":int, "전체심볼":int, "후보있는날":int, ...}
     """
     p = _gs_prog_load()
-    same = (p.get("from") == from_d.isoformat() and p.get("to") == to_d.isoformat()
-            and p.get("avgvol") == avgvol_min and p.get("pmin") == pmin
-            and p.get("pmax") == pmax)
-    if not same:
+    key = [from_d.isoformat(), to_d.isoformat(), avgvol_min, pmin, pmax, gap_min, vr_min]
+    if p.get("key") != key:
         uni = _gs_universe()
         if not uni:
             return {"완료": False, "오류": "/v2/assets 에서 심볼 목록을 못 받았다"}
-        p = {"from": from_d.isoformat(), "to": to_d.isoformat(),
-             "avgvol": avgvol_min, "pmin": pmin, "pmax": pmax,
+        p = {"key": key, "from": from_d.isoformat(), "to": to_d.isoformat(),
              "uni": uni, "idx": 0, "days": {}}
 
     uni, idx, days = p["uni"], int(p["idx"]), p["days"]
@@ -11893,10 +11891,13 @@ def _gs_stage1_step(from_d, to_d, feed: str, pmin: float, pmax: float,
                     continue
                 gap = (cur["o"] - pc) / pc * 100.0
                 vratio = (cur["v"] / avg10) if avg10 else 0.0
-                # 초벌: 갭 1% 이상 이거나 거래량 1.5배 이상 (일부러 넉넉하게)
-                if gap < 1.0 and vratio < 1.5:
+                # 초벌 — 일부러 넉넉하게. gapmin/vrmin 쿼리로 조절 가능.
+                if gap < gap_min and vratio < vr_min:
                     continue
-                days.setdefault(cur["d"], []).append(sym)
+                # ⚠️ 전일종가를 여기서 같이 저장한다.
+                #    안 하면 2단계가 종목마다 _gg_prev_close 로 1요청씩 더 쏴서
+                #    하루에 수백 요청이 추가된다 (3개월 돌리기 불가능해진다).
+                days.setdefault(cur["d"], {})[sym] = [round(pc, 4), int(avg10)]
         idx += chunk
         done_chunks += 1
         if _gs_time.time() - t0 > budget_s:            # 응답 타임아웃 회피
@@ -11906,8 +11907,6 @@ def _gs_stage1_step(from_d, to_d, feed: str, pmin: float, pmax: float,
     _gs_prog_save(p)
     finished = idx >= len(uni)
     if finished:
-        for v in days.values():
-            v.sort()
         _gs_cache_save(from_d, to_d, days)
     return {"완료": finished,
             "처리심볼": min(idx, len(uni)), "전체심볼": len(uni),
@@ -11954,10 +11953,19 @@ def _gs_cache_save(from_d, to_d, days: dict):
 
 # ───────────────────────── 2단계 ─────────────────────────
 
-def _gs_stage2(day, syms: list, feed: str, snap_hhmm: int,
+def _gs_stage2(day, day_syms, feed: str, snap_hhmm: int,
                pmvol_min: float, pmchg_min: float,
                pmin: float, pmax: float, chunk: int = 50) -> list:
-    """장전 04:00~snap 분봉으로 실제 스캐너 조건 적용. → 통과 심볼 + 장전지표"""
+    """장전 04:00~snap 분봉으로 실제 스캐너 조건 적용. → 통과 심볼 + 장전지표
+
+    day_syms = 1단계가 준 {sym: [전일종가, 10일평균거래량]} (구버전 캐시는 list 도 수용)
+    """
+    if isinstance(day_syms, dict):
+        meta = day_syms
+    else:                                      # 구버전 캐시 호환
+        meta = {s: [None, None] for s in (day_syms or [])}
+    syms = sorted(meta.keys())
+
     hh, mm = divmod(snap_hhmm, 100)
     pm_s = _gg_dt.combine(day, _gg_time(4, 0), tzinfo=_GG_NY)
     pm_e = _gg_dt.combine(day, _gg_time(hh, mm), tzinfo=_GG_NY)
@@ -11972,7 +11980,9 @@ def _gs_stage2(day, syms: list, feed: str, snap_hhmm: int,
             pm_vol = sum(b["v"] for b in bars)
             if pm_vol < pmvol_min:
                 continue
-            pc = _gg_prev_close(sym, day, feed)
+            pc, avg10 = (meta.get(sym) or [None, None])[:2]
+            if pc is None:                     # 구버전 캐시만 해당
+                pc = _gg_prev_close(sym, day, feed)
             if not pc or not (pmin <= pc <= pmax):
                 continue
             pm_last = bars[-1]["c"]
@@ -11988,6 +11998,9 @@ def _gs_stage2(day, syms: list, feed: str, snap_hhmm: int,
                 "장전거래량": int(pm_vol),
                 "장전변동%": round(chg, 2),
                 "장전레인지%": round((hi - lo) / pm_last * 100.0, 2) if pm_last else None,
+                "10일평균거래량": avg10,
+                "장전거래량비율": (round(pm_vol / avg10, 3) if avg10 else None),
+                "유동성$": (int(avg10 * pc) if avg10 else None),
             })
     passed.sort(key=lambda x: -x["장전변동%"])
     return passed
@@ -12014,6 +12027,7 @@ def gapgo_scan_endpoint(
     pmvol: float = 50000.0, pmchg: float = 0.9,
     rebuild: int = 0, scan_only: int = 0,
     build: int = 0, chunks: int = 10,
+    gapmin: float = 1.0, vrmin: float = 1.5,
 ):
     """
     과거 스캐너 재현 + 갭앤고 채점.
@@ -12054,7 +12068,8 @@ def gapgo_scan_endpoint(
     if build:
         _GS_BUSY.update({"t": _gs_time.time(), "what": f"1단계 {from_d}~{to_d}"})
         try:
-            st = _gs_stage1_step(from_d, to_d, feed, pmin, pmax, avgvol, chunks)
+            st = _gs_stage1_step(from_d, to_d, feed, pmin, pmax, avgvol, chunks,
+                                 gap_min=gapmin, vr_min=vrmin)
         finally:
             _GS_BUSY.update({"t": 0.0, "what": ""})
         st["구간"] = f"{from_d} ~ {to_d}"
@@ -12062,7 +12077,8 @@ def gapgo_scan_endpoint(
             st["힌트"] = "ALPACA_BASE_URL 전역/환경변수가 트레이딩 도메인(api.alpaca.markets)을 가리켜야 한다"
             return st
         st["다음호출"] = (None if st["완료"] else
-                        f"/gapgo_scan?from={from_d}&to={to_d}&build=1&chunks={chunks}&feed={feed or 'sip'}")
+                        f"/gapgo_scan?from={from_d}&to={to_d}&build=1&chunks={chunks}"
+                        f"&gapmin={gapmin}&vrmin={vrmin}&feed={feed or 'sip'}")
         st["안내"] = ("1단계 완료 — 이제 build 없이 날짜별로 돌려라"
                      if st["완료"] else "'다음호출' 을 완료될 때까지 반복해라")
         return st
@@ -12127,7 +12143,8 @@ def gapgo_scan_endpoint(
         "설정": {"TP$": tp, "SL$": sl, "자본$": cash, "마감": cut,
                 "장전컷": snap, "피드": _gg_feed(feed),
                 "가격대": [pmin, pmax], "10일평균거래량최소": avgvol,
-                "장전거래량최소": pmvol, "장전변동%최소": pmchg},
+                "장전거래량최소": pmvol, "장전변동%최소": pmchg,
+                "초벌갭%최소": gapmin, "초벌거래량배수최소": vrmin},
         "다음커서": nxt,
         "다음호출": (f"/gapgo_scan?from={nxt}&to={to_d}&maxdays={maxdays}"
                    f"&tp={tp}&sl={sl}&feed={feed or 'sip'}" if nxt else None),
