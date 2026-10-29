@@ -11579,8 +11579,9 @@ _GG_COLS = ["날짜", "종목", "전일종가", "장전고가", "장전저가", 
             "MFE$", "MAE$", "10시가", "10시손익$", "마감가", "비고"]
 
 
+# ⚠️ async def 금지 — 안에서 requests 블로킹 호출을 한다 (이벤트 루프 정지 방지)
 @app.get("/gapgo_check")
-async def gapgo_check_endpoint(items: str = "", tp: float = 5.0, sl: float = 8.0,
+def gapgo_check_endpoint(items: str = "", tp: float = 5.0, sl: float = 8.0,
                                cash: float = 508.58, cut: int = 1130,
                                feed: str = "", sheet: int = 0):
     """🟦 [GAPGO-1] 갭앤고 후보 소급 검증.
@@ -11917,13 +11918,23 @@ def _gs_stage1_step(from_d, to_d, feed: str, pmin: float, pmax: float,
 
 
 def _gs_cache_load(from_d, to_d) -> dict:
+    """캐시 구간이 요청 구간을 '포함하면' 쓴다 (정확히 같지 않아도 된다)."""
     global _GS_CACHE
-    if _GS_CACHE.get("from") == from_d.isoformat() and _GS_CACHE.get("to") == to_d.isoformat():
+
+    def _covers(c) -> bool:
+        try:
+            return (str(c.get("from", "9999-99-99")) <= from_d.isoformat()
+                    and str(c.get("to", "0000-00-00")) >= to_d.isoformat()
+                    and bool(c.get("days")))
+        except Exception:
+            return False
+
+    if _covers(_GS_CACHE):
         return _GS_CACHE.get("days") or {}
     try:
         with open(_GS_CACHE_PATH) as f:
             c = _gs_json.load(f)
-        if c.get("from") == from_d.isoformat() and c.get("to") == to_d.isoformat():
+        if _covers(c):
             _GS_CACHE = c
             return c.get("days") or {}
     except Exception:
@@ -11986,9 +11997,16 @@ def _gs_stage2(day, syms: list, feed: str, snap_hhmm: int,
 
 from fastapi import Query as _GSQuery
 
+# 동시 실행 방지 — 하나가 도는 중에 또 치면 즉시 되돌려준다.
+# (이게 없으면 요청이 쌓여서 봇 전체가 몇 분씩 먹통이 된다)
+_GS_BUSY: dict = {"t": 0.0, "what": ""}
 
+
+# ⚠️ async def 가 아니다. 안에서 requests 로 블로킹 호출을 하기 때문에
+#    async 로 두면 uvicorn 이벤트 루프가 통째로 멈춰 봇 전체가 응답을 못 한다.
+#    일반 def 로 두면 FastAPI 가 스레드풀에서 돌려준다.
 @app.get("/gapgo_scan")
-async def gapgo_scan_endpoint(
+def gapgo_scan_endpoint(
     from_: str = _GSQuery("", alias="from"), to: str = "", maxdays: int = 3,
     tp: float = 5.0, sl: float = 8.0, cash: float = 508.58, cut: int = 1130,
     feed: str = "", snap: int = 910,
@@ -12005,6 +12023,13 @@ async def gapgo_scan_endpoint(
       scan_only=1 → 후보만 뽑고 TP/SL 채점은 건너뜀 (빠른 확인용)
     """
     global _GS_CACHE
+    _busy_age = _gs_time.time() - (_GS_BUSY.get("t") or 0.0)
+    if _GS_BUSY.get("what") and _busy_age < 600:
+        return {"error": "이미 작업이 돌고 있다 — 겹쳐 치면 봇이 먹통이 된다",
+                "돌고있는작업": _GS_BUSY["what"],
+                "경과초": round(_busy_age, 1),
+                "안내": "끝날 때까지 기다린 뒤 같은 주소를 다시 쳐라"}
+
     f_raw = from_
     if not f_raw:
         return {"error": "from=YYYY-MM-DD&to=YYYY-MM-DD 가 필요하다",
@@ -12027,7 +12052,11 @@ async def gapgo_scan_endpoint(
 
     # ── 1단계: build=1 로 끊어서 전진시킨다 (Render 요청 타임아웃 회피) ──
     if build:
-        st = _gs_stage1_step(from_d, to_d, feed, pmin, pmax, avgvol, chunks)
+        _GS_BUSY.update({"t": _gs_time.time(), "what": f"1단계 {from_d}~{to_d}"})
+        try:
+            st = _gs_stage1_step(from_d, to_d, feed, pmin, pmax, avgvol, chunks)
+        finally:
+            _GS_BUSY.update({"t": 0.0, "what": ""})
         st["구간"] = f"{from_d} ~ {to_d}"
         if st.get("오류"):
             st["힌트"] = "ALPACA_BASE_URL 전역/환경변수가 트레이딩 도메인(api.alpaca.markets)을 가리켜야 한다"
@@ -12052,22 +12081,26 @@ async def gapgo_scan_endpoint(
 
     cands, rows, done_days = [], [], []
     _t0 = _gs_time.time()
-    for ds in todo:
-        day = _gg_date.fromisoformat(ds)
-        p = _gs_stage2(day, days.get(ds, []), feed, snap, pmvol, pmchg, pmin, pmax)
-        for item in p:
-            item["날짜"] = ds
-        cands.extend(p)
-        if not scan_only:
+    _GS_BUSY.update({"t": _t0, "what": f"스캔 {todo[0] if todo else '?'}~ ({len(todo)}일)"})
+    try:
+        for ds in todo:
+            day = _gg_date.fromisoformat(ds)
+            p = _gs_stage2(day, days.get(ds, []), feed, snap, pmvol, pmchg, pmin, pmax)
             for item in p:
-                try:
-                    rows.append(_gg_one(item["종목"], day, tp, sl, cash, cut, feed))
-                except Exception as e:
-                    rows.append({"종목": item["종목"], "날짜": ds,
-                                 "상태": "오류", "비고": str(e)[:120], "손익$": 0.0})
-        done_days.append(ds)
-        if _gs_time.time() - _t0 > 70.0:        # 응답 타임아웃 회피
-            break
+                item["날짜"] = ds
+            cands.extend(p)
+            if not scan_only:
+                for item in p:
+                    try:
+                        rows.append(_gg_one(item["종목"], day, tp, sl, cash, cut, feed))
+                    except Exception as e:
+                        rows.append({"종목": item["종목"], "날짜": ds,
+                                     "상태": "오류", "비고": str(e)[:120], "손익$": 0.0})
+            done_days.append(ds)
+            if _gs_time.time() - _t0 > 70.0:        # 응답 타임아웃 회피
+                break
+    finally:
+        _GS_BUSY.update({"t": 0.0, "what": ""})
     todo = done_days
 
     filled = [r for r in rows if r.get("상태") in ("TP", "SL", "시간청산")]
