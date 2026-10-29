@@ -11831,17 +11831,52 @@ def _gs_minute_multi(symbols: list, start_et, end_et, feed: str = "") -> dict:
 
 # ───────────────────────── 1단계 ─────────────────────────
 
-def _gs_stage1(from_d, to_d, feed: str, pmin: float, pmax: float,
-               avgvol_min: float, chunk: int = 200) -> dict:
-    """전 구간을 한 번에 초벌 선별. → {"YYYY-MM-DD": [sym, ...]}"""
-    uni = _gs_universe()
-    if not uni:
+_GS_PROG_PATH = "/tmp/gapgo_scan_stage1_prog.json"
+
+
+def _gs_prog_load() -> dict:
+    try:
+        with open(_GS_PROG_PATH) as f:
+            return _gs_json.load(f) or {}
+    except Exception:
         return {}
+
+
+def _gs_prog_save(p: dict):
+    try:
+        with open(_GS_PROG_PATH, "w") as f:
+            _gs_json.dump(p, f)
+    except Exception as e:
+        print(f"⚠️ [GSCAN] 진행상태 저장 실패: {e}")
+
+
+def _gs_stage1_step(from_d, to_d, feed: str, pmin: float, pmax: float,
+                    avgvol_min: float, n_chunks: int,
+                    chunk: int = 200, budget_s: float = 55.0) -> dict:
+    """1단계를 '몇 덩어리씩' 전진시킨다. Render 요청 타임아웃을 피하려고 끊어서 돈다.
+
+    진행상태는 /tmp 에 저장 → 다음 호출이 이어받는다.
+    반환: {"완료":bool, "처리심볼":int, "전체심볼":int, "후보있는날":int, ...}
+    """
+    p = _gs_prog_load()
+    same = (p.get("from") == from_d.isoformat() and p.get("to") == to_d.isoformat()
+            and p.get("avgvol") == avgvol_min and p.get("pmin") == pmin
+            and p.get("pmax") == pmax)
+    if not same:
+        uni = _gs_universe()
+        if not uni:
+            return {"완료": False, "오류": "/v2/assets 에서 심볼 목록을 못 받았다"}
+        p = {"from": from_d.isoformat(), "to": to_d.isoformat(),
+             "avgvol": avgvol_min, "pmin": pmin, "pmax": pmax,
+             "uni": uni, "idx": 0, "days": {}}
+
+    uni, idx, days = p["uni"], int(p["idx"]), p["days"]
     lookback = from_d - _gg_td(days=25)        # 10일 평균거래량 확보용
-    days: dict = {}
     t0 = _gs_time.time()
-    for i in range(0, len(uni), chunk):
-        part = uni[i:i + chunk]
+    done_chunks = 0
+
+    while idx < len(uni) and done_chunks < max(1, n_chunks):
+        part = uni[idx:idx + chunk]
         bars = _gs_daily_multi(part, lookback, to_d, feed)
         for sym, seq in bars.items():
             for k in range(11, len(seq)):
@@ -11861,12 +11896,24 @@ def _gs_stage1(from_d, to_d, feed: str, pmin: float, pmax: float,
                 if gap < 1.0 and vratio < 1.5:
                     continue
                 days.setdefault(cur["d"], []).append(sym)
-        if _gs_time.time() - t0 > 900:                 # 15분 안전 상한
-            print("⚠️ [GSCAN] 1단계 시간 상한 — 부분 캐시로 저장")
+        idx += chunk
+        done_chunks += 1
+        if _gs_time.time() - t0 > budget_s:            # 응답 타임아웃 회피
             break
-    for v in days.values():
-        v.sort()
-    return days
+
+    p["idx"], p["days"] = idx, days
+    _gs_prog_save(p)
+    finished = idx >= len(uni)
+    if finished:
+        for v in days.values():
+            v.sort()
+        _gs_cache_save(from_d, to_d, days)
+    return {"완료": finished,
+            "처리심볼": min(idx, len(uni)), "전체심볼": len(uni),
+            "진행%": round(100.0 * min(idx, len(uni)) / max(1, len(uni)), 1),
+            "후보있는날": len(days),
+            "초벌후보합계": sum(len(v) for v in days.values()),
+            "걸린초": round(_gs_time.time() - t0, 1)}
 
 
 def _gs_cache_load(from_d, to_d) -> dict:
@@ -11948,6 +11995,7 @@ async def gapgo_scan_endpoint(
     pmin: float = 5.0, pmax: float = 100.0, avgvol: float = 200000.0,
     pmvol: float = 50000.0, pmchg: float = 0.9,
     rebuild: int = 0, scan_only: int = 0,
+    build: int = 0, chunks: int = 10,
 ):
     """
     과거 스캐너 재현 + 갭앤고 채점.
@@ -11956,6 +12004,7 @@ async def gapgo_scan_endpoint(
       snap     = 장전 데이터 컷 시각 HHMM (기본 0910 = 네가 스캐너 보는 시각)
       scan_only=1 → 후보만 뽑고 TP/SL 채점은 건너뜀 (빠른 확인용)
     """
+    global _GS_CACHE
     f_raw = from_
     if not f_raw:
         return {"error": "from=YYYY-MM-DD&to=YYYY-MM-DD 가 필요하다",
@@ -11968,21 +12017,41 @@ async def gapgo_scan_endpoint(
     if to_d < from_d:
         return {"error": "to 가 from 보다 앞이다"}
 
-    # 1단계 캐시
-    days = {} if rebuild else _gs_cache_load(from_d, to_d)
-    stage1_built = False
+    if rebuild:
+        for _p in (_GS_CACHE_PATH, _GS_PROG_PATH):
+            try:
+                _gs_os.remove(_p)
+            except Exception:
+                pass
+        _GS_CACHE = {}
+
+    # ── 1단계: build=1 로 끊어서 전진시킨다 (Render 요청 타임아웃 회피) ──
+    if build:
+        st = _gs_stage1_step(from_d, to_d, feed, pmin, pmax, avgvol, chunks)
+        st["구간"] = f"{from_d} ~ {to_d}"
+        if st.get("오류"):
+            st["힌트"] = "ALPACA_BASE_URL 전역/환경변수가 트레이딩 도메인(api.alpaca.markets)을 가리켜야 한다"
+            return st
+        st["다음호출"] = (None if st["완료"] else
+                        f"/gapgo_scan?from={from_d}&to={to_d}&build=1&chunks={chunks}&feed={feed or 'sip'}")
+        st["안내"] = ("1단계 완료 — 이제 build 없이 날짜별로 돌려라"
+                     if st["완료"] else "'다음호출' 을 완료될 때까지 반복해라")
+        return st
+
+    days = _gs_cache_load(from_d, to_d)
     if not days:
-        days = _gs_stage1(from_d, to_d, feed, pmin, pmax, avgvol)
-        _gs_cache_save(from_d, to_d, days)
-        stage1_built = True
-    if not days:
-        return {"error": "1단계가 비었다 — /v2/assets 접근 또는 일봉 응답 확인",
-                "힌트": "ALPACA_BASE_URL 전역/환경변수가 트레이딩 도메인을 가리켜야 한다"}
+        pr = _gs_prog_load()
+        part = (pr.get("from") == from_d.isoformat() and pr.get("to") == to_d.isoformat())
+        return {"error": "1단계 캐시가 없다",
+                "할일": f"/gapgo_scan?from={from_d}&to={to_d}&build=1&chunks={chunks}&feed={feed or 'sip'}",
+                "안내": "위 주소를 '완료:true' 가 나올 때까지 반복해서 치고, 그 다음에 이 주소를 다시 쳐라",
+                "진행중": (f"{pr.get('idx',0)}/{len(pr.get('uni') or [])} 심볼" if part else None)}
 
     all_days = sorted(days.keys())
     todo = [d for d in all_days if d >= from_d.isoformat()][:max(1, maxdays)]
 
-    cands, rows = [], []
+    cands, rows, done_days = [], [], []
+    _t0 = _gs_time.time()
     for ds in todo:
         day = _gg_date.fromisoformat(ds)
         p = _gs_stage2(day, days.get(ds, []), feed, snap, pmvol, pmchg, pmin, pmax)
@@ -11996,6 +12065,10 @@ async def gapgo_scan_endpoint(
                 except Exception as e:
                     rows.append({"종목": item["종목"], "날짜": ds,
                                  "상태": "오류", "비고": str(e)[:120], "손익$": 0.0})
+        done_days.append(ds)
+        if _gs_time.time() - _t0 > 70.0:        # 응답 타임아웃 회피
+            break
+    todo = done_days
 
     filled = [r for r in rows if r.get("상태") in ("TP", "SL", "시간청산")]
     n_tp = sum(1 for r in filled if r.get("상태") == "TP")
@@ -12008,7 +12081,7 @@ async def gapgo_scan_endpoint(
 
     return {
         "구간": f"{from_d} ~ {to_d}",
-        "1단계": {"방금생성": stage1_built, "후보있는날": len(all_days),
+        "1단계": {"후보있는날": len(all_days),
                  "초벌후보합계": sum(len(v) for v in days.values())},
         "이번처리": todo,
         "후보수": len(cands),
