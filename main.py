@@ -12164,3 +12164,204 @@ def gapgo_scan_endpoint(
         "다음호출": (f"/gapgo_scan?from={nxt}&to={to_d}&maxdays={maxdays}"
                    f"&tp={tp}&sl={sl}&feed={feed or 'sip'}" if nxt else None),
     }
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 🟩 [GAPGO-4] 하루씩 자동 전진 + 시트 기록  /gapgo_run   (2026-10-29)
+#
+#   ■ 왜 또 만드나
+#   /gapgo_scan 으로 하루를 채점하면 응답이 수십 행이 된다.
+#   그걸 URL 로 읽어오려면 응답이 작아야 한다 — 큰 응답은 중간에서 잘린다.
+#   그래서 ① 행은 전부 구글시트에 쓰고 ② 응답은 요약만 돌려준다.
+#   그리고 ③ '어느 날까지 했는지' 를 서버가 기억해서 칠 때마다 하루씩 전진한다.
+#   요청이 타임아웃돼도 서버는 그 하루를 끝내고 완료로 기록한다 → 다시 치면 다음 날.
+#
+#   ■ 사용법
+#     GET /gapgo_run?from=2026-08-01&to=2026-10-28&sheet=1&feed=sip&tp=5&sl=8
+#        → 안 끝난 날 중 가장 빠른 하루를 처리하고 요약만 반환. 완료될 때까지 반복.
+#     GET /gapgo_run?from=...&to=...&status=1
+#        → 아무 작업도 하지 않고 진행상황 + 누적 집계만 반환 (빠르다)
+#     GET /gapgo_run?...&reset=1     진행기록 초기화 (시트는 안 지운다)
+#
+#   ■ 전제
+#   /gapgo_scan 의 1단계 캐시가 같은(또는 더 넓은) 구간으로 이미 만들어져 있어야 한다.
+# ═══════════════════════════════════════════════════════════════════
+
+_GG_RUN_PATH = "/tmp/gapgo_run_progress.json"
+_GG_RUN_TAB = "갭앤고_전수"
+_GG_RUN_HEADERS = [
+    "날짜", "종목", "전일종가", "장전고가", "장전저가", "장전종가",
+    "장전거래량", "10일평균거래량", "장전거래량비율", "유동성$",
+    "장전레인지%", "되밀림%", "트리거", "수량", "TP", "SL",
+    "개장가", "체결시각", "체결후고가", "체결후저가",
+    "MFE$", "MAE$", "마감가", "10시가", "상태", "손익$", "결판분", "비고",
+    "보유손익$",          # 출구규칙 없이 11:30 청산 — 진입 품질 측정용
+]
+
+
+def _gg_run_load() -> dict:
+    try:
+        with open(_GG_RUN_PATH) as f:
+            return _gs_json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _gg_run_save(p: dict):
+    try:
+        with open(_GG_RUN_PATH, "w") as f:
+            _gs_json.dump(p, f)
+    except Exception as e:
+        print(f"⚠️ [GRUN] 진행 저장 실패: {e}")
+
+
+def _gg_run_rows_to_sheet(rows: list) -> str:
+    """행을 시트 탭에 append. 성공 메시지 또는 실패 이유를 돌려준다."""
+    if not rows:
+        return "기록할 행 없음"
+    try:
+        ss = _get_spreadsheet()               # type: ignore[name-defined]
+    except NameError:
+        return "시트 미연결(_get_spreadsheet 없음)"
+    if ss is None:
+        return "시트 열기 실패"
+    try:
+        try:
+            ws = ss.worksheet(_GG_RUN_TAB)
+        except Exception:
+            ws = ss.add_worksheet(title=_GG_RUN_TAB, rows=2000,
+                                  cols=len(_GG_RUN_HEADERS))
+        try:
+            _pr_ensure_headers(ws, _GG_RUN_HEADERS)   # type: ignore[name-defined]
+        except Exception:
+            try:
+                if not (ws.row_values(1) or []):
+                    ws.update("A1", [_GG_RUN_HEADERS])
+            except Exception:
+                pass
+        body = [[("" if r.get(h) is None else r.get(h)) for h in _GG_RUN_HEADERS]
+                for r in rows]
+        ws.append_rows(body, value_input_option="USER_ENTERED")
+        return f"시트 '{_GG_RUN_TAB}' 에 {len(body)}행 기록"
+    except Exception as e:
+        return f"시트 기록 실패: {str(e)[:120]}"
+
+
+@app.get("/gapgo_run")
+def gapgo_run_endpoint(
+    from_: str = _GSQuery("", alias="from"), to: str = "",
+    tp: float = 5.0, sl: float = 8.0, cash: float = 508.58, cut: int = 1130,
+    feed: str = "", snap: int = 910,
+    pmin: float = 5.0, pmax: float = 100.0,
+    pmvol: float = 50000.0, pmchg: float = 0.9,
+    sheet: int = 1, status: int = 0, reset: int = 0, days_per_call: int = 1,
+):
+    try:
+        from_d = _gg_date.fromisoformat(from_)
+        to_d = _gg_date.fromisoformat(to) if to else from_d
+    except Exception:
+        return {"error": "from=YYYY-MM-DD&to=YYYY-MM-DD 가 필요하다"}
+
+    key = f"{from_d}~{to_d}|tp{tp}|sl{sl}|snap{snap}"
+    p = _gg_run_load()
+    if reset or p.get("key") != key:
+        p = {"key": key, "done": [], "tally": {}, "daily": {}}
+        _gg_run_save(p)
+
+    cal = _gs_cache_load(from_d, to_d)
+    if not cal:
+        return {"error": "1단계 캐시가 없다",
+                "할일": f"/gapgo_scan?from={from_d}&to={to_d}&build=1&chunks=10&feed={feed or 'sip'}",
+                "안내": "먼저 저 주소로 1단계를 '완료:true' 까지 만들어라"}
+
+    all_days = sorted(d for d in cal.keys()
+                      if from_d.isoformat() <= d <= to_d.isoformat())
+    done = set(p.get("done") or [])
+    todo = [d for d in all_days if d not in done]
+
+    def _summary(extra=None):
+        t = p.get("tally") or {}
+        dec = int(t.get("TP", 0)) + int(t.get("SL", 0))
+        out = {
+            "구간": f"{from_d} ~ {to_d}",
+            "진행": f"{len(done)}/{len(all_days)} 일",
+            "남은날": len(todo),
+            "누적": {
+                "후보": int(t.get("후보", 0)),
+                "체결": int(t.get("체결", 0)),
+                "미체결": int(t.get("미체결", 0)),
+                "TP": int(t.get("TP", 0)), "SL": int(t.get("SL", 0)),
+                "시간청산": int(t.get("시간청산", 0)),
+                "승률%": (round(100.0 * int(t.get("TP", 0)) / dec, 1) if dec else None),
+                "총손익$": round(float(t.get("손익", 0.0)), 2),
+                "보유손익$": round(float(t.get("보유", 0.0)), 2),
+            },
+            "일별보유손익$": {k: round(v, 2) for k, v in sorted((p.get("daily") or {}).items())},
+            "설정": {"TP$": tp, "SL$": sl, "자본$": cash, "마감": cut, "장전컷": snap,
+                    "피드": _gg_feed(feed)},
+            "다음호출": (f"/gapgo_run?from={from_d}&to={to_d}&tp={tp}&sl={sl}"
+                       f"&feed={feed or 'sip'}&sheet={sheet}" if todo else None),
+        }
+        if extra:
+            out.update(extra)
+        return out
+
+    if status or not todo:
+        return _summary({"안내": "전부 끝났다 — 시트를 내려받아라" if not todo else "진행상황만 보고"})
+
+    _busy_age = _gs_time.time() - (_GS_BUSY.get("t") or 0.0)
+    if _GS_BUSY.get("what") and _busy_age < 600:
+        return {"error": "이미 작업이 돌고 있다", "돌고있는작업": _GS_BUSY["what"],
+                "경과초": round(_busy_age, 1)}
+
+    picked = todo[:max(1, days_per_call)]
+    _GS_BUSY.update({"t": _gs_time.time(), "what": f"gapgo_run {picked[0]}"})
+    notes = []
+    try:
+        for ds in picked:
+            day = _gg_date.fromisoformat(ds)
+            cands = _gs_stage2(day, cal.get(ds, {}), feed, snap,
+                               pmvol, pmchg, pmin, pmax)
+            rows = []
+            for c in cands:
+                try:
+                    r = _gg_one(c["종목"], day, tp, sl, cash, cut, feed)
+                except Exception as e:
+                    r = {"종목": c["종목"], "날짜": ds, "상태": "오류",
+                         "비고": str(e)[:120], "손익$": 0.0}
+                for k in ("10일평균거래량", "장전거래량비율", "유동성$"):
+                    r.setdefault(k, c.get(k))
+                # 출구규칙 없이 11:30 청산한 손익 — 진입 품질만 보는 지표
+                try:
+                    if r.get("마감가") and r.get("트리거") and r.get("수량"):
+                        r["보유손익$"] = round(
+                            float(r["수량"]) * (float(r["마감가"]) - float(r["트리거"])), 2)
+                except Exception:
+                    pass
+                rows.append(r)
+
+            t = p.setdefault("tally", {})
+            t["후보"] = int(t.get("후보", 0)) + len(rows)
+            dayhold = 0.0
+            for r in rows:
+                stt = r.get("상태")
+                if stt in ("TP", "SL", "시간청산"):
+                    t["체결"] = int(t.get("체결", 0)) + 1
+                    t[stt] = int(t.get(stt, 0)) + 1
+                    dayhold += float(r.get("보유손익$") or 0.0)
+                elif stt == "미체결":
+                    t["미체결"] = int(t.get("미체결", 0)) + 1
+                t["손익"] = float(t.get("손익", 0.0)) + float(r.get("손익$") or 0.0)
+            t["보유"] = float(t.get("보유", 0.0)) + dayhold
+            p.setdefault("daily", {})[ds] = dayhold
+
+            if sheet:
+                notes.append(f"{ds}: {_gg_run_rows_to_sheet(rows)}")
+            p.setdefault("done", []).append(ds)
+            done.add(ds)
+            _gg_run_save(p)
+    finally:
+        _GS_BUSY.update({"t": 0.0, "what": ""})
+
+    todo = [d for d in all_days if d not in done]
+    return _summary({"방금처리": picked, "시트": notes})
