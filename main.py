@@ -11715,8 +11715,14 @@ def _gs_trade_base() -> str:
     return "https://api.alpaca.markets"
 
 
-def _gs_universe() -> list:
-    """거래 가능한 미국 주식 심볼 전체."""
+def _gs_universe(exchanges: str = "NASDAQ,NYSE,AMEX") -> list:
+    """거래 가능한 미국 주식 심볼.
+
+    ⚠️ 거래소로 ETF 를 걸러낸다. ARCA·BATS 는 ETF·레버리지 상품이 대부분이다.
+    이걸 안 하면 브라질 ETF(EWZ·EWZS·ILF) 와 레버리지 암호화폐 ETF(BITX·ETHU·MSTU)
+    가 같은 날 한꺼번에 몰려와서 후보 목록을 오염시킨다 — 실제 스캐너엔 안 뜬다.
+    """
+    keep = {e.strip().upper() for e in (exchanges or "").split(",") if e.strip()}
     try:
         r = _gg_rq.get(f"{_gs_trade_base()}/v2/assets",
                        headers=ALPACA_HEADERS,
@@ -11728,6 +11734,8 @@ def _gs_universe() -> list:
         out = []
         for a in (r.json() or []):
             if not a.get("tradable"):
+                continue
+            if keep and str(a.get("exchange", "")).upper() not in keep:
                 continue
             s = str(a.get("symbol", ""))
             # 우선주·워런트·유닛 등 제외 (스캐너에도 안 걸린다)
@@ -11785,13 +11793,14 @@ def _gs_daily_multi(symbols: list, start_d, end_d, feed: str = "") -> dict:
     return out
 
 
-def _gs_minute_multi(symbols: list, start_et, end_et, feed: str = "") -> dict:
-    """멀티심볼 1분봉. → {sym: [{t(ET),o,h,l,c,v}, ...] 시간순}"""
+def _gs_minute_multi(symbols: list, start_et, end_et, feed: str = "",
+                     timeframe: str = "1Min") -> dict:
+    """멀티심볼 분봉. → {sym: [{t(ET),o,h,l,c,v}, ...] 시간순}"""
     out: dict = {}
     token = None
     base = {
         "symbols": ",".join(symbols),
-        "timeframe": "1Min",
+        "timeframe": timeframe,
         "start": start_et.astimezone(_gg_utc.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "end":   end_et.astimezone(_gg_utc.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "feed":  _gg_feed(feed),
@@ -11853,7 +11862,8 @@ def _gs_prog_save(p: dict):
 
 def _gs_stage1_step(from_d, to_d, feed: str, pmin: float, pmax: float,
                     avgvol_min: float, n_chunks: int,
-                    gap_min: float = 1.0, vr_min: float = 1.5,
+                    gap_min: float = 2.5, vr_min: float = 2.5,
+                    exchanges: str = "NASDAQ,NYSE,AMEX",
                     chunk: int = 200, budget_s: float = 25.0) -> dict:
     """1단계를 '몇 덩어리씩' 전진시킨다. Render 요청 타임아웃을 피하려고 끊어서 돈다.
 
@@ -11861,9 +11871,9 @@ def _gs_stage1_step(from_d, to_d, feed: str, pmin: float, pmax: float,
     반환: {"완료":bool, "처리심볼":int, "전체심볼":int, "후보있는날":int, ...}
     """
     p = _gs_prog_load()
-    key = [from_d.isoformat(), to_d.isoformat(), avgvol_min, pmin, pmax, gap_min, vr_min]
+    key = [from_d.isoformat(), to_d.isoformat(), avgvol_min, pmin, pmax, gap_min, vr_min, exchanges]
     if p.get("key") != key:
-        uni = _gs_universe()
+        uni = _gs_universe(exchanges)
         if not uni:
             return {"완료": False, "오류": "/v2/assets 에서 심볼 목록을 못 받았다"}
         p = {"key": key, "from": from_d.isoformat(), "to": to_d.isoformat(),
@@ -11972,7 +11982,12 @@ def _gs_stage2(day, day_syms, feed: str, snap_hhmm: int,
     passed = []
     for i in range(0, len(syms), chunk):
         part = syms[i:i + chunk]
-        mb = _gs_minute_multi(part, pm_s, pm_e, feed)
+        # ⚠️ 5분봉을 쓴다. 선별에 필요한 건 장전 고가·저가·마지막가·거래량 합뿐이고
+        #    이 네 값은 5분봉으로도 1분봉과 '완전히 동일'하다(봉은 합쳐질 뿐이다).
+        #    봉 개수가 310 → 62 로 줄어 요청량이 5배 싸진다. 이게 없으면
+        #    하루 수백 종목을 한 요청 안에 못 끝낸다.
+        #    실제 매매 시뮬레이션(3단계 _gg_one)은 여전히 1분봉을 쓴다.
+        mb = _gs_minute_multi(part, pm_s, pm_e, feed, timeframe="5Min")
         for sym in part:
             bars = mb.get(sym) or []
             if not bars:
@@ -12027,7 +12042,7 @@ def gapgo_scan_endpoint(
     pmvol: float = 50000.0, pmchg: float = 0.9,
     rebuild: int = 0, scan_only: int = 0,
     build: int = 0, chunks: int = 10,
-    gapmin: float = 1.0, vrmin: float = 1.5,
+    gapmin: float = 2.5, vrmin: float = 2.5, exch: str = "NASDAQ,NYSE,AMEX",
 ):
     """
     과거 스캐너 재현 + 갭앤고 채점.
@@ -12069,7 +12084,7 @@ def gapgo_scan_endpoint(
         _GS_BUSY.update({"t": _gs_time.time(), "what": f"1단계 {from_d}~{to_d}"})
         try:
             st = _gs_stage1_step(from_d, to_d, feed, pmin, pmax, avgvol, chunks,
-                                 gap_min=gapmin, vr_min=vrmin)
+                                 gap_min=gapmin, vr_min=vrmin, exchanges=exch)
         finally:
             _GS_BUSY.update({"t": 0.0, "what": ""})
         st["구간"] = f"{from_d} ~ {to_d}"
@@ -12078,7 +12093,7 @@ def gapgo_scan_endpoint(
             return st
         st["다음호출"] = (None if st["완료"] else
                         f"/gapgo_scan?from={from_d}&to={to_d}&build=1&chunks={chunks}"
-                        f"&gapmin={gapmin}&vrmin={vrmin}&feed={feed or 'sip'}")
+                        f"&gapmin={gapmin}&vrmin={vrmin}&exch={exch}&feed={feed or 'sip'}")
         st["안내"] = ("1단계 완료 — 이제 build 없이 날짜별로 돌려라"
                      if st["완료"] else "'다음호출' 을 완료될 때까지 반복해라")
         return st
@@ -12144,7 +12159,7 @@ def gapgo_scan_endpoint(
                 "장전컷": snap, "피드": _gg_feed(feed),
                 "가격대": [pmin, pmax], "10일평균거래량최소": avgvol,
                 "장전거래량최소": pmvol, "장전변동%최소": pmchg,
-                "초벌갭%최소": gapmin, "초벌거래량배수최소": vrmin},
+                "초벌갭%최소": gapmin, "초벌거래량배수최소": vrmin, "거래소": exch},
         "다음커서": nxt,
         "다음호출": (f"/gapgo_scan?from={nxt}&to={to_d}&maxdays={maxdays}"
                    f"&tp={tp}&sl={sl}&feed={feed or 'sip'}" if nxt else None),
