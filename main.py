@@ -11468,9 +11468,19 @@ def _gg_one(symbol: str, day, tp_usd: float, sl_usd: float,
     pm_e = _gg_dt.combine(day, _gg_time(9, 30), tzinfo=_GG_NY)
     rg_e = _gg_dt.combine(day, _gg_time(cut_hhmm // 100, cut_hhmm % 100), tzinfo=_GG_NY)
 
+    # 🟦 [GAPGO-2] 당일 조회 보호 — Alpaca 는 최근 약 15분 구간을 주지 않는다.
+    #   end 가 그 안에 걸리면 요청 전체가 비어서 "데이터없음" 이 떴다. end 를 잘라준다.
+    _gg_now = _gg_dt.now(_GG_NY)
+    if rg_e > _gg_now - _gg_td(minutes=16):
+        rg_e = _gg_now - _gg_td(minutes=16)
+        res["주의"] = "당일 조회 — 최근 16분 제외하고 계산함"
+    if rg_e <= pm_s:
+        res["상태"] = "너무이름(데이터지연)"
+        return res
+
     bars = _gg_bars(symbol, pm_s, rg_e, "1Min", feed)
     if not bars:
-        res["상태"] = "데이터없음"
+        res["상태"] = f"데이터없음(feed={_gg_feed(feed)}, ~{rg_e:%H:%M} ET)"
         return res
 
     pm = [b for b in bars if b["t"] < pm_e]
@@ -11641,3 +11651,378 @@ async def gapgo_check_endpoint(items: str = "", tp: float = 5.0, sl: float = 8.0
             summary["시트오류"] = str(e)
 
     return {"ok": True, "summary": summary, "rows": rows}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 🟩 [GAPGO-3] 과거 스캐너 재현 엔드포인트  /gapgo_scan   (2026-10-29)
+#
+#   ■ 왜 필요한가
+#   TradingView 스크리너는 "과거 어느 날 무엇이 걸렸는지" 를 내보낼 수 없다.
+#   그래서 10/5 이전 후보 모집단이 존재하지 않는다 → 10월만 분석됐다.
+#   이 엔드포인트는 Alpaca 봉 데이터로 그 모집단을 날짜별로 다시 만든다.
+#
+#   ■ 3단계
+#   1단계(싸다)  전 종목 1일봉 한 번 → 가격대·유동성·당일 거래량/갭 으로 초벌 선별
+#                 → 날짜별 후보 심볼 캐시 (범위 전체를 한 번만)
+#   2단계        후보들의 "장전 04:00~09:10" 분봉(멀티심볼) → 실제 스캐너 조건 적용
+#                 장전거래량 ≥ 50,000 · 장전변동% ≥ +0.9% · 전일종가 $5~$100
+#   3단계        통과한 것만 기존 _gg_one() 으로 트리거/TP/SL 계산
+#
+#   ■ 중요: 09:10 컷
+#   네가 실제로 스캐너를 보는 시각이 09:00~09:20 이다. 그래서 2단계는
+#   장전 데이터를 09:10 까지만 쓴다. 전체 장전(09:30까지)을 쓰면
+#   "09:25에 갑자기 뜬 종목" 이 섞여 미래를 엿보게 된다.
+#
+#   ■ 한계 (솔직하게)
+#   1단계가 당일 1일봉(거래량·갭)을 쓴다 → 선별에 약한 미래참조가 있다.
+#   장전에 갭업했다가 개장 전에 갭을 다 메우고 거래량도 안 터진 종목은 빠진다.
+#   실제 스캐너도 장전 신호로 거르므로 차이는 작지만, 0 은 아니다.
+#
+#   ■ 사용법 (한 번에 며칠씩, 끊어서)
+#     GET /gapgo_scan?from=2026-08-01&to=2026-10-28&maxdays=3&feed=sip
+#     응답의 "다음커서" 를 from 에 넣어 반복 → 전 구간 완주
+#     GET /gapgo_scan?...&rebuild=1     1단계 캐시 강제 재생성
+#     GET /gapgo_scan?...&tp=8&sl=5     TP/SL 조합 바꿔서 재채점
+#
+#   ■ 설치
+#   main 맨 아래 [GAPGO-1] 블록 뒤에 그대로 붙인다. 기존 코드는 안 건드린다.
+#   필요한 기존 심볼: app · ALPACA_DATA_BASE_URL · ALPACA_HEADERS
+#                     · _gg_bars · _gg_one · _gg_feed · _GG_NY  ([GAPGO-1] 제공)
+# ═══════════════════════════════════════════════════════════════════
+
+import json as _gs_json
+import os as _gs_os
+import time as _gs_time
+
+_GS_CACHE_PATH = "/tmp/gapgo_scan_stage1.json"
+_GS_CACHE: dict = {}          # {"from":..,"to":..,"days":{"YYYY-MM-DD":[sym,...]}}
+
+
+def _gs_trade_base() -> str:
+    """Alpaca 트레이딩 API 기준 URL — /v2/assets 는 data 도메인에 없다."""
+    for name in ("ALPACA_BASE_URL", "ALPACA_TRADE_BASE_URL", "APCA_API_BASE_URL"):
+        try:
+            v = globals()[name]
+            if v:
+                return str(v).rstrip("/")
+        except KeyError:
+            pass
+    for env in ("ALPACA_BASE_URL", "APCA_API_BASE_URL"):
+        v = _gs_os.environ.get(env)
+        if v:
+            return v.rstrip("/")
+    return "https://api.alpaca.markets"
+
+
+def _gs_universe() -> list:
+    """거래 가능한 미국 주식 심볼 전체."""
+    try:
+        r = _gg_rq.get(f"{_gs_trade_base()}/v2/assets",
+                       headers=ALPACA_HEADERS,
+                       params={"status": "active", "asset_class": "us_equity"},
+                       timeout=60)
+        if not r.ok:
+            print(f"⚠️ [GSCAN] /v2/assets {r.status_code}: {r.text[:140]}")
+            return []
+        out = []
+        for a in (r.json() or []):
+            if not a.get("tradable"):
+                continue
+            s = str(a.get("symbol", ""))
+            # 우선주·워런트·유닛 등 제외 (스캐너에도 안 걸린다)
+            if not s or not s.isalpha() or len(s) > 5:
+                continue
+            out.append(s)
+        return sorted(set(out))
+    except Exception as e:
+        print(f"⚠️ [GSCAN] universe 예외: {e}")
+        return []
+
+
+def _gs_daily_multi(symbols: list, start_d, end_d, feed: str = "") -> dict:
+    """멀티심볼 1일봉. → {sym: [{d,o,h,l,c,v}, ...] 시간순}"""
+    out: dict = {}
+    token = None
+    base = {
+        "symbols": ",".join(symbols),
+        "timeframe": "1Day",
+        "start": start_d.strftime("%Y-%m-%d"),
+        "end":   end_d.strftime("%Y-%m-%d"),
+        "feed":  _gg_feed(feed),
+        "limit": 10000,
+        "adjustment": "raw",
+    }
+    for _ in range(40):
+        p = dict(base)
+        if token:
+            p["page_token"] = token
+        try:
+            r = _gg_rq.get(f"{ALPACA_DATA_BASE_URL}/v2/stocks/bars",
+                           headers=ALPACA_HEADERS, params=p, timeout=60)
+        except Exception as e:
+            print(f"⚠️ [GSCAN] 일봉 예외: {e}")
+            break
+        if not r.ok:
+            print(f"⚠️ [GSCAN] 일봉 {r.status_code}: {r.text[:140]}")
+            break
+        j = r.json() or {}
+        for sym, bars in (j.get("bars") or {}).items():
+            dst = out.setdefault(sym, [])
+            for b in bars:
+                try:
+                    dst.append({"d": str(b["t"])[:10],
+                                "o": float(b["o"]), "h": float(b["h"]),
+                                "l": float(b["l"]), "c": float(b["c"]),
+                                "v": float(b.get("v", 0) or 0)})
+                except Exception:
+                    continue
+        token = j.get("next_page_token")
+        if not token:
+            break
+    for v in out.values():
+        v.sort(key=lambda x: x["d"])
+    return out
+
+
+def _gs_minute_multi(symbols: list, start_et, end_et, feed: str = "") -> dict:
+    """멀티심볼 1분봉. → {sym: [{t(ET),o,h,l,c,v}, ...] 시간순}"""
+    out: dict = {}
+    token = None
+    base = {
+        "symbols": ",".join(symbols),
+        "timeframe": "1Min",
+        "start": start_et.astimezone(_gg_utc.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "end":   end_et.astimezone(_gg_utc.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "feed":  _gg_feed(feed),
+        "limit": 10000,
+        "adjustment": "raw",
+    }
+    for _ in range(40):
+        p = dict(base)
+        if token:
+            p["page_token"] = token
+        try:
+            r = _gg_rq.get(f"{ALPACA_DATA_BASE_URL}/v2/stocks/bars",
+                           headers=ALPACA_HEADERS, params=p, timeout=60)
+        except Exception as e:
+            print(f"⚠️ [GSCAN] 분봉 예외: {e}")
+            break
+        if not r.ok:
+            print(f"⚠️ [GSCAN] 분봉 {r.status_code}: {r.text[:140]}")
+            break
+        j = r.json() or {}
+        for sym, bars in (j.get("bars") or {}).items():
+            dst = out.setdefault(sym, [])
+            for b in bars:
+                try:
+                    t = _gg_dt.fromisoformat(str(b["t"]).replace("Z", "+00:00")).astimezone(_GG_NY)
+                    dst.append({"t": t, "o": float(b["o"]), "h": float(b["h"]),
+                                "l": float(b["l"]), "c": float(b["c"]),
+                                "v": float(b.get("v", 0) or 0)})
+                except Exception:
+                    continue
+        token = j.get("next_page_token")
+        if not token:
+            break
+    for v in out.values():
+        v.sort(key=lambda x: x["t"])
+    return out
+
+
+# ───────────────────────── 1단계 ─────────────────────────
+
+def _gs_stage1(from_d, to_d, feed: str, pmin: float, pmax: float,
+               avgvol_min: float, chunk: int = 200) -> dict:
+    """전 구간을 한 번에 초벌 선별. → {"YYYY-MM-DD": [sym, ...]}"""
+    uni = _gs_universe()
+    if not uni:
+        return {}
+    lookback = from_d - _gg_td(days=25)        # 10일 평균거래량 확보용
+    days: dict = {}
+    t0 = _gs_time.time()
+    for i in range(0, len(uni), chunk):
+        part = uni[i:i + chunk]
+        bars = _gs_daily_multi(part, lookback, to_d, feed)
+        for sym, seq in bars.items():
+            for k in range(11, len(seq)):
+                cur, prev = seq[k], seq[k - 1]
+                if cur["d"] < from_d.isoformat() or cur["d"] > to_d.isoformat():
+                    continue
+                pc = prev["c"]
+                if not (pmin <= pc <= pmax):
+                    continue
+                prior = seq[k - 11:k - 1]              # 직전 10 거래일
+                avg10 = sum(b["v"] for b in prior) / 10.0
+                if avg10 < avgvol_min:
+                    continue
+                gap = (cur["o"] - pc) / pc * 100.0
+                vratio = (cur["v"] / avg10) if avg10 else 0.0
+                # 초벌: 갭 1% 이상 이거나 거래량 1.5배 이상 (일부러 넉넉하게)
+                if gap < 1.0 and vratio < 1.5:
+                    continue
+                days.setdefault(cur["d"], []).append(sym)
+        if _gs_time.time() - t0 > 900:                 # 15분 안전 상한
+            print("⚠️ [GSCAN] 1단계 시간 상한 — 부분 캐시로 저장")
+            break
+    for v in days.values():
+        v.sort()
+    return days
+
+
+def _gs_cache_load(from_d, to_d) -> dict:
+    global _GS_CACHE
+    if _GS_CACHE.get("from") == from_d.isoformat() and _GS_CACHE.get("to") == to_d.isoformat():
+        return _GS_CACHE.get("days") or {}
+    try:
+        with open(_GS_CACHE_PATH) as f:
+            c = _gs_json.load(f)
+        if c.get("from") == from_d.isoformat() and c.get("to") == to_d.isoformat():
+            _GS_CACHE = c
+            return c.get("days") or {}
+    except Exception:
+        pass
+    return {}
+
+
+def _gs_cache_save(from_d, to_d, days: dict):
+    global _GS_CACHE
+    _GS_CACHE = {"from": from_d.isoformat(), "to": to_d.isoformat(), "days": days}
+    try:
+        with open(_GS_CACHE_PATH, "w") as f:
+            _gs_json.dump(_GS_CACHE, f)
+    except Exception as e:
+        print(f"⚠️ [GSCAN] 캐시 저장 실패: {e}")
+
+
+# ───────────────────────── 2단계 ─────────────────────────
+
+def _gs_stage2(day, syms: list, feed: str, snap_hhmm: int,
+               pmvol_min: float, pmchg_min: float,
+               pmin: float, pmax: float, chunk: int = 50) -> list:
+    """장전 04:00~snap 분봉으로 실제 스캐너 조건 적용. → 통과 심볼 + 장전지표"""
+    hh, mm = divmod(snap_hhmm, 100)
+    pm_s = _gg_dt.combine(day, _gg_time(4, 0), tzinfo=_GG_NY)
+    pm_e = _gg_dt.combine(day, _gg_time(hh, mm), tzinfo=_GG_NY)
+    passed = []
+    for i in range(0, len(syms), chunk):
+        part = syms[i:i + chunk]
+        mb = _gs_minute_multi(part, pm_s, pm_e, feed)
+        for sym in part:
+            bars = mb.get(sym) or []
+            if not bars:
+                continue
+            pm_vol = sum(b["v"] for b in bars)
+            if pm_vol < pmvol_min:
+                continue
+            pc = _gg_prev_close(sym, day, feed)
+            if not pc or not (pmin <= pc <= pmax):
+                continue
+            pm_last = bars[-1]["c"]
+            chg = (pm_last - pc) / pc * 100.0
+            if chg < pmchg_min:
+                continue
+            hi = max(b["h"] for b in bars)
+            lo = min(b["l"] for b in bars)
+            passed.append({
+                "종목": sym,
+                "장전고가": round(hi, 4), "장전저가": round(lo, 4),
+                "장전종가": round(pm_last, 4), "전일종가": round(pc, 4),
+                "장전거래량": int(pm_vol),
+                "장전변동%": round(chg, 2),
+                "장전레인지%": round((hi - lo) / pm_last * 100.0, 2) if pm_last else None,
+            })
+    passed.sort(key=lambda x: -x["장전변동%"])
+    return passed
+
+
+# ───────────────────────── 엔드포인트 ─────────────────────────
+
+from fastapi import Query as _GSQuery
+
+
+@app.get("/gapgo_scan")
+async def gapgo_scan_endpoint(
+    from_: str = _GSQuery("", alias="from"), to: str = "", maxdays: int = 3,
+    tp: float = 5.0, sl: float = 8.0, cash: float = 508.58, cut: int = 1130,
+    feed: str = "", snap: int = 910,
+    pmin: float = 5.0, pmax: float = 100.0, avgvol: float = 200000.0,
+    pmvol: float = 50000.0, pmchg: float = 0.9,
+    rebuild: int = 0, scan_only: int = 0,
+):
+    """
+    과거 스캐너 재현 + 갭앤고 채점.
+      from/to  = 구간 (YYYY-MM-DD).  'from' 은 예약어라 from_ 도 받는다.
+      maxdays  = 이번 호출에서 처리할 거래일 수 (기본 3). 응답의 '다음커서' 로 이어서 호출.
+      snap     = 장전 데이터 컷 시각 HHMM (기본 0910 = 네가 스캐너 보는 시각)
+      scan_only=1 → 후보만 뽑고 TP/SL 채점은 건너뜀 (빠른 확인용)
+    """
+    f_raw = from_
+    if not f_raw:
+        return {"error": "from=YYYY-MM-DD&to=YYYY-MM-DD 가 필요하다",
+                "예시": "/gapgo_scan?from=2026-08-01&to=2026-10-28&maxdays=3&feed=sip"}
+    try:
+        from_d = _gg_date.fromisoformat(f_raw)
+        to_d = _gg_date.fromisoformat(to) if to else from_d
+    except Exception:
+        return {"error": "날짜 형식은 YYYY-MM-DD"}
+    if to_d < from_d:
+        return {"error": "to 가 from 보다 앞이다"}
+
+    # 1단계 캐시
+    days = {} if rebuild else _gs_cache_load(from_d, to_d)
+    stage1_built = False
+    if not days:
+        days = _gs_stage1(from_d, to_d, feed, pmin, pmax, avgvol)
+        _gs_cache_save(from_d, to_d, days)
+        stage1_built = True
+    if not days:
+        return {"error": "1단계가 비었다 — /v2/assets 접근 또는 일봉 응답 확인",
+                "힌트": "ALPACA_BASE_URL 전역/환경변수가 트레이딩 도메인을 가리켜야 한다"}
+
+    all_days = sorted(days.keys())
+    todo = [d for d in all_days if d >= from_d.isoformat()][:max(1, maxdays)]
+
+    cands, rows = [], []
+    for ds in todo:
+        day = _gg_date.fromisoformat(ds)
+        p = _gs_stage2(day, days.get(ds, []), feed, snap, pmvol, pmchg, pmin, pmax)
+        for item in p:
+            item["날짜"] = ds
+        cands.extend(p)
+        if not scan_only:
+            for item in p:
+                try:
+                    rows.append(_gg_one(item["종목"], day, tp, sl, cash, cut, feed))
+                except Exception as e:
+                    rows.append({"종목": item["종목"], "날짜": ds,
+                                 "상태": "오류", "비고": str(e)[:120], "손익$": 0.0})
+
+    filled = [r for r in rows if r.get("상태") in ("TP", "SL", "시간청산")]
+    n_tp = sum(1 for r in filled if r.get("상태") == "TP")
+    n_sl = sum(1 for r in filled if r.get("상태") == "SL")
+    dec = n_tp + n_sl
+    nxt = None
+    rest = [d for d in all_days if d > (todo[-1] if todo else from_d.isoformat())]
+    if rest:
+        nxt = rest[0]
+
+    return {
+        "구간": f"{from_d} ~ {to_d}",
+        "1단계": {"방금생성": stage1_built, "후보있는날": len(all_days),
+                 "초벌후보합계": sum(len(v) for v in days.values())},
+        "이번처리": todo,
+        "후보수": len(cands),
+        "후보": cands,
+        "결과": rows,
+        "요약": {"체결": len(filled), "미체결": len(rows) - len(filled),
+                "TP": n_tp, "SL": n_sl,
+                "승률%": round(100.0 * n_tp / dec, 1) if dec else None,
+                "총손익$": round(sum(r.get("손익$", 0.0) for r in rows), 2)},
+        "설정": {"TP$": tp, "SL$": sl, "자본$": cash, "마감": cut,
+                "장전컷": snap, "피드": _gg_feed(feed),
+                "가격대": [pmin, pmax], "10일평균거래량최소": avgvol,
+                "장전거래량최소": pmvol, "장전변동%최소": pmchg},
+        "다음커서": nxt,
+        "다음호출": (f"/gapgo_scan?from={nxt}&to={to_d}&maxdays={maxdays}"
+                   f"&tp={tp}&sl={sl}&feed={feed or 'sip'}" if nxt else None),
+    }
