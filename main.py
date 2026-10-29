@@ -11351,3 +11351,293 @@ def get_last_trade_time():
             return datetime.fromisoformat(f.read().strip())
     except:
         return None
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 🟦 [GAPGO-1] 갭앤고 소급 검증 엔드포인트  (2026-10-28)
+#
+#   ■ 목적
+#   수동 갭앤고는 완결 표본이 5건뿐이라 점수표·게이트를 검증할 수 없다.
+#   이 엔드포인트는 "티커:날짜"만 주면 Alpaca 분봉으로 전부 계산한다.
+#       장전고가 → 트리거 → 정규장 체결 여부 → TP(+$5)/SL(−$8) 중 먼저 닿은 것
+#   거래하지 않은 후보까지 전부 가상 결과를 만들 수 있다.
+#
+#   ■ 사용법
+#     GET /gapgo_check?items=FRO:2026-10-05,DHT:2026-10-12,GM:2026-10-27
+#     GET /gapgo_check?items=...&tp=5&sl=8&cash=508.58&cut=1130&feed=sip&sheet=1
+#
+#   ■ 설치
+#   main_13.py 맨 아래에 이 블록을 그대로 붙여넣는다. 기존 코드는 건드리지 않는다.
+#   필요한 기존 심볼: app · ALPACA_DATA_BASE_URL · ALPACA_HEADERS · ALPACA_DATA_FEED
+#                     (_get_spreadsheet 는 sheet=1 일 때만, 없으면 조용히 건너뜀)
+# ═══════════════════════════════════════════════════════════════════
+
+import requests as _gg_rq
+from datetime import (datetime as _gg_dt, date as _gg_date, time as _gg_time,
+                      timedelta as _gg_td, timezone as _gg_utc)
+from zoneinfo import ZoneInfo as _GGZone
+
+_GG_NY = _GGZone("America/New_York")
+
+
+def _gg_feed(override: str = "") -> str:
+    if override:
+        return override
+    try:
+        return ALPACA_DATA_FEED            # type: ignore[name-defined]
+    except NameError:
+        return "iex"
+
+
+def _gg_buffer(p: float) -> float:
+    """트리거 버퍼 — 아침절차 문서와 동일."""
+    if p > 50:
+        return 0.05
+    if p > 18:
+        return 0.04
+    if p > 8:
+        return 0.03
+    return 0.02
+
+
+def _gg_bars(symbol: str, start_et, end_et, timeframe: str = "1Min", feed: str = ""):
+    """ET 구간 분봉 전체 (페이지네이션 포함). → [{t(ET),o,h,l,c,v}, ...] 시간순"""
+    out, token = [], None
+    base = {
+        "timeframe": timeframe,
+        "start": start_et.astimezone(_gg_utc.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "end":   end_et.astimezone(_gg_utc.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "feed":  _gg_feed(feed),
+        "limit": 10000,
+        "adjustment": "raw",
+    }
+    for _ in range(20):                                   # 안전 상한
+        p = dict(base)
+        if token:
+            p["page_token"] = token
+        try:
+            r = _gg_rq.get(f"{ALPACA_DATA_BASE_URL}/v2/stocks/{symbol}/bars",
+                           headers=ALPACA_HEADERS, params=p, timeout=20)
+        except Exception as e:
+            print(f"⚠️ [GAPGO] {symbol} 분봉 예외: {e}")
+            break
+        if not r.ok:
+            print(f"⚠️ [GAPGO] {symbol} 분봉 {r.status_code}: {r.text[:140]}")
+            break
+        j = r.json() or {}
+        for b in (j.get("bars") or []):
+            try:
+                t = _gg_dt.fromisoformat(str(b["t"]).replace("Z", "+00:00")).astimezone(_GG_NY)
+                out.append({"t": t, "o": float(b["o"]), "h": float(b["h"]),
+                            "l": float(b["l"]), "c": float(b["c"]),
+                            "v": float(b.get("v", 0) or 0)})
+            except Exception:
+                continue
+        token = j.get("next_page_token")
+        if not token:
+            break
+    out.sort(key=lambda x: x["t"])
+    return out
+
+
+def _gg_prev_close(symbol: str, day, feed: str = ""):
+    """해당 날짜 직전 거래일 종가."""
+    try:
+        r = _gg_rq.get(f"{ALPACA_DATA_BASE_URL}/v2/stocks/{symbol}/bars",
+                       headers=ALPACA_HEADERS,
+                       params={"timeframe": "1Day",
+                               "start": (day - _gg_td(days=10)).strftime("%Y-%m-%d"),
+                               "end":   (day - _gg_td(days=1)).strftime("%Y-%m-%d"),
+                               "feed":  _gg_feed(feed),
+                               "limit": 20, "adjustment": "raw"},
+                       timeout=15)
+        if not r.ok:
+            return None
+        bars = (r.json() or {}).get("bars") or []
+        return float(bars[-1]["c"]) if bars else None
+    except Exception:
+        return None
+
+
+def _gg_one(symbol: str, day, tp_usd: float, sl_usd: float,
+            cash: float, cut_hhmm: int, feed: str = "") -> dict:
+    """한 종목·하루를 끝까지 계산."""
+    res = {"종목": symbol, "날짜": day.isoformat()}
+
+    pm_s = _gg_dt.combine(day, _gg_time(4, 0),  tzinfo=_GG_NY)
+    pm_e = _gg_dt.combine(day, _gg_time(9, 30), tzinfo=_GG_NY)
+    rg_e = _gg_dt.combine(day, _gg_time(cut_hhmm // 100, cut_hhmm % 100), tzinfo=_GG_NY)
+
+    bars = _gg_bars(symbol, pm_s, rg_e, "1Min", feed)
+    if not bars:
+        res["상태"] = "데이터없음"
+        return res
+
+    pm = [b for b in bars if b["t"] < pm_e]
+    rg = [b for b in bars if b["t"] >= pm_e]
+    if not pm:
+        res["상태"] = "장전데이터없음"
+        return res
+    if not rg:
+        res["상태"] = "정규장데이터없음"
+        return res
+
+    pmh = max(b["h"] for b in pm)
+    pml = min(b["l"] for b in pm)
+    pmv = sum(b["v"] for b in pm)
+    pmc = pm[-1]["c"]
+    prev = _gg_prev_close(symbol, day, feed)
+
+    T = round(pmh + _gg_buffer(pmh), 2)
+    qty = int((cash * 0.95) // T)
+    if qty < 1:
+        res.update({"상태": "수량0(주가가 자본초과)", "장전고가": round(pmh, 2)})
+        return res
+    TP = round(T + tp_usd / qty, 2)
+    SL = round(T - sl_usd / qty, 2)
+
+    res.update({
+        "장전고가": round(pmh, 2), "장전저가": round(pml, 2),
+        "장전종가": round(pmc, 2),
+        "전일종가": round(prev, 2) if prev else None,
+        "장전거래량": int(pmv),
+        "트리거": T, "수량": qty, "TP": TP, "SL": SL,
+        "장전레인지%": round((pmh - pml) / pmc * 100, 2) if pmc else None,
+        "되밀림%": (round((pmh - pmc) / (pmh - prev) * 100, 1)
+                   if (prev and pmh > prev) else None),
+    })
+
+    # ── 1) 트리거 도달 ───────────────────────────────
+    fill_i = next((i for i, b in enumerate(rg) if b["h"] >= T), None)
+    res["개장가"] = round(rg[0]["o"], 2)
+    if fill_i is None:
+        res["상태"] = "미체결"
+        res["정규장고가"] = round(max(b["h"] for b in rg), 2)
+        res["손익$"] = 0.0
+        return res
+    res["체결시각"] = rg[fill_i]["t"].strftime("%H:%M")
+
+    # ── 2) 체결 후 TP / SL 중 먼저 ────────────────────
+    after = rg[fill_i:]
+    hit, when, note = None, None, ""
+    for b in after:
+        up, dn = (b["h"] >= TP), (b["l"] <= SL)
+        if up and dn:
+            hit, when, note = "SL", b["t"], "동시봉 → 보수적으로 SL"
+            break
+        if up:
+            hit, when = "TP", b["t"]
+            break
+        if dn:
+            hit, when = "SL", b["t"]
+            break
+
+    hi = max(b["h"] for b in after)
+    lo = min(b["l"] for b in after)
+    res["체결후고가"] = round(hi, 2)
+    res["체결후저가"] = round(lo, 2)
+    res["MFE$"] = round((hi - T) * qty, 2)      # 최대 유리 (달러)
+    res["MAE$"] = round((lo - T) * qty, 2)      # 최대 불리 (달러)
+    res["마감가"] = round(after[-1]["c"], 2)
+
+    t10 = _gg_dt.combine(day, _gg_time(10, 0), tzinfo=_GG_NY)
+    at10 = [b for b in after if b["t"] <= t10]
+    if at10:
+        res["10시가"] = round(at10[-1]["c"], 2)
+        res["10시손익$"] = round((at10[-1]["c"] - T) * qty, 2)
+
+    if hit == "TP":
+        res["상태"] = "TP"
+        res["손익$"] = round(tp_usd, 2)
+        res["결판분"] = int((when - rg[fill_i]["t"]).total_seconds() // 60)
+    elif hit == "SL":
+        res["상태"] = "SL"
+        res["손익$"] = round(-sl_usd, 2)
+        res["결판분"] = int((when - rg[fill_i]["t"]).total_seconds() // 60)
+        if note:
+            res["비고"] = note
+    else:
+        res["상태"] = "시간청산"
+        res["손익$"] = round((after[-1]["c"] - T) * qty, 2)
+        res["결판분"] = None
+    return res
+
+
+_GG_COLS = ["날짜", "종목", "전일종가", "장전고가", "장전저가", "장전거래량",
+            "장전레인지%", "되밀림%", "트리거", "수량", "TP", "SL", "개장가",
+            "체결시각", "상태", "결판분", "손익$", "체결후고가", "체결후저가",
+            "MFE$", "MAE$", "10시가", "10시손익$", "마감가", "비고"]
+
+
+@app.get("/gapgo_check")
+async def gapgo_check_endpoint(items: str = "", tp: float = 5.0, sl: float = 8.0,
+                               cash: float = 508.58, cut: int = 1130,
+                               feed: str = "", sheet: int = 0):
+    """🟦 [GAPGO-1] 갭앤고 후보 소급 검증.
+
+    items = "티커:YYYY-MM-DD" 쉼표 구분 (최대 120개)
+    tp/sl = 달러 기준 익절/손절 (기본 5 / 8)
+    cut   = 강제 마감 HHMM (기본 1130)
+    feed  = sip / iex (비우면 ALPACA_DATA_FEED)
+    sheet = 1 이면 '갭앤고 결과' 탭에 누적 기록
+    """
+    pairs = []
+    for tok in (items or "").split(","):
+        tok = tok.strip()
+        if not tok or ":" not in tok:
+            continue
+        a, b = tok.split(":", 1)
+        try:
+            pairs.append((a.strip().upper(),
+                          _gg_dt.strptime(b.strip(), "%Y-%m-%d").date()))
+        except Exception:
+            continue
+    if not pairs:
+        return {"ok": False,
+                "error": "items 형식: TICKER:YYYY-MM-DD,TICKER:YYYY-MM-DD"}
+
+    rows = []
+    for sym, day in pairs[:120]:
+        try:
+            rows.append(_gg_one(sym, day, tp, sl, cash, cut, feed))
+        except Exception as e:
+            rows.append({"종목": sym, "날짜": day.isoformat(), "상태": f"오류: {e}"})
+
+    done = [r for r in rows if r.get("상태") in ("TP", "SL", "시간청산")]
+    tp_n = sum(1 for r in done if r["상태"] == "TP")
+    sl_n = sum(1 for r in done if r["상태"] == "SL")
+    te_n = sum(1 for r in done if r["상태"] == "시간청산")
+    nofill = sum(1 for r in rows if r.get("상태") == "미체결")
+    mins = [r["결판분"] for r in done if r.get("결판분") is not None]
+
+    summary = {
+        "요청": len(rows), "체결": len(done), "미체결": nofill,
+        "TP": tp_n, "SL": sl_n, "시간청산": te_n,
+        "TP_SL_승률%": round(tp_n / (tp_n + sl_n) * 100, 1) if (tp_n + sl_n) else None,
+        "총손익$": round(sum(float(r.get("손익$") or 0) for r in rows), 2),
+        "평균결판분": round(sum(mins) / len(mins), 1) if mins else None,
+        "설정": {"TP$": tp, "SL$": sl, "자본$": cash, "마감": cut,
+                 "feed": _gg_feed(feed)},
+    }
+
+    if sheet:
+        try:
+            ss = _get_spreadsheet()                 # type: ignore[name-defined]
+            if ss is not None:
+                try:
+                    ws = ss.worksheet("갭앤고 결과")
+                except Exception:
+                    ws = ss.add_worksheet(title="갭앤고 결과", rows=3000,
+                                          cols=len(_GG_COLS))
+                if not (ws.row_values(1) or []):
+                    ws.append_row(_GG_COLS, insert_data_option="INSERT_ROWS",
+                                  table_range="A1")
+                ws.append_rows(
+                    [[("" if r.get(c) is None else r.get(c, "")) for c in _GG_COLS]
+                     for r in rows],
+                    insert_data_option="INSERT_ROWS", table_range="A1")
+                summary["시트기록"] = len(rows)
+        except Exception as e:
+            summary["시트오류"] = str(e)
+
+    return {"ok": True, "summary": summary, "rows": rows}
