@@ -11715,6 +11715,15 @@ def _gs_trade_base() -> str:
     return "https://api.alpaca.markets"
 
 
+import re as _gs_re
+
+_GS_ETF_NAME_RE = _gs_re.compile(
+    r"\bETF\b|\bETN\b|Daily Target|Leverag|Inverse|\bBull\b|\bBear\b|UltraPro|UltraShort|"
+    r"\b\d(?:\.\d+)?[xX]\s+(?:Long|Short|Daily)|(?:Long|Short)\s+\d(?:\.\d+)?[xX]\b|"
+    r"ProShares|Direxion|GraniteShares|Defiance|Tradr|T-Rex|YieldMax|iShares|SPDR|Roundhill|\bFund\b",
+    _gs_re.I)
+
+
 def _gs_universe(exchanges: str = "NASDAQ,NYSE,AMEX") -> list:
     """거래 가능한 미국 주식 심볼.
 
@@ -11740,6 +11749,10 @@ def _gs_universe(exchanges: str = "NASDAQ,NYSE,AMEX") -> list:
             s = str(a.get("symbol", ""))
             # 우선주·워런트·유닛 등 제외 (스캐너에도 안 걸린다)
             if not s or not s.isalpha() or len(s) > 5:
+                continue
+            # 🟩 [GAPGO-5] NASDAQ 에 상장된 레버리지·인버스 ETF(TQQQ·TSLL·NVDL…) 제외
+            #   거래소 필터로는 안 걸러진다. 10개월 백테스트에서 21종목이 섞였다.
+            if _GS_ETF_NAME_RE.search(str(a.get("name", "") or "")):
                 continue
             out.append(s)
         return sorted(set(out))
@@ -12365,3 +12378,698 @@ def gapgo_run_endpoint(
 
     todo = [d for d in all_days if d not in done]
     return _summary({"방금처리": picked, "시트": notes})
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 🟩 [GAPGO-5] 실전 조건 백테스트 + 모의매매 자동 실행   (2026-10-31)
+#
+#   ■ 전략 (10개월 백테스트 최선안)
+#     매일 1종목: 장전고가에 가장 바짝 붙어 있는 종목
+#     Buy Stop @ 장전고가 + 버퍼 → 익절 없음 → 손절 −12% → 11:30 청산
+#
+#   ■ 왜 '실전 조건' 백테스트가 따로 필요한가
+#     기존 백테스트(/gapgo_run)는 ① 후보를 고를 때 그날 개장가·거래량을 썼고
+#     ② 순위·트리거를 09:29 장전 데이터로 계산했다.
+#     실전 봇은 ① 그날 데이터를 모르고 ② Alpaca 무료 데이터가 15분 늦어서
+#     09:29 에 09:14 까지만 안다. 여기서는 '그 시각까지의 데이터만' 써서 다시 계산한다.
+#       snap=910 → 무료 데이터 봇이 할 수 있는 것
+#       snap=930 → 실시간 데이터(유료/사람)가 할 수 있는 것
+#
+#   ■ 엔드포인트
+#     GET /gapgo_live_bt?from=2026-01-02&to=2026-10-28&snap=910     백그라운드 시작
+#     GET /gapgo_live_bt?from=...&to=...&snap=910&status=1           진행상황·요약
+#     GET /gapgo_live_dryrun?date=2026-10-27&snap=910                하루만 즉시 계산 (주문 없음)
+#     GET /gapgo_live_status                                         모의매매 상태·계좌 확인
+#
+#   ■ 모의매매 환경변수
+#     GAPGO_ALPACA_KEY / GAPGO_ALPACA_SECRET   전용 모의계좌 키 (필수)
+#     GAPGO_LIVE        on 이면 매일 자동 실행 (기본 off)
+#     GAPGO_SNAP        910  (순위 계산 기준 시각, 무료 데이터면 910)
+#     GAPGO_RUN_AT      0926 (주문 계산 시작 시각. 무료 데이터면 snap+16분 이후)
+#     GAPGO_FRACTION    0.3333 (계좌 대비 투입 비율)
+#     GAPGO_STOP_PCT    12
+#     GAPGO_PMCHG       1.8  /  GAPGO_PMVOL 60000
+#
+#   ■ 필요한 기존 심볼: app · ALPACA_DATA_BASE_URL · ALPACA_HEADERS · _gg_bars · _gg_buffer
+#     · _gg_rq · _gg_dt · _gg_date · _gg_time · _gg_td · _GG_NY · _gs_universe
+#     · _gs_daily_multi · _gs_minute_multi · _get_spreadsheet(선택) · _pr_ensure_headers(선택)
+# ═══════════════════════════════════════════════════════════════════
+
+import os as _gl_os
+import json as _gl_json
+import math as _gl_math
+import time as _gl_time
+import threading as _gl_threading
+import asyncio as _gl_asyncio
+
+_GL_DIR = "/tmp/gapgo_live"
+_GL_TRADE_BASE = "https://paper-api.alpaca.markets"    # 이 전략은 항상 모의투자
+_GL_COST_PCT = 0.20          # 왕복 비용
+_GL_STOP_SLIP_PCT = 0.30     # 손절 시 추가 미끄러짐 (백테스트에만 적용)
+
+try:
+    _gl_os.makedirs(_GL_DIR, exist_ok=True)
+except Exception:
+    pass
+
+
+# ───────────────────────── 공통 유틸 ─────────────────────────
+
+def _gl_jload(path, default):
+    try:
+        with open(path) as f:
+            return _gl_json.load(f)
+    except Exception:
+        return default
+
+
+def _gl_jsave(path, obj):
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            _gl_json.dump(obj, f)
+        _gl_os.replace(tmp, path)
+    except Exception as e:
+        print(f"⚠️ [GLIVE] 저장 실패 {path}: {e}")
+
+
+def _gl_hhmm(v, default):
+    try:
+        v = int(v)
+        return v if 0 <= v // 100 <= 23 and 0 <= v % 100 <= 59 else default
+    except Exception:
+        return default
+
+
+def _gl_at(day, hhmm, sec=0):
+    return _gg_dt.combine(day, _gg_time(hhmm // 100, hhmm % 100, sec), tzinfo=_GG_NY)
+
+
+def _gl_sheet_append(tab: str, headers: list, rows: list) -> str:
+    if not rows:
+        return "기록할 행 없음"
+    try:
+        ss = _get_spreadsheet()               # type: ignore[name-defined]
+    except NameError:
+        return "시트 미연결"
+    if ss is None:
+        return "시트 열기 실패"
+    try:
+        try:
+            ws = ss.worksheet(tab)
+        except Exception:
+            ws = ss.add_worksheet(title=tab, rows=2000, cols=len(headers))
+        try:
+            _pr_ensure_headers(ws, headers)   # type: ignore[name-defined]
+        except Exception:
+            try:
+                if not (ws.row_values(1) or []):
+                    ws.update("A1", [headers])
+            except Exception:
+                pass
+        body = [[("" if r.get(h) is None else r.get(h)) for h in headers] for r in rows]
+        ws.append_rows(body, value_input_option="USER_ENTERED")
+        return f"시트 '{tab}' {len(body)}행 기록"
+    except Exception as e:
+        return f"시트 기록 실패: {str(e)[:120]}"
+
+
+# ───────────────────────── 종목 목록 (월 단위 캐시) ─────────────────────────
+
+def _gl_month_universe(ym: str, feed: str = "sip", pmin: float = 5.0, pmax: float = 100.0,
+                       avgvol: float = 200000.0) -> dict:
+    """그 달 거래일마다 {종목: [전일종가, 10일평균거래량]}.
+    당일 개장가·거래량은 쓰지 않는다 (실전에서 모르는 정보)."""
+    path = f"{_GL_DIR}/univ_{ym}_{int(pmin)}_{int(pmax)}_{int(avgvol)}.json"
+    cached = _gl_jload(path, None)
+    if cached:
+        return cached
+    y, m = map(int, ym.split("-"))
+    start = _gg_date(y, m, 1)
+    nxt = _gg_date(y + (m == 12), (m % 12) + 1, 1)
+    end = min(nxt - _gg_td(days=1), _gg_dt.now(_GG_NY).date() - _gg_td(days=1))
+    uni = _gs_universe("NASDAQ,NYSE,AMEX")
+    out: dict = {}
+    for i in range(0, len(uni), 200):
+        part = uni[i:i + 200]
+        bars = _gs_daily_multi(part, start - _gg_td(days=25), end, feed)
+        for sym, seq in bars.items():
+            for k in range(11, len(seq)):
+                cur, prev = seq[k], seq[k - 1]
+                if not (start.isoformat() <= cur["d"] <= end.isoformat()):
+                    continue
+                pc = prev["c"]
+                if not (pmin <= pc <= pmax):
+                    continue
+                prior = seq[k - 11:k - 1]           # 기존 백테스트와 같은 구간
+                a10 = sum(b["v"] for b in prior) / 10.0
+                if a10 < avgvol:
+                    continue
+                out.setdefault(cur["d"], {})[sym] = [round(pc, 4), int(a10)]
+    if out and end >= nxt - _gg_td(days=1):     # 끝난 달만 캐시
+        _gl_jsave(path, out)
+    return out
+
+
+def _gl_live_universe(today, feed: str = "sip", pmin: float = 5.0, pmax: float = 100.0,
+                      avgvol: float = 200000.0) -> dict:
+    """오늘 쓸 종목 목록 — 어제까지의 일봉만으로."""
+    uni = _gs_universe("NASDAQ,NYSE,AMEX")
+    out: dict = {}
+    for i in range(0, len(uni), 200):
+        part = uni[i:i + 200]
+        bars = _gs_daily_multi(part, today - _gg_td(days=25), today - _gg_td(days=1), feed)
+        for sym, seq in bars.items():
+            seq = [b for b in seq if b["d"] < today.isoformat()]
+            if len(seq) < 11:
+                continue
+            pc = seq[-1]["c"]
+            if not (pmin <= pc <= pmax):
+                continue
+            a10 = sum(b["v"] for b in seq[-11:-1]) / 10.0   # 백테스트와 같은 구간
+            if a10 < avgvol:
+                continue
+            out[sym] = [round(pc, 4), int(a10)]
+    return out
+
+
+# ───────────────────────── 장전 데이터 → 1종목 선택 ─────────────────────────
+
+def _gl_premarket(day, syms: list, snap_hhmm: int, feed: str = "sip", chunk: int = 100) -> dict:
+    """04:00 ~ snap '직전'까지의 5분봉 → {종목: (고가, 저가, 마지막가, 거래량)}.
+    snap 이후 데이터는 절대 쓰지 않는다 (봉 시작 시각 < snap 만)."""
+    s = _gl_at(day, 400)
+    cut = _gl_at(day, snap_hhmm)
+    e = cut - _gg_td(seconds=1)
+    out = {}
+    for i in range(0, len(syms), chunk):
+        mb = _gs_minute_multi(syms[i:i + chunk], s, e, feed, timeframe="5Min")
+        for sym, bars in mb.items():
+            bars = [b for b in bars if b["t"] < cut]
+            if not bars:
+                continue
+            out[sym] = (max(b["h"] for b in bars), min(b["l"] for b in bars),
+                        bars[-1]["c"], sum(b["v"] for b in bars))
+    return out
+
+
+def _gl_rank(day, meta: dict, snap_hhmm: int, feed: str = "sip",
+             pmvol: float = 60000.0, pmchg: float = 1.8) -> list:
+    """후보 전부를 '트리거까지 거리' 가까운 순으로."""
+    pm = _gl_premarket(day, sorted(meta.keys()), snap_hhmm, feed)
+    cands = []
+    for sym, (hi, lo, last, vol) in pm.items():
+        pc, a10 = (meta.get(sym) or [None, None])[:2]
+        if not pc or not last or vol < pmvol:
+            continue
+        chg = (last - pc) / pc * 100.0
+        if chg < pmchg:
+            continue
+        trig = round(hi + _gg_buffer(hi), 2)
+        cands.append({
+            "종목": sym, "전일종가": pc, "장전고가": round(hi, 4), "장전저가": round(lo, 4),
+            "장전가": round(last, 4), "장전거래량": int(vol), "10일평균거래량": a10,
+            "장전상승률%": round(chg, 2), "트리거": trig,
+            "거리%": round((trig - last) / last * 100.0, 3),
+        })
+    cands.sort(key=lambda c: (c["거리%"], -c["장전거래량"]))
+    return cands
+
+
+# ───────────────────────── 시뮬레이션 (1분봉) ─────────────────────────
+
+def _gl_sim(sym: str, day, trig: float, qty: int, stop_pct: float = 12.0,
+            cut_hhmm: int = 1130, feed: str = "sip") -> dict:
+    """09:30 부터 Buy Stop → 손절(체결가 −stop%) → cut 청산."""
+    s, e = _gl_at(day, 930), _gl_at(day, cut_hhmm)
+    now = _gg_dt.now(_GG_NY)
+    if e > now - _gg_td(minutes=16):
+        e = now - _gg_td(minutes=16)
+    bars = [b for b in _gg_bars(sym, s, e, "1Min", feed) if s <= b["t"] < _gl_at(day, cut_hhmm)]
+    if not bars:
+        return {"시뮬상태": "데이터없음"}
+    fi = next((i for i, b in enumerate(bars) if b["h"] >= trig), None)
+    if fi is None:
+        return {"시뮬상태": "미체결"}
+    fb = bars[fi]
+    fill = max(trig, fb["o"])                # 봉이 트리거 위에서 시작하면 그 시가에 체결
+    stop = round(fill * (1 - stop_pct / 100.0), 2)
+    ex, how, ext = None, "11:30", None
+    for j, b in enumerate(bars[fi:]):
+        if b["l"] <= stop:
+            ex = stop if j == 0 else min(stop, b["o"])
+            how, ext = "손절", b["t"].strftime("%H:%M")
+            break
+    if ex is None:
+        ex, ext = bars[-1]["c"], bars[-1]["t"].strftime("%H:%M")
+    pct = (ex - fill) / fill * 100.0 - _GL_COST_PCT - (_GL_STOP_SLIP_PCT if how == "손절" else 0)
+    return {"시뮬상태": "체결", "시뮬체결가": round(fill, 4),
+            "시뮬체결시각": fb["t"].strftime("%H:%M"), "시뮬손절가": stop,
+            "시뮬청산": how, "시뮬청산가": round(ex, 4), "시뮬청산시각": ext,
+            "시뮬손익%": round(pct, 3), "시뮬손익$": round(qty * fill * pct / 100.0, 2)}
+
+
+# ───────────────────────── 실전 조건 백테스트 (백그라운드) ─────────────────────────
+
+_GL_BT_HEADERS = ["날짜", "상태", "후보수", "종목", "전일종가", "장전고가", "장전가",
+                  "장전상승률%", "장전거래량", "10일평균거래량", "거리%", "트리거", "수량",
+                  "시뮬체결가", "시뮬체결시각", "시뮬손절가", "시뮬청산", "시뮬청산가",
+                  "시뮬청산시각", "시뮬손익%", "시뮬손익$", "2등", "3등"]
+_GL_BT_THREADS: dict = {}
+
+
+def _gl_bt_key(f, t, snap, stop, cut, pmvol, pmchg, equity, frac):
+    return f"{f}_{t}_s{snap}_st{stop:g}_c{cut}_v{int(pmvol)}_p{pmchg:g}_e{int(equity)}_f{frac:.4f}"
+
+
+def _gl_bt_run(key, f, t, snap, stop, cut, pmvol, pmchg, equity, frac, feed, sheet):
+    path = f"{_GL_DIR}/bt_{key}.json"
+    st = _gl_jload(path, {"done": [], "rows": [], "error": None})
+    st["running"] = True
+    _gl_jsave(path, st)
+    tab = f"갭앤고_실전BT_{snap:04d}"
+    pending = []
+    try:
+        d = f
+        months = []
+        while d <= t:
+            ym = d.strftime("%Y-%m")
+            if ym not in months:
+                months.append(ym)
+            d += _gg_td(days=1)
+        for ym in months:
+            uni = _gl_month_universe(ym, feed)
+            for ds in sorted(uni.keys()):
+                if ds < f.isoformat() or ds > t.isoformat() or ds in st["done"]:
+                    continue
+                day = _gg_date.fromisoformat(ds)
+                try:
+                    cands = _gl_rank(day, uni[ds], snap, feed, pmvol, pmchg)
+                    if not cands:
+                        row = {"날짜": ds, "상태": "후보없음", "후보수": 0}
+                    else:
+                        p = cands[0]
+                        qty = int((equity * frac) // p["트리거"])
+                        row = {"날짜": ds, "후보수": len(cands), **p, "수량": qty,
+                               "2등": cands[1]["종목"] if len(cands) > 1 else "",
+                               "3등": cands[2]["종목"] if len(cands) > 2 else ""}
+                        if qty < 1:
+                            row["상태"] = "수량0"
+                        else:
+                            row.update(_gl_sim(p["종목"], day, p["트리거"], qty, stop, cut, feed))
+                            row["상태"] = row.get("시뮬상태")
+                except Exception as e:
+                    row = {"날짜": ds, "상태": f"오류: {str(e)[:80]}"}
+                st["rows"].append({k: row.get(k) for k in _GL_BT_HEADERS})
+                st["done"].append(ds)
+                pending.append(row)
+                _gl_jsave(path, st)
+                if sheet and len(pending) >= 5:
+                    _gl_sheet_append(tab, _GL_BT_HEADERS, pending)
+                    pending = []
+        if sheet and pending:
+            _gl_sheet_append(tab, _GL_BT_HEADERS, pending)
+    except Exception as e:
+        st["error"] = str(e)[:200]
+    st["running"] = False
+    _gl_jsave(path, st)
+
+
+def _gl_bt_summary(st: dict) -> dict:
+    rows = st.get("rows") or []
+    filled = [r for r in rows if r.get("상태") == "체결" and r.get("시뮬손익%") is not None]
+    pct = [float(r["시뮬손익%"]) for r in filled]
+    usd = [float(r.get("시뮬손익$") or 0) for r in filled]
+    wins = [x for x in pct if x > 0]
+    loss = [x for x in pct if x <= 0]
+    by_m: dict = {}
+    for r in filled:
+        m = str(r["날짜"])[:7]
+        a = by_m.setdefault(m, {"체결": 0, "승": 0, "손익$": 0.0})
+        a["체결"] += 1
+        a["승"] += 1 if float(r["시뮬손익%"]) > 0 else 0
+        a["손익$"] = round(a["손익$"] + float(r.get("시뮬손익$") or 0), 2)
+    return {
+        "거래일": len(rows),
+        "후보없음": sum(1 for r in rows if r.get("상태") == "후보없음"),
+        "미체결": sum(1 for r in rows if r.get("상태") == "미체결"),
+        "체결": len(filled),
+        "승률%": round(100.0 * len(wins) / len(filled), 1) if filled else None,
+        "평균이익%": round(sum(wins) / len(wins), 2) if wins else None,
+        "평균손실%": round(sum(loss) / len(loss), 2) if loss else None,
+        "거래당%": round(sum(pct) / len(pct), 3) if pct else None,
+        "합계$": round(sum(usd), 2),
+        "손절발동": sum(1 for r in filled if r.get("시뮬청산") == "손절"),
+        "월별": by_m,
+    }
+
+
+from fastapi import Query as _GLQuery
+
+
+@app.get("/gapgo_live_bt")
+def gapgo_live_bt_endpoint(
+    from_: str = _GLQuery("", alias="from"), to: str = "", snap: int = 910,
+    stop: float = 12.0, cut: int = 1130, pmvol: float = 60000.0, pmchg: float = 1.8,
+    equity: float = 10000.0, frac: float = 1 / 3, feed: str = "sip",
+    sheet: int = 1, status: int = 0, reset: int = 0,
+):
+    try:
+        f = _gg_date.fromisoformat(from_)
+        t = _gg_date.fromisoformat(to) if to else f
+    except Exception:
+        return {"error": "from=YYYY-MM-DD&to=YYYY-MM-DD 가 필요하다"}
+    snap = _gl_hhmm(snap, 910)
+    key = _gl_bt_key(f, t, snap, stop, cut, pmvol, pmchg, equity, frac)
+    path = f"{_GL_DIR}/bt_{key}.json"
+    if reset:
+        try:
+            _gl_os.remove(path)
+        except Exception:
+            pass
+    st = _gl_jload(path, {"done": [], "rows": []})
+    th = _GL_BT_THREADS.get(key)
+    alive = bool(th and th.is_alive())
+    if not status and not alive:
+        th = _gl_threading.Thread(target=_gl_bt_run, daemon=True,
+                                  args=(key, f, t, snap, stop, cut, pmvol, pmchg,
+                                        equity, frac, feed, sheet))
+        th.start()
+        _GL_BT_THREADS[key] = th
+        alive = True
+    return {"구간": f"{f} ~ {t}", "순위기준시각": f"{snap:04d}", "실행중": alive,
+            "처리한날": len(st.get("done") or []), "오류": st.get("error"),
+            "요약": _gl_bt_summary(st),
+            "설정": {"손절%": stop, "청산": cut, "장전거래량≥": pmvol, "장전상승률≥": pmchg,
+                    "가정계좌$": equity, "투입비율": round(frac, 4)},
+            "안내": ("진행 중 — status=1 로 다시 확인" if alive else "완료 또는 대기")}
+
+
+@app.get("/gapgo_live_dryrun")
+def gapgo_live_dryrun_endpoint(date: str = "", snap: int = 910, stop: float = 12.0,
+                               cut: int = 1130, equity: float = 10000.0, frac: float = 1 / 3,
+                               pmvol: float = 60000.0, pmchg: float = 1.8, feed: str = "sip"):
+    """과거 하루를 실전 조건으로 계산만 한다. 주문은 넣지 않는다."""
+    try:
+        day = _gg_date.fromisoformat(date)
+    except Exception:
+        return {"error": "date=YYYY-MM-DD 가 필요하다"}
+    snap = _gl_hhmm(snap, 910)
+    uni = _gl_month_universe(day.strftime("%Y-%m"), feed)
+    meta = uni.get(day.isoformat())
+    if not meta:
+        return {"error": "그날 종목 목록이 없다 (휴장일이거나 데이터 없음)"}
+    cands = _gl_rank(day, meta, snap, feed, pmvol, pmchg)
+    if not cands:
+        return {"날짜": date, "상태": "후보없음", "종목목록수": len(meta)}
+    p = cands[0]
+    qty = int((equity * frac) // p["트리거"])
+    return {"날짜": date, "순위기준시각": f"{snap:04d}", "종목목록수": len(meta),
+            "후보수": len(cands), "선택": {**p, "수량": qty},
+            "결과": _gl_sim(p["종목"], day, p["트리거"], qty, stop, cut, feed),
+            "상위5": [{"종목": c["종목"], "거리%": c["거리%"], "장전상승률%": c["장전상승률%"]}
+                    for c in cands[:5]]}
+
+
+# ───────────────────────── 모의매매 자동 실행 ─────────────────────────
+
+_GL_LIVE_HEADERS = ["날짜", "상태", "종목", "후보수", "순위기준시각", "전일종가", "장전고가",
+                    "장전가", "장전상승률%", "거리%", "트리거", "계좌$", "수량", "체결가",
+                    "체결시각", "손절가", "청산방식", "청산가", "손익$", "손익%",
+                    "시뮬체결가", "시뮬청산가", "시뮬손익%", "차이%p", "비고"]
+
+
+def _gl_cfg() -> dict:
+    g = _gl_os.environ.get
+    snap = _gl_hhmm(g("GAPGO_SNAP", "910"), 910)
+    return {
+        "live": str(g("GAPGO_LIVE", "off")).strip().lower() in ("on", "1", "true", "yes"),
+        "snap": snap,
+        "run_at": _gl_hhmm(g("GAPGO_RUN_AT", "926"), 926),
+        "frac": float(g("GAPGO_FRACTION", str(1 / 3))),
+        "stop": float(g("GAPGO_STOP_PCT", "12")),
+        "pmchg": float(g("GAPGO_PMCHG", "1.8")),
+        "pmvol": float(g("GAPGO_PMVOL", "60000")),
+        "cut": 1130, "feed": "sip",
+        "key_set": bool(g("GAPGO_ALPACA_KEY")) and bool(g("GAPGO_ALPACA_SECRET")),
+    }
+
+
+def _gl_th() -> dict:
+    return {"APCA-API-KEY-ID": _gl_os.environ.get("GAPGO_ALPACA_KEY", ""),
+            "APCA-API-SECRET-KEY": _gl_os.environ.get("GAPGO_ALPACA_SECRET", "")}
+
+
+def _gl_req(method: str, path: str, **kw):
+    try:
+        r = _gg_rq.request(method, f"{_GL_TRADE_BASE}{path}", headers=_gl_th(), timeout=20, **kw)
+        try:
+            j = r.json()
+        except Exception:
+            j = None
+        return r.status_code, j
+    except Exception as e:
+        return 0, {"error": str(e)[:160]}
+
+
+def _gl_state_path(ds):
+    return f"{_GL_DIR}/live_{ds}.json"
+
+
+def _gl_log(st: dict, msg: str):
+    st.setdefault("log", []).append(f"{_gg_dt.now(_GG_NY):%H:%M:%S} {msg}")
+    print(f"[GLIVE] {msg}")
+
+
+def _gl_finish(st: dict, cfg: dict, row: dict):
+    row.setdefault("날짜", st["date"])
+    row.setdefault("순위기준시각", f"{cfg['snap']:04d}")
+    msg = _gl_sheet_append("갭앤고_실전", _GL_LIVE_HEADERS, [row])
+    _gl_log(st, f"기록: {row.get('상태')} — {msg}")
+    st["phase"] = "done"
+    st["result"] = {k: row.get(k) for k in ("상태", "종목", "손익$", "손익%", "차이%p")}
+
+
+def _gl_live_tick():
+    cfg = _gl_cfg()
+    if not cfg["live"] or not cfg["key_set"]:
+        return
+    now = _gg_dt.now(_GG_NY)
+    if now.weekday() >= 5:
+        return
+    today = now.date()
+    ds = today.isoformat()
+    path = _gl_state_path(ds)
+    st = _gl_jload(path, None) or {"date": ds, "phase": "init"}
+    ph = st.get("phase")
+    if ph in ("done", "holiday"):
+        return
+    hm = now.hour * 100 + now.minute
+
+    # 0) 휴장일 확인 (08:00 이후 한 번)
+    if ph == "init":
+        if hm < 800:
+            return
+        code, cal = _gl_req("GET", "/v2/calendar", params={"start": ds, "end": ds})
+        if code == 200 and isinstance(cal, list) and not cal:
+            st["phase"] = "holiday"
+            _gl_log(st, "휴장일")
+            _gl_jsave(path, st)
+            return
+        # 재시작 복구: 오늘 이미 넣은 주문이 있으면 이어서 관리
+        if hm >= 926:
+            code, ods = _gl_req("GET", "/v2/orders", params={
+                "status": "all", "limit": 100, "after": f"{ds}T00:00:00Z"})
+            mine = {o.get("client_order_id"): o for o in (ods or []) if isinstance(o, dict)} \
+                if code == 200 else {}
+            b = mine.get(f"GG-{ds}-B")
+            if b:
+                st.update({"phase": "monitor", "symbol": b["symbol"], "buy_id": b["id"],
+                           "pick": {"종목": b["symbol"], "트리거": float(b.get("stop_price") or 0) or None}})
+                if float(b.get("filled_qty") or 0) > 0:
+                    st.update({"fill": float(b["filled_avg_price"]),
+                               "qty": int(float(b["filled_qty"])),
+                               "fill_time": str(b.get("filled_at", ""))[11:16]})
+                sorder = mine.get(f"GG-{ds}-S")
+                if sorder:
+                    st.update({"stop_id": sorder["id"], "stop": float(sorder.get("stop_price") or 0)})
+                _gl_log(st, f"재시작 복구: {b['symbol']} 주문 이어받음")
+                _gl_jsave(path, st)
+                return
+        if hm >= 930:
+            st["phase"] = "done"
+            _gl_finish(st, cfg, {"상태": "미실행", "비고": "봇이 09:30 전에 준비되지 않음"})
+            _gl_jsave(path, st)
+            return
+        st["phase"] = "universe"
+        _gl_jsave(path, st)
+        return
+
+    # 1) 오늘 종목 목록 (08:30 이후)
+    if ph == "universe":
+        if hm < 830:
+            return
+        meta = _gl_live_universe(today, cfg["feed"])
+        _gl_jsave(f"{_GL_DIR}/meta_{ds}.json", meta)
+        st["n_universe"] = len(meta)
+        st["phase"] = "wait_pick"
+        _gl_log(st, f"종목 목록 {len(meta)}개")
+        _gl_jsave(path, st)
+        return
+
+    # 2) 종목 선택 + Buy Stop
+    if ph == "wait_pick":
+        if hm < cfg["run_at"]:
+            return
+        if hm >= 929:
+            _gl_finish(st, cfg, {"상태": "시간초과", "비고": "09:29 전에 주문 못 넣음"})
+            _gl_jsave(path, st)
+            return
+        meta = _gl_jload(f"{_GL_DIR}/meta_{ds}.json", {})
+        cands = _gl_rank(today, meta, cfg["snap"], cfg["feed"], cfg["pmvol"], cfg["pmchg"])
+        if not cands:
+            _gl_finish(st, cfg, {"상태": "후보없음", "후보수": 0})
+            _gl_jsave(path, st)
+            return
+        p = cands[0]
+        code, acct = _gl_req("GET", "/v2/account")
+        eq = float((acct or {}).get("equity") or 0) if code == 200 else 0.0
+        qty = int((eq * cfg["frac"]) // p["트리거"]) if eq > 0 else 0
+        st.update({"pick": p, "n_cands": len(cands), "equity": round(eq, 2), "qty": qty,
+                   "symbol": p["종목"]})
+        if qty < 1:
+            _gl_finish(st, cfg, {"상태": "수량0", "종목": p["종목"], "계좌$": eq,
+                                 "비고": f"계좌 응답 {code}"})
+            _gl_jsave(path, st)
+            return
+        code, o = _gl_req("POST", "/v2/orders", json={
+            "symbol": p["종목"], "qty": str(qty), "side": "buy", "type": "stop",
+            "stop_price": f"{p['트리거']:.2f}", "time_in_force": "day",
+            "client_order_id": f"GG-{ds}-B"})
+        if code not in (200, 201):
+            _gl_finish(st, cfg, {"상태": "주문실패", "종목": p["종목"],
+                                 "비고": str(o)[:150]})
+            _gl_jsave(path, st)
+            return
+        st["buy_id"] = o.get("id")
+        st["phase"] = "monitor"
+        _gl_log(st, f"Buy Stop {p['종목']} {qty}주 @ {p['트리거']:.2f} (거리 {p['거리%']}%)")
+        _gl_jsave(path, st)
+        return
+
+    # 3) 체결 감시 → 손절 주문 → 11:30 청산
+    if ph == "monitor":
+        if hm < 1130:
+            if not st.get("stop_id") and st.get("buy_id"):
+                code, o = _gl_req("GET", f"/v2/orders/{st['buy_id']}")
+                if code == 200 and o.get("status") == "filled":
+                    fill = float(o["filled_avg_price"])
+                    q = int(float(o["filled_qty"]))
+                    stop = round(fill * (1 - cfg["stop"] / 100.0), 2)
+                    c2, o2 = _gl_req("POST", "/v2/orders", json={
+                        "symbol": st["symbol"], "qty": str(q), "side": "sell", "type": "stop",
+                        "stop_price": f"{stop:.2f}", "time_in_force": "day",
+                        "client_order_id": f"GG-{ds}-S"})
+                    st.update({"fill": fill, "qty": q, "stop": stop,
+                               "fill_time": str(o.get("filled_at", ""))[11:16],
+                               "stop_id": (o2 or {}).get("id")})
+                    _gl_log(st, f"체결 {q}주 @ {fill:.2f} → 손절 {stop:.2f} ({c2})")
+                    _gl_jsave(path, st)
+            return
+        # 11:30 — 남은 주문 취소 후 보유분 시장가 청산
+        _gl_req("DELETE", "/v2/orders")
+        _gl_time.sleep(2)
+        code, pos = _gl_req("GET", f"/v2/positions/{st['symbol']}")
+        if code == 200 and pos:
+            c3, o3 = _gl_req("DELETE", f"/v2/positions/{st['symbol']}")
+            st["close_id"] = (o3 or {}).get("id")
+            _gl_log(st, f"11:30 청산 주문 ({c3})")
+        st["phase"] = "record"
+        _gl_jsave(path, st)
+        return
+
+    # 4) 결과 정리 (11:50 이후 — 무료 데이터로 같은 날 시뮬레이션 비교까지)
+    if ph == "record":
+        if hm < 1150:
+            return
+        p = st.get("pick") or {}
+        row = {"종목": st.get("symbol"), "후보수": st.get("n_cands"),
+               "전일종가": p.get("전일종가"), "장전고가": p.get("장전고가"), "장전가": p.get("장전가"),
+               "장전상승률%": p.get("장전상승률%"), "거리%": p.get("거리%"),
+               "트리거": p.get("트리거"), "계좌$": st.get("equity"), "수량": st.get("qty")}
+        if st.get("fill") is None and st.get("buy_id"):
+            c, o = _gl_req("GET", f"/v2/orders/{st['buy_id']}")
+            if c == 200 and float(o.get("filled_qty") or 0) > 0:
+                st.update({"fill": float(o["filled_avg_price"]),
+                           "qty": int(float(o["filled_qty"])),
+                           "fill_time": str(o.get("filled_at", ""))[11:16]})
+        if st.get("fill") is None:
+            row["상태"] = "미체결"
+        else:
+            ex, how = None, "11:30"
+            if st.get("stop_id"):
+                c, o = _gl_req("GET", f"/v2/orders/{st['stop_id']}")
+                if c == 200 and o.get("status") == "filled":
+                    ex, how = float(o["filled_avg_price"]), "손절"
+            if ex is None and st.get("close_id"):
+                c, o = _gl_req("GET", f"/v2/orders/{st['close_id']}")
+                if c == 200 and o.get("filled_avg_price"):
+                    ex = float(o["filled_avg_price"])
+            fill, q = float(st["fill"]), int(st.get("qty") or 0)
+            row.update({"상태": "체결", "체결가": fill, "체결시각": st.get("fill_time"),
+                        "손절가": st.get("stop"), "청산방식": how})
+            if ex is not None:
+                row.update({"청산가": ex, "손익$": round(q * (ex - fill), 2),
+                            "손익%": round((ex - fill) / fill * 100.0, 3)})
+            else:
+                row["비고"] = "청산가 확인 실패 — Alpaca 주문내역 확인 필요"
+        if p.get("트리거"):
+            try:
+                sim = _gl_sim(st["symbol"], today, float(p["트리거"]), int(st.get("qty") or 0),
+                              cfg["stop"], cfg["cut"], cfg["feed"])
+                row.update({"시뮬체결가": sim.get("시뮬체결가"), "시뮬청산가": sim.get("시뮬청산가"),
+                            "시뮬손익%": sim.get("시뮬손익%")})
+                if row.get("손익%") is not None and sim.get("시뮬손익%") is not None:
+                    real = row["손익%"] - _GL_COST_PCT
+                    row["차이%p"] = round(real - float(sim["시뮬손익%"]), 3)
+            except Exception as e:
+                row["비고"] = f"시뮬 실패: {str(e)[:80]}"
+        _gl_finish(st, cfg, row)
+        _gl_jsave(path, st)
+
+
+async def _gl_live_loop():
+    await _gl_asyncio.sleep(20)
+    while True:
+        try:
+            await _gl_asyncio.to_thread(_gl_live_tick)
+        except Exception as e:
+            print(f"⚠️ [GLIVE] tick 예외: {e}")
+        await _gl_asyncio.sleep(15)
+
+
+@app.on_event("startup")
+async def _gl_startup():
+    _gl_asyncio.create_task(_gl_live_loop())
+
+
+@app.get("/gapgo_live_status")
+def gapgo_live_status_endpoint():
+    cfg = _gl_cfg()
+    out = {"설정": {k: v for k, v in cfg.items()}}
+    if cfg["key_set"]:
+        code, acct = _gl_req("GET", "/v2/account")
+        out["모의계좌"] = ({"연결": "성공", "계좌번호": acct.get("account_number"),
+                         "잔고$": acct.get("equity"), "매수가능$": acct.get("buying_power")}
+                        if code == 200 else {"연결": f"실패 ({code})"})
+        code, pos = _gl_req("GET", "/v2/positions")
+        out["보유"] = [{"종목": p.get("symbol"), "수량": p.get("qty"),
+                       "평단": p.get("avg_entry_price"), "평가손익$": p.get("unrealized_pl")}
+                      for p in (pos or [])] if code == 200 else None
+    else:
+        out["모의계좌"] = "GAPGO_ALPACA_KEY / GAPGO_ALPACA_SECRET 환경변수가 없다"
+    ds = _gg_dt.now(_GG_NY).date().isoformat()
+    st = _gl_jload(_gl_state_path(ds), None)
+    out["오늘"] = ({"단계": st.get("phase"), "종목": st.get("symbol"), "결과": st.get("result"),
+                  "기록": (st.get("log") or [])[-8:]} if st else "아직 시작 전")
+    return out
