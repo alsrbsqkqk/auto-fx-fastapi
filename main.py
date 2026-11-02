@@ -13374,3 +13374,602 @@ def gapgo_live_status_endpoint():
     out["오늘"] = ({"단계": st.get("phase"), "종목": st.get("symbol"), "결과": st.get("result"),
                   "기록": (st.get("log") or [])[-8:]} if st else "아직 시작 전")
     return out
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 🟩 [H1DIV-1] 1시간봉 RSI 다이버전스 1:3 — OANDA 데모 실주문 + 규칙 기록   (2026-11-02)
+#
+#   ■ 규칙 (2026-11-02 고정, 3개월 동안 바꾸지 않는다)
+#     1시간봉(mid), RSI(14). TradingView 기본 'RSI Divergence' 정의: RSI 피벗 좌5/우5, 직전 피벗과 5~60봉 간격
+#       강세 = 가격 저점은 더 낮고 RSI 저점은 더 높음 / 약세 = 반대
+#     최근 10봉 안에 강세 다이버전스 + 종가가 최근 100봉 범위 아래쪽 절반 → 다음 봉 시가 매수
+#     최근 10봉 안에 약세 다이버전스 + 종가가 위쪽 절반                   → 다음 봉 시가 매도
+#     손절 1.5×ATR14, 익절 4.5×ATR14 (손익비 1:3), 시간청산 없음, 통화당 한 번에 1포지션
+#     거래마다 $100 위험 (가상 계좌 $10,000 의 1%)
+#     USD_JPY · EUR_USD · AUD_USD · GBP_USD
+#
+#   ■ 하는 일
+#     1) 규칙 기록: OANDA 1시간봉으로 규칙을 그대로 계산 → 시트 'H1DIV_규칙' (비용 1.5pip 가정)
+#     2) 실주문: 새 신호가 나오면 OANDA **데모** 계좌에 시장가 + 손절/익절 동시 주문 (꼬리표 H1DIV)
+#        청산되면 실제 체결 손익을 시트 'H1DIV_실주문' 에 기록
+#     3) 매일 17:05 ET 요약 메일
+#
+#   ■ 안전장치
+#     · OANDA_LIVE=true (실계좌) 이면 주문하지 않는다
+#     · 그 통화에 이미 열린 거래가 있으면 (예전 봇 것 포함) 주문하지 않는다
+#     · 실주문 누적 손실이 H1_MAX_LOSS(기본 $2,500)에 닿으면 새 주문 중단
+#     · 신호 봉이 끝난 지 10분이 지났으면 주문하지 않는다 (재시작 후 뒤늦은 진입 방지)
+#
+#   ■ 환경변수 (전부 선택)
+#     H1_LIVE on/off (기본 on: 계산·기록)   H1_ORDERS on/off (기본 on: 데모 주문)
+#     H1_EMAIL on/off (기본 on)   H1_RISK_USD 100   H1_MAX_LOSS 2500
+#
+#   ■ 엔드포인트
+#     GET /h1_status          계좌 연결·보유·누적 성적
+#     GET /h1_status?run=1    지금 바로 한 번 계산
+#     GET /h1_test_email      요약 메일 지금 보내기
+#
+#   ■ 필요한 기존 심볼: app · OANDA_API_KEY · OANDA_BASE_URL · ACCOUNT_ID · _get_spreadsheet · _pr_send_email
+# ═══════════════════════════════════════════════════════════════════
+
+import os as _h1_os
+import json as _h1_json
+import math as _h1_math
+import threading as _h1_threading
+import asyncio as _h1_asyncio
+import requests as _h1_rq
+import numpy as _h1_np
+import pandas as _h1_pd
+from datetime import datetime as _h1_dt
+from zoneinfo import ZoneInfo as _H1Zone
+
+_H1_NY = _H1Zone("America/New_York")
+_H1_PAIRS = {"USD_JPY": (0.01, 3), "EUR_USD": (0.0001, 5), "AUD_USD": (0.0001, 5), "GBP_USD": (0.0001, 5)}
+_H1_START = _h1_pd.Timestamp("2026-11-01 17:00", tz=_H1_NY)
+_H1_FETCH_FROM = _H1_START - _h1_pd.Timedelta(days=21)     # 지표 준비 구간 (고정)
+_H1_JUDGE = "2027-02-01"
+_H1_SIM_COST = 1.5
+_H1_SLM, _H1_TPM = 1.5, 4.5
+_H1_TAG = "H1DIV"
+_H1_TAB_SIM = "H1DIV_규칙"
+_H1_TAB_LIVE = "H1DIV_실주문"
+_H1_HEAD_SIM = ["키", "통화", "방향", "진입시각", "진입가", "손절가", "익절가", "청산시각", "청산가",
+                "청산방식", "pip", "R", "손익$", "기록시각"]
+_H1_HEAD_LIVE = ["키", "통화", "방향", "진입시각", "수량", "체결가", "청산시각", "청산가",
+                 "실현손익$", "스왑$", "합계$", "규칙상$", "차이$", "기록시각"]
+_H1_TAB_ORD = "H1DIV_주문"
+_H1_HEAD_ORD = ["키", "통화", "방향", "주문시각", "수량", "체결가", "거래ID", "손절pip", "익절pip", "결과"]
+_H1_LOCK = _h1_threading.Lock()
+_H1_CACHE = {}
+_H1_STATE = {"rec_sim": None, "rec_live": None, "last_bar": None, "log": [], "open_sim": {},
+             "last_email": None, "tried": set(), "ord": None}
+_H1_DIR = "/tmp/h1div"
+try:
+    _h1_os.makedirs(_H1_DIR, exist_ok=True)
+    with open(f"{_H1_DIR}/state.json") as _f:
+        _H1_STATE["last_email"] = _h1_json.load(_f).get("last_email")
+except Exception:
+    pass
+
+
+def _h1_cfg():
+    g = _h1_os.environ.get
+    on = lambda k, d: str(g(k, d)).strip().lower() in ("on", "1", "true", "yes")
+    return {"live": on("H1_LIVE", "on"), "orders": on("H1_ORDERS", "on"), "email": on("H1_EMAIL", "on"),
+            "risk": float(g("H1_RISK_USD", "100")), "max_loss": float(g("H1_MAX_LOSS", "2500")),
+            "demo": "fxpractice" in str(globals().get("OANDA_BASE_URL", "")),
+            "account": str(globals().get("ACCOUNT_ID") or "")}
+
+
+def _h1_log(msg):
+    s = f"{_h1_dt.now(_H1_NY):%m-%d %H:%M} {msg}"
+    _H1_STATE["log"] = (_H1_STATE["log"] + [s])[-40:]
+    print(f"[H1DIV] {msg}")
+
+
+def _h1_hdr():
+    return {"Authorization": f"Bearer {OANDA_API_KEY}", "Content-Type": "application/json"}   # type: ignore[name-defined]
+
+
+def _h1_api(method, path, **kw):
+    try:
+        r = _h1_rq.request(method, f"{OANDA_BASE_URL}{path}", headers=_h1_hdr(), timeout=(5, 30), **kw)  # type: ignore[name-defined]
+        try:
+            j = r.json()
+        except Exception:
+            j = {}
+        return r.status_code, j
+    except Exception as e:
+        return 0, {"error": str(e)[:160]}
+
+
+# ───────────────────────── 데이터 ─────────────────────────
+
+def _h1_fetch(instr):
+    df = _H1_CACHE.get(instr)
+    have = df is not None and not df.empty
+    frm = df.index[-1] if have else _H1_FETCH_FROM
+    rows = []
+    for _ in range(10):
+        params = {"granularity": "H1", "price": "M", "count": 5000,
+                  "from": frm.tz_convert("UTC").strftime("%Y-%m-%dT%H:%M:%SZ")}
+        if have or rows:
+            params["includeFirst"] = "false"
+        code, j = _h1_api("GET", f"/v3/instruments/{instr}/candles", params=params)
+        if code != 200:
+            raise RuntimeError(f"캔들 {code} {str(j)[:100]}")
+        cs = j.get("candles", [])
+        done = [c for c in cs if c.get("complete")]
+        rows += [(c["time"], float(c["mid"]["o"]), float(c["mid"]["h"]),
+                  float(c["mid"]["l"]), float(c["mid"]["c"])) for c in done]
+        if len(cs) < 5000 or not done:
+            break
+        frm = _h1_pd.Timestamp(done[-1]["time"]).tz_convert(_H1_NY)
+    if rows:
+        new = _h1_pd.DataFrame(rows, columns=["t", "o", "h", "l", "c"])
+        new.index = _h1_pd.to_datetime(new.t, utc=True).dt.tz_convert(_H1_NY)
+        new = new[["o", "h", "l", "c"]]
+        df = new if not have else _h1_pd.concat([df, new])
+        df = df[~df.index.duplicated(keep="last")].sort_index()
+    _H1_CACHE[instr] = df if df is not None else _h1_pd.DataFrame(columns=["o", "h", "l", "c"])
+    return _H1_CACHE[instr]
+
+
+# ───────────────────────── 규칙 (백테스트 improve.div_bt 와 동일) ─────────────────────────
+
+def _h1_wilder(x, n):
+    a = _h1_np.full(len(x), _h1_np.nan)
+    if len(x) < n:
+        return a
+    a[n - 1] = _h1_np.nanmean(x[:n])
+    for i in range(n, len(x)):
+        a[i] = (a[i - 1] * (n - 1) + x[i]) / n
+    return a
+
+
+def _h1_engine(df, pip):
+    """반환: (청산된 거래, 열린 거래 또는 None, 지금 진입할 신호 또는 None)"""
+    o, h, l, c = (df[k].values.astype(float) for k in "ohlc")
+    idx = df.index
+    n = len(c)
+    if n < 230:
+        return [], None, None
+    d = _h1_np.r_[0, _h1_np.diff(c)]
+    g = _h1_wilder(_h1_np.maximum(d, 0), 14)
+    L = _h1_wilder(_h1_np.maximum(-d, 0), 14)
+    with _h1_np.errstate(divide="ignore", invalid="ignore"):
+        R = 100 - 100 / (1 + g / L)
+    pc = _h1_np.r_[c[0], c[:-1]]
+    A = _h1_wilder(_h1_np.maximum(h - l, _h1_np.maximum(abs(h - pc), abs(l - pc))), 14)
+    LB = 5
+
+    def piv(x, low):
+        p = _h1_np.zeros(n, bool)
+        for i in range(LB, n - LB):
+            w = x[i - LB:i + LB + 1]
+            if _h1_np.isnan(w).any():
+                continue
+            p[i] = x[i] == (w.min() if low else w.max())
+        return p
+
+    pl, ph = piv(R, True), piv(R, False)
+    sig = _h1_np.zeros(n, int)
+    for arr, sd in ((pl, 1), (ph, -1)):
+        last = None
+        for i in _h1_np.flatnonzero(arr):
+            if last is not None and 5 <= i - last <= 60:
+                if sd == 1 and R[i] > R[last] and l[i] < l[last]:
+                    sig[i + LB] = 1
+                if sd == -1 and R[i] < R[last] and h[i] > h[last]:
+                    sig[i + LB] = -1
+            last = i
+    hi = _h1_pd.Series(h).rolling(100).max().values
+    lo = _h1_pd.Series(l).rolling(100).min().values
+
+    closed, opened, pending = [], None, None
+    i = 210
+    while i < n:
+        b = [s for s in sig[max(0, i - 9):i + 1] if s]
+        sd = 0
+        if b:
+            mid = (hi[i] + lo[i]) / 2
+            if 1 in b and c[i] < mid:
+                sd = 1
+            elif -1 in b and c[i] > mid:
+                sd = -1
+        if not sd:
+            i += 1
+            continue
+        if i == n - 1:                                   # 마지막 완성 봉에서 신호 → 다음 봉 시가에 진입
+            pending = {"side": sd, "atr": float(A[i]), "sig_bar": idx[i], "ref": float(c[i])}
+            break
+        e = o[i + 1]
+        sl = e - sd * _H1_SLM * A[i]
+        tp = e + sd * _H1_TPM * A[i]
+        res = None
+        for k in range(i + 1, n):
+            if sd == 1:
+                if o[k] <= sl: res = (k, o[k], "손절"); break
+                if l[k] <= sl: res = (k, sl, "손절"); break
+                if o[k] >= tp: res = (k, o[k], "익절"); break
+                if h[k] >= tp: res = (k, tp, "익절"); break
+            else:
+                if o[k] >= sl: res = (k, o[k], "손절"); break
+                if h[k] >= sl: res = (k, sl, "손절"); break
+                if o[k] <= tp: res = (k, o[k], "익절"); break
+                if l[k] <= tp: res = (k, tp, "익절"); break
+        risk = _H1_SLM * A[i] / pip
+        tr = {"t": idx[i + 1], "side": sd, "e": e, "sl": sl, "tp": tp, "risk": risk}
+        if res is None:
+            opened = tr
+            break
+        k, ex, why = res
+        pips = (ex - e) / pip * sd - _H1_SIM_COST
+        tr.update(xt=idx[k], x=ex, why=why, pips=pips, R=pips / risk)
+        closed.append(tr)
+        i = k + 1
+    return closed, opened, pending
+
+
+def _h1_key(instr, t):
+    return f"H1-{instr}-{t:%Y%m%d%H%M}"
+
+
+# ───────────────────────── 시트 ─────────────────────────
+
+def _h1_ws(tab, head):
+    ss = _get_spreadsheet()                          # type: ignore[name-defined]
+    if ss is None:
+        return None
+    try:
+        return ss.worksheet(tab)
+    except Exception:
+        ws = ss.add_worksheet(title=tab, rows=3000, cols=len(head))
+        ws.update("A1", [head])
+        return ws
+
+
+def _h1_rows(tab, head):
+    ws = _h1_ws(tab, head)
+    if ws is None:
+        return None
+    vals = ws.get_all_values()
+    if not vals:
+        ws.update("A1", [head])
+        return []
+    return [dict(zip(vals[0], r)) for r in vals[1:] if r and r[0]]
+
+
+def _h1_append(tab, head, rows):
+    ws = _h1_ws(tab, head)
+    if ws is None:
+        return False
+    ws.append_rows(rows, value_input_option="RAW")
+    return True
+
+
+# ───────────────────────── 주문 ─────────────────────────
+
+def _h1_live_total(rows=None):
+    rows = rows if rows is not None else (_h1_rows(_H1_TAB_LIVE, _H1_HEAD_LIVE) or [])
+    return sum(float(r.get("합계$") or 0) for r in rows)
+
+
+def _h1_place(instr, pend, cfg, now):
+    pip, prec = _H1_PAIRS[instr]
+    entry_t = pend["sig_bar"] + _h1_pd.Timedelta(hours=1)
+    key = _h1_key(instr, entry_t)
+    if key in _H1_STATE["tried"] or key in _H1_STATE["ord"]:
+        return
+    fresh = (now - entry_t).total_seconds() < 600
+    sunday_open = now.weekday() == 6 and now.hour == 17 and now.minute < 10
+    if not (fresh or sunday_open):
+        return
+    _H1_STATE["tried"].add(key)
+    sd = pend["side"]
+    side_ko = "매수" if sd == 1 else "매도"
+    if not cfg["orders"]:
+        _h1_log(f"{instr} {side_ko} 신호 (주문 off)")
+        return
+    if not cfg["demo"]:
+        _h1_log(f"{instr} {side_ko} 신호 — 실계좌 설정이라 주문하지 않음")
+        return
+    if _h1_live_total() <= -cfg["max_loss"]:
+        _h1_log(f"{instr} {side_ko} 신호 — 누적 손실 한도 도달, 주문 중단")
+        return
+    code, j = _h1_api("GET", f"/v3/accounts/{cfg['account']}/openTrades")
+    if code != 200:
+        _h1_log(f"{instr} 열린거래 조회 실패 {code}")
+        _H1_STATE["tried"].discard(key)
+        return "retry"
+    if any(t.get("instrument") == instr for t in j.get("trades", [])):
+        _h1_log(f"{instr} {side_ko} 신호 — 이미 열린 거래가 있어 건너뜀")
+        return
+    dist = _H1_SLM * pend["atr"]
+    tpd = _H1_TPM * pend["atr"]
+    units = cfg["risk"] / dist if instr != "USD_JPY" else cfg["risk"] * pend["ref"] / dist
+    units = int(min(units, 300000))
+    if units <= 0:
+        return
+    # MT4 연동 계좌라서 clientExtensions 는 쓰지 않는다. 거래ID 는 'H1DIV_주문' 탭에 남긴다.
+    body = {"order": {"type": "MARKET", "instrument": instr, "units": str(sd * units),
+                      "timeInForce": "FOK", "positionFill": "DEFAULT",
+                      "stopLossOnFill": {"distance": f"{dist:.{prec}f}"},
+                      "takeProfitOnFill": {"distance": f"{tpd:.{prec}f}"}}}
+    code, j = _h1_api("POST", f"/v3/accounts/{cfg['account']}/orders", data=_h1_json.dumps(body))
+    fill = (j or {}).get("orderFillTransaction")
+    tid = ((fill or {}).get("tradeOpened") or {}).get("tradeID")
+    if code in (200, 201) and fill and tid:
+        row = [key, instr, side_ko, f"{now:%Y-%m-%d %H:%M}", units, float(fill.get("price") or 0), str(tid),
+               round(dist / pip, 1), round(tpd / pip, 1), "체결"]
+        _H1_STATE["ord"][key] = dict(zip(_H1_HEAD_ORD, row))
+        _h1_append(_H1_TAB_ORD, _H1_HEAD_ORD, [row])
+        _h1_log(f"{instr} {side_ko} {units:,} 체결 {fill.get('price')} (손절 {dist / pip:.1f}pip, 익절 {tpd / pip:.1f}pip)")
+        return
+    why = ((j or {}).get("orderCancelTransaction") or {}).get("reason") or (j or {}).get("errorMessage") or str(j)[:120]
+    _h1_log(f"{instr} 주문 실패 {code}: {why}")
+    if code == 0 or code >= 500 or "HALTED" in str(why):
+        _H1_STATE["tried"].discard(key)          # 일시적 실패 → 다음 tick 에 다시
+        return "retry"
+    row = [key, instr, side_ko, f"{now:%Y-%m-%d %H:%M}", units, "", "", round(dist / pip, 1),
+           round(tpd / pip, 1), f"실패: {str(why)[:60]}"]
+    _H1_STATE["ord"][key] = dict(zip(_H1_HEAD_ORD, row))
+    _h1_append(_H1_TAB_ORD, _H1_HEAD_ORD, [row])
+
+
+def _h1_sync_closed(cfg, sim_by_key):
+    """주문 탭에 있는 거래 중 OANDA 에서 청산된 것을 찾아 실주문 탭에 기록"""
+    new = []
+    now = _h1_dt.now(_H1_NY)
+    for key, o in list(_H1_STATE["ord"].items()):
+        tid = str(o.get("거래ID") or "")
+        if not tid or key in _H1_STATE["rec_live"]:
+            continue
+        code, j = _h1_api("GET", f"/v3/accounts/{cfg['account']}/trades/{tid}")
+        t = (j or {}).get("trade") or {}
+        if code != 200 or t.get("state") != "CLOSED":
+            continue
+        pl = float(t.get("realizedPL") or 0)
+        fin = float(t.get("financing") or 0)
+        tot = pl + fin
+        sim = sim_by_key.get(key)
+        ot = _h1_pd.Timestamp(t["openTime"]).tz_convert(_H1_NY)
+        ct = _h1_pd.Timestamp(t["closeTime"]).tz_convert(_H1_NY) if t.get("closeTime") else None
+        units = float(t.get("initialUnits") or 0)
+        new.append([key, t.get("instrument"), "매수" if units > 0 else "매도", f"{ot:%Y-%m-%d %H:%M}",
+                    abs(units), float(t.get("price") or 0), f"{ct:%Y-%m-%d %H:%M}" if ct is not None else "",
+                    float(t.get("averageClosePrice") or 0), round(pl, 2), round(fin, 2), round(tot, 2),
+                    "" if sim is None else round(sim, 2), "" if sim is None else round(tot - sim, 2),
+                    f"{now:%Y-%m-%d %H:%M}"])
+    if new and _h1_append(_H1_TAB_LIVE, _H1_HEAD_LIVE, new):
+        for r in new:
+            _H1_STATE["rec_live"].add(r[0])
+        _h1_log(f"실주문 청산 {len(new)}건 기록")
+
+
+# ───────────────────────── 계산 1회 ─────────────────────────
+
+def _h1_tick(force=False):
+    cfg = _h1_cfg()
+    if not cfg["live"] and not force:
+        return
+    if not _H1_LOCK.acquire(blocking=False):
+        return
+    try:
+        now = _h1_dt.now(_H1_NY)
+        bar = _h1_pd.Timestamp(now).floor("1h")
+        if not force and _H1_STATE["last_bar"] == bar:
+            _h1_email_check(now, cfg)
+            return
+        if not force and now.minute < 1:
+            return
+        if _H1_STATE["rec_sim"] is None or _H1_STATE["rec_live"] is None or _H1_STATE["ord"] is None:
+            rs = _h1_rows(_H1_TAB_SIM, _H1_HEAD_SIM)
+            rl = _h1_rows(_H1_TAB_LIVE, _H1_HEAD_LIVE)
+            ro = _h1_rows(_H1_TAB_ORD, _H1_HEAD_ORD)
+            if rs is None or rl is None or ro is None:
+                _h1_log("시트 열기 실패 — 다음에 다시")
+                return
+            _H1_STATE["rec_sim"] = {r["키"] for r in rs}
+            _H1_STATE["rec_live"] = {r["키"] for r in rl}
+            _H1_STATE["ord"] = {r["키"]: r for r in ro}
+        new_sim, sim_by_key, retry = [], {}, False
+        for instr, (pip, prec) in _H1_PAIRS.items():
+            try:
+                df = _h1_fetch(instr)
+            except Exception as e:
+                _h1_log(f"{instr} 캔들 실패: {str(e)[:120]}")
+                continue
+            closed, opened, pend = _h1_engine(df, pip)
+            _H1_STATE["open_sim"][instr] = None
+            if opened is not None and opened["t"] >= _H1_START:
+                _H1_STATE["open_sim"][instr] = {
+                    "방향": "매수" if opened["side"] == 1 else "매도", "진입시각": f"{opened['t']:%m-%d %H:%M}",
+                    "진입가": round(opened["e"], prec), "손절가": round(opened["sl"], prec),
+                    "익절가": round(opened["tp"], prec)}
+            for tr in closed:
+                if tr["t"] < _H1_START:
+                    continue
+                key = _h1_key(instr, tr["t"])
+                usd = tr["R"] * cfg["risk"]
+                sim_by_key[key] = usd
+                if key in _H1_STATE["rec_sim"]:
+                    continue
+                new_sim.append([key, instr, "매수" if tr["side"] == 1 else "매도", f"{tr['t']:%Y-%m-%d %H:%M}",
+                                round(tr["e"], prec), round(tr["sl"], prec), round(tr["tp"], prec),
+                                f"{tr['xt']:%Y-%m-%d %H:%M}", round(tr["x"], prec), tr["why"],
+                                round(tr["pips"], 2), round(tr["R"], 3), round(usd, 2), f"{now:%Y-%m-%d %H:%M}"])
+            if pend is not None and opened is None:
+                if _h1_place(instr, pend, cfg, now) == "retry":
+                    retry = True
+        if new_sim:
+            if not _h1_append(_H1_TAB_SIM, _H1_HEAD_SIM, new_sim):
+                _h1_log("규칙 기록 실패 — 다음에 다시")
+                return
+            for r in new_sim:
+                _H1_STATE["rec_sim"].add(r[0])
+            _h1_log(f"규칙 청산 {len(new_sim)}건 기록")
+        if cfg["account"]:
+            _h1_sync_closed(cfg, sim_by_key)
+        _H1_STATE["last_bar"] = None if retry else bar
+        _h1_email_check(now, cfg)
+    except Exception as e:
+        _h1_log(f"tick 예외: {str(e)[:150]}")
+    finally:
+        _H1_LOCK.release()
+
+
+# ───────────────────────── 성적·메일 ─────────────────────────
+
+def _h1_wilcoxon_p(x):
+    x = [v for v in x if abs(v) > 1e-12]
+    n = len(x)
+    if n < 6:
+        return None
+    ranks = _h1_pd.Series([abs(v) for v in x]).rank().values
+    wp = sum(r for r, v in zip(ranks, x) if v > 0)
+    z = (wp - n * (n + 1) / 4) / _h1_math.sqrt(n * (n + 1) * (2 * n + 1) / 24)
+    return round(0.5 * (1 - _h1_math.erf(z / _h1_math.sqrt(2))), 4)
+
+
+def _h1_summary(rows, col):
+    if not rows:
+        return {"거래": 0}
+    df = _h1_pd.DataFrame(rows)
+    df["v"] = _h1_pd.to_numeric(df[col], errors="coerce").fillna(0)
+    df["날"] = df["진입시각"].str[:10]
+    eq = 10000 + df["v"].cumsum()
+    out = {"거래": int(len(df)), "승률%": round(float(100 * (df.v > 0).mean()), 1),
+           "거래당$": round(float(df.v.mean()), 2), "누적$": round(float(df.v.sum()), 2),
+           "가상잔고$": round(float(eq.iloc[-1]), 2),
+           "최대낙폭$": round(float((eq - _h1_np.maximum.accumulate(_h1_np.r_[10000, eq.values])[1:]).min()), 2),
+           "일단위p": _h1_wilcoxon_p(df.groupby("날")["v"].sum().tolist()),
+           "통화별": {k: {"거래": int(len(v)), "누적$": round(float(v.v.sum()), 2)} for k, v in df.groupby("통화")}}
+    p = out["일단위p"]
+    out["현재판정"] = "합격 기준 충족 중" if out["거래당$"] > 0 and p is not None and p < 0.05 else "아직 기준 미달"
+    return out
+
+
+def _h1_open_live(cfg):
+    if not cfg["account"]:
+        return []
+    code, j = _h1_api("GET", f"/v3/accounts/{cfg['account']}/openTrades")
+    if code != 200:
+        return [f"조회 실패 {code}"]
+    out = []
+    mine = {str(o.get("거래ID")) for o in (_H1_STATE["ord"] or {}).values() if o.get("거래ID")}
+    for t in j.get("trades", []):
+        if str(t.get("id")) not in mine:
+            continue
+        u = float(t.get("currentUnits") or 0)
+        out.append({"통화": t.get("instrument"), "방향": "매수" if u > 0 else "매도", "수량": abs(u),
+                    "체결가": t.get("price"),
+                    "진입": f"{_h1_pd.Timestamp(t['openTime']).tz_convert(_H1_NY):%m-%d %H:%M}",
+                    "평가손익$": round(float(t.get("unrealizedPL") or 0), 2)})
+    return out
+
+
+def _h1_email_body(today, cfg):
+    rl = _h1_rows(_H1_TAB_LIVE, _H1_HEAD_LIVE) or []
+    rs = _h1_rows(_H1_TAB_SIM, _H1_HEAD_SIM) or []
+    sl, ss = _h1_summary(rl, "합계$"), _h1_summary(rs, "손익$")
+    L = [f"1시간봉 RSI 다이버전스 1:3 — {today} (ET)", "OANDA 데모 실주문 · 거래당 $100 위험 · 가상계좌 $10,000", ""]
+    tod = [r for r in rl if str(r.get("청산시각", "")).startswith(today)]
+    L.append(f"■ 오늘 청산 (실주문) {len(tod)}건")
+    for r in tod:
+        L.append(f"  {r['통화']} {r['방향']} {r['진입시각'][5:]} → {r['청산시각'][5:]}  {float(r['합계$']):+,.2f}$"
+                 + (f"  (규칙상 {float(r['규칙상$']):+,.2f}$)" if r.get("규칙상$") not in ("", None) else ""))
+    L += ["", "■ 보유 중 (실주문)"]
+    op = _h1_open_live(cfg)
+    L += [f"  {o}" if isinstance(o, str) else
+          f"  {o['통화']} {o['방향']} {o['수량']:,.0f} @ {o['체결가']} ({o['진입']}) 평가 {o['평가손익$']:+,.2f}$"
+          for o in op] or ["  없음"]
+    for lab, s in (("실주문 (진짜 체결)", sl), ("규칙 계산 (비용 1.5pip 가정)", ss)):
+        L += ["", f"■ 누적 — {lab}"]
+        if s.get("거래", 0) == 0:
+            L.append("  아직 청산된 거래 없음")
+            continue
+        L.append(f"  {s['거래']}건 · 승률 {s['승률%']}% · 거래당 {s['거래당$']:+,.2f}$ · 누적 {s['누적$']:+,.2f}$ · "
+                 f"가상잔고 {s['가상잔고$']:,.0f}$ · 최대낙폭 {s['최대낙폭$']:,.0f}$")
+        for k, v in s["통화별"].items():
+            L.append(f"  {k}: {v['거래']}건 {v['누적$']:+,.2f}$")
+        L.append(f"  일단위 p = {s['일단위p']} → {s['현재판정']}")
+    L += ["", f"판정일 {_H1_JUDGE}: 실주문 거래당 손익 > 0 이고 일단위 p < 0.05 면 합격 (거래가 적으면 6개월로 연장)",
+          f"중단: 실주문 누적 −${cfg['max_loss']:,.0f}"]
+    return sl, "\n".join(L)
+
+
+def _h1_send(today):
+    cfg = _h1_cfg()
+    s, body = _h1_email_body(today, cfg)
+    return _pr_send_email(f"[1시간봉 다이버전스] {today} 누적 {s.get('누적$', 0):+,.0f}$ ({s.get('거래', 0)}건)",
+                          body)                                   # type: ignore[name-defined]
+
+
+def _h1_email_check(now, cfg):
+    if not cfg["email"] or now.weekday() >= 5:
+        return
+    today = now.date().isoformat()
+    if now.hour * 100 + now.minute < 1705 or _H1_STATE.get("last_email") == today:
+        return
+    _H1_STATE["last_email"] = today
+    try:
+        with open(f"{_H1_DIR}/state.json", "w") as f:
+            _h1_json.dump({"last_email": today}, f)
+    except Exception:
+        pass
+    _h1_log(f"요약 메일 {'보냄' if _h1_send(today) else '실패'}")
+
+
+# ───────────────────────── 루프·엔드포인트 ─────────────────────────
+
+async def _h1_loop():
+    await _h1_asyncio.sleep(40)
+    while True:
+        try:
+            await _h1_asyncio.to_thread(_h1_tick)
+        except Exception as e:
+            print(f"⚠️ [H1DIV] loop 예외: {e}")
+        await _h1_asyncio.sleep(30)
+
+
+@app.on_event("startup")                                          # type: ignore[name-defined]
+async def _h1_startup():
+    _h1_asyncio.create_task(_h1_loop())
+
+
+@app.get("/h1_status")                                            # type: ignore[name-defined]
+def h1_status_endpoint(run: int = 0):
+    if run:
+        _H1_STATE["last_bar"] = None
+        _h1_tick(force=True)
+    cfg = _h1_cfg()
+    out = {"설정": {"계산": "on" if cfg["live"] else "off", "데모주문": "on" if cfg["orders"] else "off",
+                   "메일": "on" if cfg["email"] else "off", "거래당위험$": cfg["risk"],
+                   "중단손실$": cfg["max_loss"], "시작": f"{_H1_START:%Y-%m-%d %H:%M} ET", "판정일": _H1_JUDGE}}
+    if not cfg["demo"]:
+        out["경고"] = "OANDA_LIVE 가 데모가 아니다 — 주문하지 않는다"
+    code, j = _h1_api("GET", f"/v3/accounts/{cfg['account']}/summary") if cfg["account"] else (0, {})
+    a = (j or {}).get("account") or {}
+    out["OANDA계좌"] = ({"연결": "성공", "계좌": a.get("id"), "종류": "데모" if cfg["demo"] else "실계좌",
+                       "NAV$": a.get("NAV"), "열린거래수": a.get("openTradeCount")}
+                      if code == 200 else {"연결": f"실패 ({code})", "내용": str(j)[:150]})
+    out["데이터"] = {p: (f"{len(v)}봉, 마지막 {v.index[-1]:%m-%d %H:%M} ET" if v is not None and len(v) else "아직 없음")
+                   for p, v in ((p, _H1_CACHE.get(p)) for p in _H1_PAIRS)}
+    try:
+        rl = _h1_rows(_H1_TAB_LIVE, _H1_HEAD_LIVE)
+        rs = _h1_rows(_H1_TAB_SIM, _H1_HEAD_SIM)
+        out["누적_실주문"] = _h1_summary(rl, "합계$") if rl is not None else "시트 열기 실패"
+        out["누적_규칙"] = _h1_summary(rs, "손익$") if rs is not None else "시트 열기 실패"
+    except Exception as e:
+        out["누적"] = f"시트 오류: {str(e)[:100]}"
+    out["보유_실주문"] = _h1_open_live(cfg) or "없음"
+    out["보유_규칙"] = {k: v for k, v in _H1_STATE["open_sim"].items() if v} or "없음"
+    out["최근기록"] = _H1_STATE["log"][-12:]
+    return out
+
+
+@app.get("/h1_test_email")                                        # type: ignore[name-defined]
+def h1_test_email_endpoint():
+    ok = _h1_send(_h1_dt.now(_H1_NY).date().isoformat())
+    return {"보냄": ok, "안내": "메일함(스팸함 포함)을 확인해라. 안 오면 PR_SMTP_USER / PR_SMTP_PASS 확인"}
