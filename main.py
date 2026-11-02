@@ -12629,70 +12629,232 @@ def _gl_sim(sym: str, day, trig: float, qty: int, stop_pct: float = 12.0,
             "시뮬손익%": round(pct, 3), "시뮬손익$": round(qty * fill * pct / 100.0, 2)}
 
 
+# ───────────────────────── Alpaca 요청: 속도 제한 + 재시도 ─────────────────────────
+#   🟥 [GAPGO-6] 10/31 실전조건 백테스트에서 요청의 약 40% 가 조용히 실패했다
+#   (무료 데이터 한도 분당 200회 초과 → 빈 데이터 → '데이터없음' 75~80일, 후보 목록 절반 누락).
+#   모든 Alpaca 요청을 분당 150회로 묶고, 429·5xx·타임아웃은 최대 6번 다시 시도한다.
+#   끝내 실패한 요청은 스레드별로 세어서, 백테스트가 그날을 '완료'로 치지 않게 한다.
+
+import collections as _gl_coll
+
+
+class _GLRq:
+    def __init__(self, real):
+        self._r = real
+        self._lock = _gl_threading.Lock()
+        self._ts = _gl_coll.deque()
+        self._tl = _gl_threading.local()
+
+    def _throttle(self, per_min: int = 150):
+        while True:
+            with self._lock:
+                now = _gl_time.time()
+                while self._ts and now - self._ts[0] > 60:
+                    self._ts.popleft()
+                if len(self._ts) < per_min:
+                    self._ts.append(now)
+                    return
+                wait = 60 - (now - self._ts[0]) + 0.05
+            _gl_time.sleep(max(wait, 0.05))
+
+    def _fail(self):
+        self._tl.fails = getattr(self._tl, "fails", 0) + 1
+
+    def reset_fails(self):
+        self._tl.fails = 0
+
+    def fails(self) -> int:
+        return getattr(self._tl, "fails", 0)
+
+    def get(self, url, **kw):
+        if "alpaca.markets" not in str(url):
+            return self._r.get(url, **kw)
+        last = None
+        for i in range(6):
+            self._throttle()
+            try:
+                r = self._r.get(url, **kw)
+            except Exception as e:
+                last = e
+                _gl_time.sleep(min(2 ** i, 20))
+                continue
+            if r.status_code in (429, 500, 502, 503, 504):
+                last = r
+                try:
+                    ra = float((getattr(r, "headers", None) or {}).get("Retry-After") or 0)
+                except Exception:
+                    ra = 0
+                _gl_time.sleep(ra if ra > 0 else min(2 ** i, 20))
+                continue
+            if not r.ok:
+                self._fail()
+            return r
+        self._fail()
+        if isinstance(last, Exception):
+            raise last
+        return last
+
+    def request(self, method, url, **kw):
+        if "alpaca.markets" in str(url):
+            self._throttle()
+        return self._r.request(method, url, **kw)
+
+    def __getattr__(self, n):
+        return getattr(self._r, n)
+
+
+if not isinstance(_gg_rq, _GLRq):          # 두 번 감싸지 않게
+    _gg_rq = _GLRq(_gg_rq)
+
+
+def _gl_fails_reset():
+    try:
+        _gg_rq.reset_fails()
+    except Exception:
+        pass
+
+
+def _gl_fails() -> int:
+    try:
+        return int(_gg_rq.fails())
+    except Exception:
+        return 0
+
+
 # ───────────────────────── 실전 조건 백테스트 (백그라운드) ─────────────────────────
 
 _GL_BT_HEADERS = ["날짜", "상태", "후보수", "종목", "전일종가", "장전고가", "장전가",
                   "장전상승률%", "장전거래량", "10일평균거래량", "거리%", "트리거", "수량",
                   "시뮬체결가", "시뮬체결시각", "시뮬손절가", "시뮬청산", "시뮬청산가",
-                  "시뮬청산시각", "시뮬손익%", "시뮬손익$", "2등", "3등"]
-_GL_BT_THREADS: dict = {}
+                  "시뮬청산시각", "시뮬손익%", "시뮬손익$", "2등", "3등", "종목목록수"]
+_GL_BT_THREAD = {"th": None, "what": ""}
 
 
 def _gl_bt_key(f, t, snap, stop, cut, pmvol, pmchg, equity, frac):
-    return f"{f}_{t}_s{snap}_st{stop:g}_c{cut}_v{int(pmvol)}_p{pmchg:g}_e{int(equity)}_f{frac:.4f}"
+    return (f"v2_{f}_{t}_s{snap}_st{stop:g}_c{cut}_v{int(pmvol)}_p{pmchg:g}"
+            f"_e{int(equity)}_f{frac:.4f}")
 
 
-def _gl_bt_run(key, f, t, snap, stop, cut, pmvol, pmchg, equity, frac, feed, sheet):
-    path = f"{_GL_DIR}/bt_{key}.json"
-    st = _gl_jload(path, {"done": [], "rows": [], "error": None})
-    st["running"] = True
-    _gl_jsave(path, st)
-    tab = f"갭앤고_실전BT_{snap:04d}"
-    pending = []
-    try:
-        d = f
-        months = []
-        while d <= t:
-            ym = d.strftime("%Y-%m")
-            if ym not in months:
-                months.append(ym)
-            d += _gg_td(days=1)
-        for ym in months:
-            uni = _gl_month_universe(ym, feed)
-            for ds in sorted(uni.keys()):
-                if ds < f.isoformat() or ds > t.isoformat() or ds in st["done"]:
-                    continue
-                day = _gg_date.fromisoformat(ds)
-                try:
-                    cands = _gl_rank(day, uni[ds], snap, feed, pmvol, pmchg)
-                    if not cands:
-                        row = {"날짜": ds, "상태": "후보없음", "후보수": 0}
+def _gl_market_pause():
+    """평일 09:00~12:00 ET 에는 모의매매 봇에 요청 한도를 양보한다."""
+    while True:
+        n = _gg_dt.now(_GG_NY)
+        if n.weekday() < 5 and 900 <= n.hour * 100 + n.minute < 1200:
+            _gl_time.sleep(60)
+            continue
+        return
+
+
+def _gl_bt_month(ym, feed):
+    """종목 목록 — 요청이 하나라도 끝내 실패하면 다시 만든다 (최대 3번)."""
+    for _ in range(3):
+        _gl_fails_reset()
+        uni = _gl_month_universe(ym, feed)
+        if _gl_fails() == 0 and uni:
+            return uni
+        try:
+            for fn in _gl_os.listdir(_GL_DIR):
+                if fn.startswith(f"univ_{ym}_"):
+                    _gl_os.remove(f"{_GL_DIR}/{fn}")
+        except Exception:
+            pass
+        _gl_time.sleep(30)
+    raise RuntimeError(f"{ym} 종목 목록을 끝내 못 만들었다 (요청 실패)")
+
+
+def _gl_bt_day(ds, meta, snap, stop, cut, pmvol, pmchg, equity, frac, feed):
+    day = _gg_date.fromisoformat(ds)
+    _gl_fails_reset()
+    cands = _gl_rank(day, meta, snap, feed, pmvol, pmchg)
+    if not cands:
+        row = {"날짜": ds, "상태": "후보없음", "후보수": 0}
+    else:
+        p = cands[0]
+        qty = int((equity * frac) // p["트리거"])
+        row = {"날짜": ds, "후보수": len(cands), **p, "수량": qty,
+               "2등": cands[1]["종목"] if len(cands) > 1 else "",
+               "3등": cands[2]["종목"] if len(cands) > 2 else ""}
+        if qty < 1:
+            row["상태"] = "수량0"
+        else:
+            row.update(_gl_sim(p["종목"], day, p["트리거"], qty, stop, cut, feed))
+            row["상태"] = row.get("시뮬상태")
+    row["종목목록수"] = len(meta)
+    return row, _gl_fails()
+
+
+def _gl_bt_run(jobs: list):
+    """jobs = [(key, f, t, snap, stop, cut, pmvol, pmchg, equity, frac, feed, sheet), ...]
+    한 스레드에서 차례대로 돈다 — 동시에 돌리면 요청 한도에 걸린다."""
+    for (key, f, t, snap, stop, cut, pmvol, pmchg, equity, frac, feed, sheet) in jobs:
+        _GL_BT_THREAD["what"] = f"{snap:04d} 기준 {f}~{t}"
+        path = f"{_GL_DIR}/bt_{key}.json"
+        st = _gl_jload(path, {"done": [], "rows": [], "error": None, "bad": []})
+        st["running"], st["error"] = True, None
+        _gl_jsave(path, st)
+        tab = f"갭앤고_실전BT2_{snap:04d}"
+        pending = []
+
+        def _commit(row):
+            st["rows"].append({k: row.get(k) for k in _GL_BT_HEADERS})
+            st["done"].append(row["날짜"])
+            pending.append(row)
+            _gl_jsave(path, st)
+            if sheet and len(pending) >= 5:
+                _gl_sheet_append(tab, _GL_BT_HEADERS, pending)
+                pending.clear()
+
+        try:
+            months, d = [], f
+            while d <= t:
+                ym = d.strftime("%Y-%m")
+                if ym not in months:
+                    months.append(ym)
+                d += _gg_td(days=1)
+            for ym in months:
+                _gl_market_pause()
+                uni = _gl_bt_month(ym, feed)
+                retry = []
+                for ds in sorted(uni.keys()):
+                    if ds < f.isoformat() or ds > t.isoformat() or ds in st["done"]:
+                        continue
+                    _gl_market_pause()
+                    try:
+                        row, nf = _gl_bt_day(ds, uni[ds], snap, stop, cut, pmvol, pmchg,
+                                             equity, frac, feed)
+                    except Exception as e:
+                        row, nf = {"날짜": ds, "상태": f"오류: {str(e)[:80]}"}, 1
+                    if nf:
+                        retry.append(ds)          # 데이터가 덜 왔다 → 완료로 치지 않는다
                     else:
-                        p = cands[0]
-                        qty = int((equity * frac) // p["트리거"])
-                        row = {"날짜": ds, "후보수": len(cands), **p, "수량": qty,
-                               "2등": cands[1]["종목"] if len(cands) > 1 else "",
-                               "3등": cands[2]["종목"] if len(cands) > 2 else ""}
-                        if qty < 1:
-                            row["상태"] = "수량0"
+                        _commit(row)
+                for attempt in range(2):          # 실패한 날만 다시 (최대 2번 더)
+                    if not retry:
+                        break
+                    _gl_time.sleep(60)
+                    again = []
+                    for ds in retry:
+                        _gl_market_pause()
+                        try:
+                            row, nf = _gl_bt_day(ds, uni[ds], snap, stop, cut, pmvol, pmchg,
+                                                 equity, frac, feed)
+                        except Exception as e:
+                            row, nf = {"날짜": ds, "상태": f"오류: {str(e)[:80]}"}, 1
+                        if nf:
+                            again.append(ds)
                         else:
-                            row.update(_gl_sim(p["종목"], day, p["트리거"], qty, stop, cut, feed))
-                            row["상태"] = row.get("시뮬상태")
-                except Exception as e:
-                    row = {"날짜": ds, "상태": f"오류: {str(e)[:80]}"}
-                st["rows"].append({k: row.get(k) for k in _GL_BT_HEADERS})
-                st["done"].append(ds)
-                pending.append(row)
-                _gl_jsave(path, st)
-                if sheet and len(pending) >= 5:
-                    _gl_sheet_append(tab, _GL_BT_HEADERS, pending)
-                    pending = []
-        if sheet and pending:
-            _gl_sheet_append(tab, _GL_BT_HEADERS, pending)
-    except Exception as e:
-        st["error"] = str(e)[:200]
-    st["running"] = False
-    _gl_jsave(path, st)
+                            _commit(row)
+                    retry = again
+                for ds in retry:                  # 끝내 실패 → '데이터오류'로 따로 표시
+                    st.setdefault("bad", []).append(ds)
+                    _commit({"날짜": ds, "상태": "데이터오류"})
+            if sheet and pending:
+                _gl_sheet_append(tab, _GL_BT_HEADERS, pending)
+        except Exception as e:
+            st["error"] = str(e)[:200]
+        st["running"] = False
+        _gl_jsave(path, st)
+    _GL_BT_THREAD["what"] = ""
 
 
 def _gl_bt_summary(st: dict) -> dict:
@@ -12702,6 +12864,11 @@ def _gl_bt_summary(st: dict) -> dict:
     usd = [float(r.get("시뮬손익$") or 0) for r in filled]
     wins = [x for x in pct if x > 0]
     loss = [x for x in pct if x <= 0]
+    by_state: dict = {}
+    for r in rows:
+        k = str(r.get("상태"))[:20]
+        by_state[k] = by_state.get(k, 0) + 1
+    ncand = sorted(int(r.get("후보수") or 0) for r in rows if r.get("후보수") is not None)
     by_m: dict = {}
     for r in filled:
         m = str(r["날짜"])[:7]
@@ -12711,8 +12878,8 @@ def _gl_bt_summary(st: dict) -> dict:
         a["손익$"] = round(a["손익$"] + float(r.get("시뮬손익$") or 0), 2)
     return {
         "거래일": len(rows),
-        "후보없음": sum(1 for r in rows if r.get("상태") == "후보없음"),
-        "미체결": sum(1 for r in rows if r.get("상태") == "미체결"),
+        "상태별": by_state,
+        "후보수중앙값": ncand[len(ncand) // 2] if ncand else None,
         "체결": len(filled),
         "승률%": round(100.0 * len(wins) / len(filled), 1) if filled else None,
         "평균이익%": round(sum(wins) / len(wins), 2) if wins else None,
@@ -12729,40 +12896,53 @@ from fastapi import Query as _GLQuery
 
 @app.get("/gapgo_live_bt")
 def gapgo_live_bt_endpoint(
-    from_: str = _GLQuery("", alias="from"), to: str = "", snap: int = 910,
+    from_: str = _GLQuery("", alias="from"), to: str = "", snap: str = "910,930",
     stop: float = 12.0, cut: int = 1130, pmvol: float = 60000.0, pmchg: float = 1.8,
     equity: float = 10000.0, frac: float = 1 / 3, feed: str = "sip",
     sheet: int = 1, status: int = 0, reset: int = 0,
 ):
+    """snap 여러 개(쉼표)를 넣으면 한 스레드에서 차례대로 돈다."""
     try:
         f = _gg_date.fromisoformat(from_)
         t = _gg_date.fromisoformat(to) if to else f
     except Exception:
         return {"error": "from=YYYY-MM-DD&to=YYYY-MM-DD 가 필요하다"}
-    snap = _gl_hhmm(snap, 910)
-    key = _gl_bt_key(f, t, snap, stop, cut, pmvol, pmchg, equity, frac)
-    path = f"{_GL_DIR}/bt_{key}.json"
-    if reset:
-        try:
-            _gl_os.remove(path)
-        except Exception:
-            pass
-    st = _gl_jload(path, {"done": [], "rows": []})
-    th = _GL_BT_THREADS.get(key)
+    snaps = []
+    for x in str(snap).split(","):
+        v = _gl_hhmm(x.strip(), None)
+        if v is not None and v not in snaps:
+            snaps.append(v)
+    if not snaps:
+        return {"error": "snap 예: 910 또는 910,930"}
+    jobs, out = [], {}
+    for sn in snaps:
+        key = _gl_bt_key(f, t, sn, stop, cut, pmvol, pmchg, equity, frac)
+        path = f"{_GL_DIR}/bt_{key}.json"
+        if reset and not status:
+            try:
+                _gl_os.remove(path)
+            except Exception:
+                pass
+        st = _gl_jload(path, {"done": [], "rows": []})
+        out[f"{sn:04d}"] = {"처리한날": len(st.get("done") or []), "오류": st.get("error"),
+                            "요약": _gl_bt_summary(st)}
+        jobs.append((key, f, t, sn, stop, cut, pmvol, pmchg, equity, frac, feed, sheet))
+    th = _GL_BT_THREAD.get("th")
     alive = bool(th and th.is_alive())
-    if not status and not alive:
-        th = _gl_threading.Thread(target=_gl_bt_run, daemon=True,
-                                  args=(key, f, t, snap, stop, cut, pmvol, pmchg,
-                                        equity, frac, feed, sheet))
-        th.start()
-        _GL_BT_THREADS[key] = th
-        alive = True
-    return {"구간": f"{f} ~ {t}", "순위기준시각": f"{snap:04d}", "실행중": alive,
-            "처리한날": len(st.get("done") or []), "오류": st.get("error"),
-            "요약": _gl_bt_summary(st),
+    note = "진행 중 — status=1 로 다시 확인" if alive else "완료 또는 대기"
+    if not status:
+        if alive:
+            note = f"이미 다른 백테스트가 돌고 있다 ({_GL_BT_THREAD.get('what')}) — 끝난 뒤 다시"
+        else:
+            th = _gl_threading.Thread(target=_gl_bt_run, args=(jobs,), daemon=True)
+            th.start()
+            _GL_BT_THREAD["th"] = th
+            alive, note = True, "시작했다 — status=1 로 진행 확인"
+    return {"구간": f"{f} ~ {t}", "실행중": alive, "지금": _GL_BT_THREAD.get("what"),
+            "결과": out,
             "설정": {"손절%": stop, "청산": cut, "장전거래량≥": pmvol, "장전상승률≥": pmchg,
                     "가정계좌$": equity, "투입비율": round(frac, 4)},
-            "안내": ("진행 중 — status=1 로 다시 확인" if alive else "완료 또는 대기")}
+            "안내": note}
 
 
 @app.get("/gapgo_live_dryrun")
@@ -12909,7 +13089,13 @@ def _gl_live_tick():
     if ph == "universe":
         if hm < 830:
             return
-        meta = _gl_live_universe(today, cfg["feed"])
+        meta = {}
+        for _ in range(3):
+            _gl_fails_reset()
+            meta = _gl_live_universe(today, cfg["feed"])
+            if _gl_fails() == 0 and meta:
+                break
+            _gl_time.sleep(20)
         _gl_jsave(f"{_GL_DIR}/meta_{ds}.json", meta)
         st["n_universe"] = len(meta)
         st["phase"] = "wait_pick"
@@ -12926,7 +13112,11 @@ def _gl_live_tick():
             _gl_jsave(path, st)
             return
         meta = _gl_jload(f"{_GL_DIR}/meta_{ds}.json", {})
+        _gl_fails_reset()
         cands = _gl_rank(today, meta, cfg["snap"], cfg["feed"], cfg["pmvol"], cfg["pmchg"])
+        st["data_fails"] = _gl_fails()
+        if st["data_fails"]:
+            _gl_log(st, f"⚠️ 장전 데이터 요청 {st['data_fails']}건 실패 — 후보 목록이 불완전할 수 있다")
         if not cands:
             _gl_finish(st, cfg, {"상태": "후보없음", "후보수": 0})
             _gl_jsave(path, st)
@@ -13034,6 +13224,8 @@ def _gl_live_tick():
                     row["차이%p"] = round(real - float(sim["시뮬손익%"]), 3)
             except Exception as e:
                 row["비고"] = f"시뮬 실패: {str(e)[:80]}"
+        if st.get("data_fails"):
+            row["비고"] = (str(row.get("비고") or "") + f" 장전데이터 실패 {st['data_fails']}건").strip()
         _gl_finish(st, cfg, row)
         _gl_jsave(path, st)
 
