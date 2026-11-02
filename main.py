@@ -12991,6 +12991,9 @@ def _gl_cfg() -> dict:
         "pmchg": float(g("GAPGO_PMCHG", "1.8")),
         "pmvol": float(g("GAPGO_PMVOL", "60000")),
         "cut": 1130, "feed": "sip",
+        "start_eq": float(g("GAPGO_START_EQUITY", "10000")),
+        "max_loss": float(g("GAPGO_MAX_LOSS", "1000")),
+        "email": str(g("GAPGO_EMAIL", "on")).strip().lower() in ("on", "1", "true", "yes"),
         "key_set": bool(g("GAPGO_ALPACA_KEY")) and bool(g("GAPGO_ALPACA_SECRET")),
     }
 
@@ -13012,6 +13015,14 @@ def _gl_req(method: str, path: str, **kw):
         return 0, {"error": str(e)[:160]}
 
 
+def _gl_et_hhmm(ts) -> str:
+    """Alpaca 시각(UTC ISO) → 동부시간 HH:MM"""
+    try:
+        return _gg_dt.fromisoformat(str(ts).replace("Z", "+00:00")).astimezone(_GG_NY).strftime("%H:%M")
+    except Exception:
+        return ""
+
+
 def _gl_state_path(ds):
     return f"{_GL_DIR}/live_{ds}.json"
 
@@ -13021,6 +13032,80 @@ def _gl_log(st: dict, msg: str):
     print(f"[GLIVE] {msg}")
 
 
+def _gl_money(v, sign=True):
+    try:
+        v = float(v)
+    except Exception:
+        return "-"
+    return (f"{'+' if v >= 0 else '−'}${abs(v):,.2f}" if sign else f"${v:,.2f}")
+
+
+_GL_STATE_KO = {"체결": "체결", "미체결": "미체결 — 트리거를 못 넘어서 오늘은 거래 없음",
+                "후보없음": "후보 없음 — 조건에 맞는 종목이 없어서 오늘은 거래 없음",
+                "시간초과": "시간 초과 — 09:29 전에 주문을 못 넣음",
+                "주문실패": "주문 실패", "수량0": "수량 0 — 계좌 잔고 확인 필요",
+                "미실행": "미실행 — 봇이 아침에 준비되지 않음",
+                "중단": "중단 — 누적 손실이 중단 기준에 닿아서 거래하지 않음"}
+
+
+def _gl_email(st: dict, cfg: dict, row: dict):
+    if not cfg.get("email"):
+        return
+    try:
+        code, acct = _gl_req("GET", "/v2/account")
+        eq = float((acct or {}).get("equity") or 0) if code == 200 else None
+        d = _gg_date.fromisoformat(st["date"])
+        wd = "월화수목금토일"[d.weekday()]
+        stt = str(row.get("상태") or "")
+        cum = (eq - cfg["start_eq"]) if eq else None
+        tag = ""
+        if cum is not None and cum <= -cfg["max_loss"]:
+            tag = "⚠️ 중단 기준 도달 · "
+        if stt == "체결" and row.get("손익$") is not None:
+            head = f"{row.get('종목')} {_gl_money(row.get('손익$'))} ({float(row.get('손익%') or 0):+.2f}%)"
+        else:
+            head = f"{row.get('종목') or ''} {stt}".strip()
+        subj = f"[갭앤고 모의] {tag}{d:%m/%d}({wd}) {head}"
+        if cum is not None:
+            subj += f" · 누적 {_gl_money(cum)}"
+        L = [f"[갭앤고 모의매매] {d:%Y-%m-%d} ({wd}) 결과", "",
+             f"결과: {_GL_STATE_KO.get(stt, stt)}"]
+        if row.get("종목"):
+            L.append(f"종목: {row.get('종목')}")
+        if row.get("트리거"):
+            inv = (float(row.get("수량") or 0) * float(row.get("트리거") or 0))
+            L.append(f"트리거: ${float(row['트리거']):.2f} · 수량 {row.get('수량')}주 · 투입 약 ${inv:,.0f}")
+        if stt == "체결":
+            L.append(f"체결: ${float(row.get('체결가') or 0):.2f} ({row.get('체결시각') or '-'})")
+            if row.get("손절가"):
+                L.append(f"손절선: ${float(row['손절가']):.2f} (−{cfg['stop']:g}%)")
+            if row.get("청산가") is not None:
+                how = "손절" if row.get("청산방식") == "손절" else "11:30 매도"
+                L.append(f"청산: ${float(row['청산가']):.2f} ({how})")
+                L.append(f"손익: {_gl_money(row.get('손익$'))} ({float(row.get('손익%') or 0):+.2f}%)")
+            if row.get("시뮬손익%") is not None:
+                L += ["", f"같은 날 시뮬레이션: {float(row['시뮬손익%']):+.2f}%"
+                      + (f"  → 실제와 차이 {float(row['차이%p']):+.2f}%p" if row.get("차이%p") is not None else "")]
+        if eq:
+            L += ["", f"계좌: ${eq:,.2f} (시작 ${cfg['start_eq']:,.0f} 대비 {_gl_money(cum)}, "
+                  f"{cum / cfg['start_eq'] * 100:+.2f}%)"]
+        p = st.get("pick") or {}
+        if p.get("거리%") is not None:
+            L += ["", f"선택 이유: {cfg['snap']:04d} 기준 장전고가까지 거리 {p['거리%']}% "
+                  f"(후보 {st.get('n_cands', '?')}개 중 1등)"]
+            if st.get("top3"):
+                L.append("2등 " + " · 3등 ".join(st["top3"][1:3]) if len(st["top3"]) > 1 else "")
+        if row.get("비고"):
+            L += ["", f"비고: {row['비고']}"]
+        L += ["", f"중단 기준: 누적 −${cfg['max_loss']:,.0f} 도달 시 자동으로 거래를 멈춘다."]
+        if tag:
+            L.append("⚠️ 중단 기준에 닿았다. 봇은 이제 주문을 넣지 않는다. "
+                     "다시 시작할지는 결과를 같이 본 뒤 정하자.")
+        _pr_send_email(subj, "\n".join(x for x in L if x is not None))   # type: ignore[name-defined]
+    except Exception as e:
+        print(f"⚠️ [GLIVE] 이메일 실패: {e}")
+
+
 def _gl_finish(st: dict, cfg: dict, row: dict):
     row.setdefault("날짜", st["date"])
     row.setdefault("순위기준시각", f"{cfg['snap']:04d}")
@@ -13028,6 +13113,7 @@ def _gl_finish(st: dict, cfg: dict, row: dict):
     _gl_log(st, f"기록: {row.get('상태')} — {msg}")
     st["phase"] = "done"
     st["result"] = {k: row.get(k) for k in ("상태", "종목", "손익$", "손익%", "차이%p")}
+    _gl_email(st, cfg, row)
 
 
 def _gl_live_tick():
@@ -13069,7 +13155,7 @@ def _gl_live_tick():
                 if float(b.get("filled_qty") or 0) > 0:
                     st.update({"fill": float(b["filled_avg_price"]),
                                "qty": int(float(b["filled_qty"])),
-                               "fill_time": str(b.get("filled_at", ""))[11:16]})
+                               "fill_time": _gl_et_hhmm(b.get("filled_at"))})
                 sorder = mine.get(f"GG-{ds}-S")
                 if sorder:
                     st.update({"stop_id": sorder["id"], "stop": float(sorder.get("stop_price") or 0)})
@@ -13122,8 +13208,15 @@ def _gl_live_tick():
             _gl_jsave(path, st)
             return
         p = cands[0]
+        st["top3"] = [c["종목"] for c in cands[:3]]
         code, acct = _gl_req("GET", "/v2/account")
         eq = float((acct or {}).get("equity") or 0) if code == 200 else 0.0
+        if eq and eq <= cfg["start_eq"] - cfg["max_loss"]:
+            st.update({"pick": p, "n_cands": len(cands), "equity": round(eq, 2)})
+            _gl_finish(st, cfg, {"상태": "중단", "계좌$": eq,
+                                 "비고": f"계좌 ${eq:,.2f} — 시작 대비 −${cfg['max_loss']:,.0f} 이하"})
+            _gl_jsave(path, st)
+            return
         qty = int((eq * cfg["frac"]) // p["트리거"]) if eq > 0 else 0
         st.update({"pick": p, "n_cands": len(cands), "equity": round(eq, 2), "qty": qty,
                    "symbol": p["종목"]})
@@ -13161,7 +13254,7 @@ def _gl_live_tick():
                         "stop_price": f"{stop:.2f}", "time_in_force": "day",
                         "client_order_id": f"GG-{ds}-S"})
                     st.update({"fill": fill, "qty": q, "stop": stop,
-                               "fill_time": str(o.get("filled_at", ""))[11:16],
+                               "fill_time": _gl_et_hhmm(o.get("filled_at")),
                                "stop_id": (o2 or {}).get("id")})
                     _gl_log(st, f"체결 {q}주 @ {fill:.2f} → 손절 {stop:.2f} ({c2})")
                     _gl_jsave(path, st)
@@ -13192,7 +13285,7 @@ def _gl_live_tick():
             if c == 200 and float(o.get("filled_qty") or 0) > 0:
                 st.update({"fill": float(o["filled_avg_price"]),
                            "qty": int(float(o["filled_qty"])),
-                           "fill_time": str(o.get("filled_at", ""))[11:16]})
+                           "fill_time": _gl_et_hhmm(o.get("filled_at"))})
         if st.get("fill") is None:
             row["상태"] = "미체결"
         else:
@@ -13243,6 +13336,22 @@ async def _gl_live_loop():
 @app.on_event("startup")
 async def _gl_startup():
     _gl_asyncio.create_task(_gl_live_loop())
+
+
+@app.get("/gapgo_live_test_email")
+def gapgo_live_test_email_endpoint():
+    """결과 메일이 어떻게 오는지 예시로 한 통 보낸다. 주문은 넣지 않는다."""
+    cfg = _gl_cfg()
+    cfg["email"] = True
+    st = {"date": _gg_dt.now(_GG_NY).date().isoformat(), "n_cands": 41,
+          "pick": {"거리%": 0.12}, "top3": ["ABCD", "EFGH", "IJKL"]}
+    row = {"상태": "체결", "종목": "ABCD (예시)", "트리거": 42.24, "수량": 78,
+           "체결가": 42.31, "체결시각": "09:30", "손절가": 37.23, "청산방식": "11:30",
+           "청산가": 43.10, "손익$": 61.62, "손익%": 1.867, "시뮬손익%": 2.05, "차이%p": -0.18,
+           "비고": "이건 시험 메일이다. 실제 거래가 아니다."}
+    _gl_email(st, cfg, row)
+    return {"보냄": True, "받는주소": globals().get("PR_EMAIL_TO"),
+            "안내": "메일함(스팸함 포함)을 확인해라. 안 오면 PR_SMTP_USER / PR_SMTP_PASS 확인"}
 
 
 @app.get("/gapgo_live_status")
