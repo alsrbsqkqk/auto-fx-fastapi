@@ -13387,7 +13387,7 @@ def gapgo_live_status_endpoint():
 #     손절 1.5×ATR14, 익절 4.5×ATR14 (손익비 1:3)
 #     **진입 후 1시간봉 24개가 끝날 때까지 손절·익절이 안 되면 시장가 청산** (주말은 봉 수에 안 들어감)
 #     통화당 한 번에 1포지션, 거래마다 $100 위험 (가상 계좌 $10,000 의 1%)
-#     USD_JPY · EUR_USD · AUD_USD · GBP_USD · EUR_JPY · AUD_JPY
+#     USD_JPY · EUR_USD · GBP_USD · EUR_JPY · AUD_JPY   (AUD_USD 는 2026-11-03 제외)
 #
 #   ■ 하는 일
 #     1) 규칙 기록: OANDA 1시간봉으로 규칙 계산 → 시트 'H24_규칙' (비용: 달러쌍 1.5pip, 엔 교차 2.5pip 가정)
@@ -13425,8 +13425,9 @@ from datetime import datetime as _h1_dt
 from zoneinfo import ZoneInfo as _H1Zone
 
 _H1_NY = _H1Zone("America/New_York")
-_H1_PAIRS = {"USD_JPY": (0.01, 3, 1.5), "EUR_USD": (0.0001, 5, 1.5), "AUD_USD": (0.0001, 5, 1.5),
+_H1_PAIRS = {"USD_JPY": (0.01, 3, 1.5), "EUR_USD": (0.0001, 5, 1.5),
              "GBP_USD": (0.0001, 5, 1.5), "EUR_JPY": (0.01, 3, 2.5), "AUD_JPY": (0.01, 3, 2.5)}   # pip, 자릿수, 가정비용
+# 2026-11-03: AUD_USD 제외 (손절 폭 대비 비용이 가장 큼 + AUD/JPY 와 같은 호주달러 노출 중복)
 _H1_START = _h1_pd.Timestamp("2026-11-02 17:00", tz=_H1_NY)
 _H1_FETCH_FROM = _H1_START - _h1_pd.Timedelta(days=21)     # 지표 준비 구간 (고정)
 _H1_JUDGE = "2027-02-02"
@@ -13792,6 +13793,32 @@ def _h1_sync_closed(cfg, sim_by_key):
         _h1_log(f"실주문 청산 {len(new)}건 기록")
 
 
+# ───────────────────────── 스프레드 기록 (추가 통화 검토용, 주문과 무관) ─────────────────────────
+_H1_SPREAD_LIST = ["USD_JPY", "EUR_USD", "GBP_USD", "EUR_JPY", "AUD_JPY", "AUD_USD",
+                   "USD_CAD", "USD_CHF", "NZD_USD", "EUR_GBP", "GBP_JPY", "EUR_AUD",
+                   "GBP_AUD", "EUR_CAD", "GBP_CAD", "EUR_CHF", "GBP_CHF", "AUD_NZD"]
+_H1_TAB_SPR = "H24_스프레드"
+
+
+def _h1_record_spreads(cfg, now):
+    """매시간 한 번, 후보 통화들의 현재 스프레드(pip)를 시트에 한 줄 남긴다"""
+    code, j = _h1_api("GET", f"/v3/accounts/{cfg['account']}/pricing",
+                      params={"instruments": ",".join(_H1_SPREAD_LIST)})
+    if code != 200:
+        return
+    sp = {}
+    for p in (j or {}).get("prices", []):
+        try:
+            ins = p["instrument"]
+            pip = 0.01 if ins.endswith("_JPY") else 0.0001
+            sp[ins] = round((float(p["asks"][0]["price"]) - float(p["bids"][0]["price"])) / pip, 2)
+        except Exception:
+            continue
+    if sp:
+        _h1_append(_H1_TAB_SPR, ["시각"] + _H1_SPREAD_LIST,
+                   [[f"{now:%Y-%m-%d %H:%M}"] + [sp.get(x, "") for x in _H1_SPREAD_LIST]])
+
+
 # ───────────────────────── 계산 1회 ─────────────────────────
 
 def _h1_tick(force=False):
@@ -13823,7 +13850,8 @@ def _h1_tick(force=False):
             try:
                 df = _h1_fetch(instr)
             except Exception as e:
-                _h1_log(f"{instr} 캔들 실패: {str(e)[:120]}")
+                _h1_log(f"{instr} 캔들 실패: {str(e)[:120]} — 30초 뒤 다시 시도")
+                retry = True                             # 이 시간 신호를 놓치지 않도록 다시 계산
                 continue
             closed, opened, pend = _h1_engine(df, pip, cst)
             _H1_STATE["open_sim"][instr] = None
@@ -13857,6 +13885,11 @@ def _h1_tick(force=False):
         if cfg["account"]:
             _h1_time_exit(cfg)
             _h1_sync_closed(cfg, sim_by_key)
+            if not retry:
+                try:
+                    _h1_record_spreads(cfg, now)
+                except Exception as e:
+                    _h1_log(f"스프레드 기록 실패: {str(e)[:80]}")
         _H1_STATE["last_bar"] = None if retry else bar
         _h1_email_check(now, cfg)
     except Exception as e:
@@ -13879,6 +13912,7 @@ def _h1_wilcoxon_p(x):
 
 
 def _h1_summary(rows, col):
+    rows = [r for r in (rows or []) if r.get("통화") in _H1_PAIRS]        # 현재 대상 통화만 집계
     if not rows:
         return {"거래": 0}
     df = _h1_pd.DataFrame(rows)
@@ -14019,3 +14053,89 @@ def h24_status_endpoint(run: int = 0):
 def h24_test_email_endpoint():
     ok = _h1_send(_h1_dt.now(_H1_NY).date().isoformat())
     return {"보냄": ok, "안내": "메일함(스팸함 포함)을 확인해라. 안 오면 PR_SMTP_USER / PR_SMTP_PASS 확인"}
+
+
+@app.get("/h24_spreads")                                          # type: ignore[name-defined]
+def h24_spreads_endpoint():
+    """시트에 쌓인 시간별 스프레드로 통화별 중앙값·75% 값을 보여준다 (pip)"""
+    rows = _h1_rows(_H1_TAB_SPR, ["시각"] + _H1_SPREAD_LIST)
+    if not rows:
+        return {"안내": "아직 기록 없음. 배포 후 매시간 한 줄씩 쌓인다"}
+    df = _h1_pd.DataFrame(rows)
+    out = {}
+    for ins in _H1_SPREAD_LIST:
+        v = _h1_pd.to_numeric(df.get(ins), errors="coerce").dropna()
+        if len(v):
+            out[ins] = {"중앙pip": round(float(v.median()), 2), "75%pip": round(float(v.quantile(.75)), 2),
+                        "최대pip": round(float(v.max()), 2), "표본": int(len(v))}
+    return {"기록시간수": len(df), "처음": df["시각"].iloc[0], "마지막": df["시각"].iloc[-1], "통화별": out}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 🟩 [HIST-1] OANDA 과거 캔들 내려받기 (분석용, 주문과 무관)   (2026-11-05)
+#
+#   GET /oanda_history?instr=EUR_USD&gran=H1&start=2005-01-01
+#     → 그 통화의 과거 캔들(mid, 완성된 봉만)을 CSV(gzip) 파일로 내려준다
+#     gran: H1 · H4 · D · M30 · M15  /  end 를 비우면 지금까지
+#   필요한 기존 심볼: app · OANDA_API_KEY · OANDA_BASE_URL
+# ═══════════════════════════════════════════════════════════════════
+import gzip as _hs_gzip
+import re as _hs_re
+import requests as _hs_rq
+from datetime import datetime as _hs_dt, timezone as _hs_tz
+from fastapi.responses import Response as _HSResponse, JSONResponse as _HSJSON
+
+_HS_GRAN = {"H1", "H4", "D", "M30", "M15"}
+
+
+def _hs_fetch(instr, gran, start, end=None, max_req=400):
+    rows, frm, first = [], start, True
+    for _ in range(max_req):
+        params = {"granularity": gran, "price": "M", "count": 5000, "from": frm}
+        if not first:
+            params["includeFirst"] = "false"
+        r = _hs_rq.get(f"{OANDA_BASE_URL}/v3/instruments/{instr}/candles",          # type: ignore[name-defined]
+                       headers={"Authorization": f"Bearer {OANDA_API_KEY}"},          # type: ignore[name-defined]
+                       params=params, timeout=(5, 40))
+        if r.status_code != 200:
+            raise RuntimeError(f"OANDA {r.status_code}: {r.text[:200]}")
+        cs = r.json().get("candles", [])
+        if not cs:
+            break
+        stop = False
+        for c in cs:
+            if end and c["time"] >= end:
+                stop = True
+                break
+            if c.get("complete"):
+                m = c["mid"]
+                rows.append(f'{c["time"]},{m["o"]},{m["h"]},{m["l"]},{m["c"]},{c.get("volume", 0)}')
+        if stop or len(cs) < 5000:
+            break
+        if cs[-1]["time"] == frm:
+            break
+        frm, first = cs[-1]["time"], False
+    return rows
+
+
+@app.get("/oanda_history")                                        # type: ignore[name-defined]
+def oanda_history_endpoint(instr: str = "EUR_USD", gran: str = "H1", start: str = "2005-01-01", end: str = ""):
+    instr = instr.strip().upper()
+    gran = gran.strip().upper()
+    if not _hs_re.fullmatch(r"[A-Z]{3}_[A-Z]{3}", instr) or gran not in _HS_GRAN:
+        return _HSJSON({"오류": "instr 는 EUR_USD 형식, gran 은 H1/H4/D/M30/M15 중 하나"}, status_code=400)
+    try:
+        s = _hs_dt.fromisoformat(start).replace(tzinfo=_hs_tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        e = _hs_dt.fromisoformat(end).replace(tzinfo=_hs_tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if end else None
+    except Exception:
+        return _HSJSON({"오류": "start/end 는 2005-01-01 형식"}, status_code=400)
+    try:
+        rows = _hs_fetch(instr, gran, s, e)
+    except Exception as ex:
+        return _HSJSON({"오류": str(ex)[:300]}, status_code=502)
+    if not rows:
+        return _HSJSON({"오류": "받은 캔들이 없다"}, status_code=404)
+    body = "time,open,high,low,close,volume\n" + "\n".join(rows) + "\n"
+    name = f"OANDA_{instr}_{gran}_{rows[0][:10]}_{rows[-1][:10]}.csv.gz"
+    return _HSResponse(content=_hs_gzip.compress(body.encode()), media_type="application/gzip",
+                       headers={"Content-Disposition": f'attachment; filename="{name}"'})
