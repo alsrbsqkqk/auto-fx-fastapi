@@ -14110,9 +14110,9 @@ def _hs_fetch(instr, gran, start, end=None, max_req=400):
             if c.get("complete"):
                 m = c["mid"]
                 rows.append(f'{c["time"]},{m["o"]},{m["h"]},{m["l"]},{m["c"]},{c.get("volume", 0)}')
-        if stop or len(cs) < 5000:
-            break
-        if cs[-1]["time"] == frm:
+        # OANDA 는 includeFirst=false 일 때 4,999개를 돌려주기도 한다 → 개수로 끝을 판단하지 않는다.
+        #   더 이상 새 봉이 안 나올 때(빈 응답이거나 마지막 시각이 그대로일 때)까지 계속 받는다.
+        if stop or cs[-1]["time"] == frm:
             break
         frm, first = cs[-1]["time"], False
     return rows
