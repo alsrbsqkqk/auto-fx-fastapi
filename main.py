@@ -13377,38 +13377,44 @@ def gapgo_live_status_endpoint():
 
 
 # ═══════════════════════════════════════════════════════════════════
-# 🟩 [H24-1] 1시간봉 RSI 다이버전스 1:3 + 24봉 시간청산 — OANDA 데모 실주문 + 규칙 기록   (2026-11-02)
+# 🟩 [H24-2] 1시간봉 RSI 다이버전스 "묶음" + 익절 없음 + 24봉 시간청산 — OANDA 데모 실주문 + 규칙 기록   (2026-11-05)
 #
-#   ■ 규칙 (2026-11-02 고정, 3개월 동안 바꾸지 않는다)
+#   ■ 규칙 (2026-11-05 고정, 2026-11-08 17:00 ET 시작, 3개월 동안 바꾸지 않는다)
 #     1시간봉(mid), RSI(14). TradingView 기본 'RSI Divergence' 정의: RSI 피벗 좌5/우5, 직전 피벗과 5~60봉 간격
 #       강세 = 가격 저점은 더 낮고 RSI 저점은 더 높음 / 약세 = 반대
 #     최근 10봉 안에 강세 다이버전스 + 종가가 최근 100봉 범위 아래쪽 절반 → 다음 봉 시가 매수
 #     최근 10봉 안에 약세 다이버전스 + 종가가 위쪽 절반                   → 다음 봉 시가 매도
-#     손절 1.5×ATR14, 익절 4.5×ATR14 (손익비 1:3)
-#     **진입 후 1시간봉 24개가 끝날 때까지 손절·익절이 안 되면 시장가 청산** (주말은 봉 수에 안 들어감)
+#     [묶음] 신호 봉의 MACD(12,26,9) 히스토그램이 거래 방향과 같을 때만 (매수 = 0 위, 매도 = 0 아래)
+#     [묶음] 진입 시각(신호 봉 + 1시간, ET)이 12시 대(점심)면 진입 안 함
+#     [묶음] 진입 시각이 금요일(ET)이면 진입 안 함
+#     손절 1.5×ATR14, **익절 없음**
+#     진입 후 1시간봉 24개가 끝날 때까지 손절이 안 되면 시장가 청산 (주말은 봉 수에 안 들어감)
 #     통화당 한 번에 1포지션, 거래마다 $100 위험 (가상 계좌 $10,000 의 1%)
-#     USD_JPY · EUR_USD · GBP_USD · EUR_JPY · AUD_JPY   (AUD_USD 는 2026-11-03 제외)
+#     USD_JPY · EUR_USD · GBP_USD · EUR_JPY · AUD_JPY
 #
 #   ■ 하는 일
 #     1) 규칙 기록: OANDA 1시간봉으로 규칙 계산 → 시트 'H24_규칙' (비용: 달러쌍 1.5pip, 엔 교차 2.5pip 가정)
-#     2) 실주문: 새 신호 → OANDA **데모** 시장가 + 손절/익절. 24봉 지나면 시장가 청산
-#        주문 내역 'H24_주문', 청산 결과 'H24_실주문'
+#     2) 실주문: 새 신호 → OANDA **데모** 시장가 + 손절. 24봉 지나면 시장가 청산
+#        주문 내역 'H24_주문', 청산 결과 'H24_실주문'  (새 규칙은 키가 'H24B-' 로 시작, 이전 1:3 규칙은 'H24-')
 #     3) 매일 17:05 ET 요약 메일
 #
 #   ■ 안전장치
 #     · OANDA_LIVE=true (실계좌) 이면 주문하지 않는다
-#     · 그 통화에 이미 열린 거래가 있으면 (다른 봇·수동 거래 포함) 주문하지 않는다
-#     · 실주문 누적 손실이 H24_MAX_LOSS(기본 $2,500)에 닿으면 새 주문 중단
+#     · 그 통화에 이미 열린 거래가 있으면 (다른 봇·수동 거래·이전 규칙 거래 포함) 주문하지 않는다
+#     · 가상 잔고($10,000 + 새 규칙 실주문 누적)가 H24_STOP_BALANCE(기본 $6,000) 아래로 내려가면 새 주문 중단
+#       (과거 6년 최저 잔고 $6,590 보다 나쁨 = 전략 고장 신호)
+#     · 최근 3개월(91일) 실주문 합계가 −H24_WARN_3M(기본 $2,000) 이하면 메일에 경고 (주문은 계속)
 #     · 신호 후 10분이 지났으면 주문하지 않는다 (재시작 후 뒤늦은 진입 방지)
 #
 #   ■ 환경변수 (전부 선택)
 #     H24_LIVE on/off (계산·기록)   H24_ORDERS on/off (데모 주문)   H24_EMAIL on/off
-#     H24_RISK_USD 100   H24_MAX_LOSS 2500
+#     H24_RISK_USD 100   H24_STOP_BALANCE 6000   H24_WARN_3M 2000      (H24_MAX_LOSS 는 더 이상 쓰지 않음)
 #
 #   ■ 엔드포인트
 #     GET /h24_status          계좌 연결·보유·누적 성적
 #     GET /h24_status?run=1    지금 바로 한 번 계산
 #     GET /h24_test_email      요약 메일 지금 보내기
+#     GET /h24_spreads         시간별 스프레드 요약
 #
 #   ■ 필요한 기존 심볼: app · OANDA_API_KEY · OANDA_BASE_URL · ACCOUNT_ID · _get_spreadsheet · _pr_send_email
 # ═══════════════════════════════════════════════════════════════════
@@ -13428,12 +13434,14 @@ _H1_NY = _H1Zone("America/New_York")
 _H1_PAIRS = {"USD_JPY": (0.01, 3, 1.5), "EUR_USD": (0.0001, 5, 1.5),
              "GBP_USD": (0.0001, 5, 1.5), "EUR_JPY": (0.01, 3, 2.5), "AUD_JPY": (0.01, 3, 2.5)}   # pip, 자릿수, 가정비용
 # 2026-11-03: AUD_USD 제외 (손절 폭 대비 비용이 가장 큼 + AUD/JPY 와 같은 호주달러 노출 중복)
-_H1_START = _h1_pd.Timestamp("2026-11-02 17:00", tz=_H1_NY)
+_H1_START = _h1_pd.Timestamp("2026-11-08 17:00", tz=_H1_NY)       # 새 규칙(묶음) 시작
 _H1_FETCH_FROM = _H1_START - _h1_pd.Timedelta(days=21)     # 지표 준비 구간 (고정)
-_H1_JUDGE = "2027-02-02"
+_H1_JUDGE = "2027-02-08"
 _H1_MAXBARS = 24
-_H1_SLM, _H1_TPM = 1.5, 4.5
-_H1_TAG = "H24"
+_H1_SLM = 1.5                                              # 익절 없음
+_H1_TAG = "H24B"
+_H1_KEYP = "H24B-"                                         # 새 규칙 거래 키 앞머리
+_H1_OLDP = "H24-"                                          # 이전 1:3 규칙 (2026-11-02 ~ 11-08)
 _H1_TAB_SIM = "H24_규칙"
 _H1_TAB_LIVE = "H24_실주문"
 _H1_HEAD_SIM = ["키", "통화", "방향", "진입시각", "진입가", "손절가", "익절가", "청산시각", "청산가",
@@ -13459,7 +13467,8 @@ def _h1_cfg():
     g = _h1_os.environ.get
     on = lambda k, d: str(g(k, d)).strip().lower() in ("on", "1", "true", "yes")
     return {"live": on("H24_LIVE", "on"), "orders": on("H24_ORDERS", "on"), "email": on("H24_EMAIL", "on"),
-            "risk": float(g("H24_RISK_USD", "100")), "max_loss": float(g("H24_MAX_LOSS", "2500")),
+            "risk": float(g("H24_RISK_USD", "100")), "stop_bal": float(g("H24_STOP_BALANCE", "6000")),
+            "warn3m": float(g("H24_WARN_3M", "2000")),
             "demo": "fxpractice" in str(globals().get("OANDA_BASE_URL", "")),
             "account": str(globals().get("ACCOUNT_ID") or "")}
 
@@ -13568,6 +13577,12 @@ def _h1_engine(df, pip, cost, maxbars=_H1_MAXBARS):
             last = i
     hi = _h1_pd.Series(h).rolling(100).max().values
     lo = _h1_pd.Series(l).rolling(100).min().values
+    # [묶음] MACD(12,26,9) 히스토그램 · 진입 시각(신호 봉 + 1시간)
+    cs = _h1_pd.Series(c)
+    mac = cs.ewm(span=12, adjust=False).mean() - cs.ewm(span=26, adjust=False).mean()
+    mh = (mac - mac.ewm(span=9, adjust=False).mean()).values
+    et = idx + _h1_pd.Timedelta(hours=1)
+    ehr, edw = et.hour.values, et.dayofweek.values
 
     closed, opened, pending = [], None, None
     i = 210
@@ -13580,6 +13595,8 @@ def _h1_engine(df, pip, cost, maxbars=_H1_MAXBARS):
                 sd = 1
             elif -1 in b and c[i] > mid:
                 sd = -1
+        if sd and (_h1_np.sign(mh[i]) != sd or ehr[i] == 12 or edw[i] == 4):
+            sd = 0                                       # 묶음 조건에 걸림
         if not sd:
             i += 1
             continue
@@ -13588,24 +13605,19 @@ def _h1_engine(df, pip, cost, maxbars=_H1_MAXBARS):
             break
         e = o[i + 1]
         sl = e - sd * _H1_SLM * A[i]
-        tp = e + sd * _H1_TPM * A[i]
         res = None
         st = i + maxbars                                 # 진입봉(i+1)부터 24번째 봉 종가에 시간청산
         for k in range(i + 1, min(st, n - 1) + 1):
             if sd == 1:
                 if o[k] <= sl: res = (k, o[k], "손절"); break
                 if l[k] <= sl: res = (k, sl, "손절"); break
-                if o[k] >= tp: res = (k, o[k], "익절"); break
-                if h[k] >= tp: res = (k, tp, "익절"); break
             else:
                 if o[k] >= sl: res = (k, o[k], "손절"); break
                 if h[k] >= sl: res = (k, sl, "손절"); break
-                if o[k] <= tp: res = (k, o[k], "익절"); break
-                if l[k] <= tp: res = (k, tp, "익절"); break
         if res is None and st <= n - 1:
             res = (st, c[st], "시간청산")
         risk = _H1_SLM * A[i] / pip
-        tr = {"t": idx[i + 1], "side": sd, "e": e, "sl": sl, "tp": tp, "risk": risk}
+        tr = {"t": idx[i + 1], "side": sd, "e": e, "sl": sl, "risk": risk}
         if res is None:
             opened = tr
             break
@@ -13618,7 +13630,7 @@ def _h1_engine(df, pip, cost, maxbars=_H1_MAXBARS):
 
 
 def _h1_key(instr, t):
-    return f"H24-{instr}-{t:%Y%m%d%H%M}"
+    return f"{_H1_KEYP}{instr}-{t:%Y%m%d%H%M}"
 
 
 # ───────────────────────── 시트 ─────────────────────────
@@ -13656,9 +13668,14 @@ def _h1_append(tab, head, rows):
 
 # ───────────────────────── 주문 ─────────────────────────
 
+def _h1_mine(rows, prefix=None):
+    p = prefix or _H1_KEYP
+    return [r for r in (rows or []) if str(r.get("키", "")).startswith(p) and r.get("통화") in _H1_PAIRS]
+
+
 def _h1_live_total(rows=None):
     rows = rows if rows is not None else (_h1_rows(_H1_TAB_LIVE, _H1_HEAD_LIVE) or [])
-    return sum(float(r.get("합계$") or 0) for r in rows)
+    return sum(float(r.get("합계$") or 0) for r in _h1_mine(rows))
 
 
 def _h1_place(instr, pend, cfg, now):
@@ -13669,7 +13686,7 @@ def _h1_place(instr, pend, cfg, now):
         return
     fresh = (now - entry_t).total_seconds() < 600
     sunday_open = now.weekday() == 6 and now.hour == 17 and now.minute < 10
-    if not (fresh or sunday_open):
+    if not (fresh or sunday_open) or entry_t < _H1_START:
         return
     _H1_STATE["tried"].add(key)
     sd = pend["side"]
@@ -13680,8 +13697,9 @@ def _h1_place(instr, pend, cfg, now):
     if not cfg["demo"]:
         _h1_log(f"{instr} {side_ko} 신호 — 실계좌 설정이라 주문하지 않음")
         return
-    if _h1_live_total() <= -cfg["max_loss"]:
-        _h1_log(f"{instr} {side_ko} 신호 — 누적 손실 한도 도달, 주문 중단")
+    bal = 10000 + _h1_live_total()
+    if bal < cfg["stop_bal"]:
+        _h1_log(f"{instr} {side_ko} 신호 — 가상 잔고 ${bal:,.0f} < 중단선 ${cfg['stop_bal']:,.0f}, 주문 중단")
         return
     code, j = _h1_api("GET", f"/v3/accounts/{cfg['account']}/openTrades")
     if code != 200:
@@ -13692,7 +13710,6 @@ def _h1_place(instr, pend, cfg, now):
         _h1_log(f"{instr} {side_ko} 신호 — 이미 열린 거래가 있어 건너뜀")
         return
     dist = _H1_SLM * pend["atr"]
-    tpd = _H1_TPM * pend["atr"]
     if instr.endswith("_USD"):
         units = cfg["risk"] / dist
     elif instr == "USD_JPY":
@@ -13710,17 +13727,16 @@ def _h1_place(instr, pend, cfg, now):
     # MT4 연동 계좌라서 clientExtensions 는 쓰지 않는다. 거래ID 는 'H24_주문' 탭에 남긴다.
     body = {"order": {"type": "MARKET", "instrument": instr, "units": str(sd * units),
                       "timeInForce": "FOK", "positionFill": "DEFAULT",
-                      "stopLossOnFill": {"distance": f"{dist:.{prec}f}"},
-                      "takeProfitOnFill": {"distance": f"{tpd:.{prec}f}"}}}
+                      "stopLossOnFill": {"distance": f"{dist:.{prec}f}"}}}     # 익절 없음
     code, j = _h1_api("POST", f"/v3/accounts/{cfg['account']}/orders", data=_h1_json.dumps(body))
     fill = (j or {}).get("orderFillTransaction")
     tid = ((fill or {}).get("tradeOpened") or {}).get("tradeID")
     if code in (200, 201) and fill and tid:
         row = [key, instr, side_ko, f"{now:%Y-%m-%d %H:%M}", units, float(fill.get("price") or 0), str(tid),
-               round(dist / pip, 1), round(tpd / pip, 1), "체결"]
+               round(dist / pip, 1), "없음", "체결"]
         _H1_STATE["ord"][key] = dict(zip(_H1_HEAD_ORD, row))
         _h1_append(_H1_TAB_ORD, _H1_HEAD_ORD, [row])
-        _h1_log(f"{instr} {side_ko} {units:,} 체결 {fill.get('price')} (손절 {dist / pip:.1f}pip, 익절 {tpd / pip:.1f}pip)")
+        _h1_log(f"{instr} {side_ko} {units:,} 체결 {fill.get('price')} (손절 {dist / pip:.1f}pip, 익절 없음)")
         return
     why = ((j or {}).get("orderCancelTransaction") or {}).get("reason") or (j or {}).get("errorMessage") or str(j)[:120]
     _h1_log(f"{instr} 주문 실패 {code}: {why}")
@@ -13728,7 +13744,7 @@ def _h1_place(instr, pend, cfg, now):
         _H1_STATE["tried"].discard(key)          # 일시적 실패 → 다음 tick 에 다시
         return "retry"
     row = [key, instr, side_ko, f"{now:%Y-%m-%d %H:%M}", units, "", "", round(dist / pip, 1),
-           round(tpd / pip, 1), f"실패: {str(why)[:60]}"]
+           "없음", f"실패: {str(why)[:60]}"]
     _H1_STATE["ord"][key] = dict(zip(_H1_HEAD_ORD, row))
     _h1_append(_H1_TAB_ORD, _H1_HEAD_ORD, [row])
 
@@ -13858,8 +13874,7 @@ def _h1_tick(force=False):
             if opened is not None and opened["t"] >= _H1_START:
                 _H1_STATE["open_sim"][instr] = {
                     "방향": "매수" if opened["side"] == 1 else "매도", "진입시각": f"{opened['t']:%m-%d %H:%M}",
-                    "진입가": round(opened["e"], prec), "손절가": round(opened["sl"], prec),
-                    "익절가": round(opened["tp"], prec)}
+                    "진입가": round(opened["e"], prec), "손절가": round(opened["sl"], prec), "익절가": "없음"}
             for tr in closed:
                 if tr["t"] < _H1_START:
                     continue
@@ -13869,7 +13884,7 @@ def _h1_tick(force=False):
                 if key in _H1_STATE["rec_sim"]:
                     continue
                 new_sim.append([key, instr, "매수" if tr["side"] == 1 else "매도", f"{tr['t']:%Y-%m-%d %H:%M}",
-                                round(tr["e"], prec), round(tr["sl"], prec), round(tr["tp"], prec),
+                                round(tr["e"], prec), round(tr["sl"], prec), "없음",
                                 f"{tr['xt']:%Y-%m-%d %H:%M}", round(tr["x"], prec), tr["why"],
                                 round(tr["pips"], 2), round(tr["R"], 3), round(usd, 2), f"{now:%Y-%m-%d %H:%M}"])
             if pend is not None and opened is None:
@@ -13900,34 +13915,25 @@ def _h1_tick(force=False):
 
 # ───────────────────────── 성적·메일 ─────────────────────────
 
-def _h1_wilcoxon_p(x):
-    x = [v for v in x if abs(v) > 1e-12]
-    n = len(x)
-    if n < 6:
-        return None
-    ranks = _h1_pd.Series([abs(v) for v in x]).rank().values
-    wp = sum(r for r, v in zip(ranks, x) if v > 0)
-    z = (wp - n * (n + 1) / 4) / _h1_math.sqrt(n * (n + 1) * (2 * n + 1) / 24)
-    return round(0.5 * (1 - _h1_math.erf(z / _h1_math.sqrt(2))), 4)
-
-
-def _h1_summary(rows, col):
-    rows = [r for r in (rows or []) if r.get("통화") in _H1_PAIRS]        # 현재 대상 통화만 집계
+def _h1_summary(rows, col, prefix=None):
+    rows = _h1_mine(rows, prefix)                                      # 새 규칙 + 현재 대상 통화만
     if not rows:
         return {"거래": 0}
     df = _h1_pd.DataFrame(rows)
     df["v"] = _h1_pd.to_numeric(df[col], errors="coerce").fillna(0)
-    df["날"] = df["진입시각"].str[:10]
+    df = df.sort_values("진입시각")
     eq = 10000 + df["v"].cumsum()
-    out = {"거래": int(len(df)), "승률%": round(float(100 * (df.v > 0).mean()), 1),
-           "거래당$": round(float(df.v.mean()), 2), "누적$": round(float(df.v.sum()), 2),
-           "가상잔고$": round(float(eq.iloc[-1]), 2),
-           "최대낙폭$": round(float((eq - _h1_np.maximum.accumulate(_h1_np.r_[10000, eq.values])[1:]).min()), 2),
-           "일단위p": _h1_wilcoxon_p(df.groupby("날")["v"].sum().tolist()),
-           "통화별": {k: {"거래": int(len(v)), "누적$": round(float(v.v.sum()), 2)} for k, v in df.groupby("통화")}}
-    p = out["일단위p"]
-    out["현재판정"] = "합격 기준 충족 중" if out["거래당$"] > 0 and p is not None and p < 0.05 else "아직 기준 미달"
-    return out
+    et = _h1_pd.to_datetime(df["진입시각"], errors="coerce")
+    xt = _h1_pd.to_datetime(df["청산시각"], errors="coerce")
+    now = _h1_pd.Timestamp(_h1_dt.now(_H1_NY).replace(tzinfo=None))
+    wt = df[et.dt.dayofweek.isin([2, 3]).values]
+    return {"거래": int(len(df)), "승률%": round(float(100 * (df.v > 0).mean()), 1),
+            "거래당$": round(float(df.v.mean()), 2), "누적$": round(float(df.v.sum()), 2),
+            "가상잔고$": round(float(eq.iloc[-1]), 2),
+            "최대낙폭$": round(float((eq - _h1_np.maximum.accumulate(_h1_np.r_[10000, eq.values])[1:]).min()), 2),
+            "최근3개월$": round(float(df.v[(xt >= now - _h1_pd.Timedelta(days=91)).values].sum()), 2),
+            "수목만": {"거래": int(len(wt)), "누적$": round(float(wt.v.sum()), 2)},
+            "통화별": {k: {"거래": int(len(v)), "누적$": round(float(v.v.sum()), 2)} for k, v in df.groupby("통화")}}
 
 
 def _h1_open_live(cfg):
@@ -13953,36 +13959,49 @@ def _h1_email_body(today, cfg):
     rl = _h1_rows(_H1_TAB_LIVE, _H1_HEAD_LIVE) or []
     rs = _h1_rows(_H1_TAB_SIM, _H1_HEAD_SIM) or []
     sl, ss = _h1_summary(rl, "합계$"), _h1_summary(rs, "손익$")
-    L = [f"1시간봉 RSI 다이버전스 1:3 · 24봉 청산 — {today} (ET)", "OANDA 데모 실주문 · 거래당 $100 위험 · 가상계좌 $10,000", ""]
+    old = _h1_summary(rl, "합계$", _H1_OLDP)
+    L = [f"1시간봉 RSI 다이버전스 묶음 · 익절 없음 · 24봉 청산 — {today} (ET)",
+         "묶음 = MACD 같은 방향 + 12시 진입 금지 + 금요일 진입 금지",
+         "OANDA 데모 실주문 · 거래당 $100 위험 · 가상계좌 $10,000", ""]
+    warn = sl.get("거래", 0) and sl.get("최근3개월$", 0) <= -cfg["warn3m"]
+    if warn:
+        L += [f"⚠ 경고: 최근 3개월 실주문 합계 {sl['최근3개월$']:+,.0f}$ (경고선 −${cfg['warn3m']:,.0f}). 주문은 계속한다.", ""]
+    if sl.get("거래", 0) and sl["가상잔고$"] < cfg["stop_bal"]:
+        L += [f"⛔ 가상 잔고 {sl['가상잔고$']:,.0f}$ < 중단선 {cfg['stop_bal']:,.0f}$ → 새 주문 중단 중", ""]
     tod = [r for r in rl if str(r.get("청산시각", "")).startswith(today)]
     L.append(f"■ 오늘 청산 (실주문) {len(tod)}건")
     for r in tod:
+        tag = "" if str(r.get("키", "")).startswith(_H1_KEYP) else " [이전 1:3 규칙]"
         L.append(f"  {r['통화']} {r['방향']} {r['진입시각'][5:]} → {r['청산시각'][5:]}  {float(r['합계$']):+,.2f}$"
-                 + (f"  (규칙상 {float(r['규칙상$']):+,.2f}$)" if r.get("규칙상$") not in ("", None) else ""))
+                 + (f"  (규칙상 {float(r['규칙상$']):+,.2f}$)" if r.get("규칙상$") not in ("", None) else "") + tag)
     L += ["", "■ 보유 중 (실주문)"]
     op = _h1_open_live(cfg)
     L += [f"  {o}" if isinstance(o, str) else
           f"  {o['통화']} {o['방향']} {o['수량']:,.0f} @ {o['체결가']} ({o['진입']}) 평가 {o['평가손익$']:+,.2f}$"
           for o in op] or ["  없음"]
     for lab, s in (("실주문 (진짜 체결)", sl), ("규칙 계산 (비용 달러쌍 1.5 / 엔교차 2.5pip 가정)", ss)):
-        L += ["", f"■ 누적 — {lab}"]
+        L += ["", f"■ 누적 — {lab}  ({_H1_START:%m-%d} 부터)"]
         if s.get("거래", 0) == 0:
             L.append("  아직 청산된 거래 없음")
             continue
         L.append(f"  {s['거래']}건 · 승률 {s['승률%']}% · 거래당 {s['거래당$']:+,.2f}$ · 누적 {s['누적$']:+,.2f}$ · "
-                 f"가상잔고 {s['가상잔고$']:,.0f}$ · 최대낙폭 {s['최대낙폭$']:,.0f}$")
+                 f"가상잔고 {s['가상잔고$']:,.0f}$ · 최대낙폭 {s['최대낙폭$']:,.0f}$ · 최근3개월 {s['최근3개월$']:+,.0f}$")
         for k, v in s["통화별"].items():
             L.append(f"  {k}: {v['거래']}건 {v['누적$']:+,.2f}$")
-        L.append(f"  일단위 p = {s['일단위p']} → {s['현재판정']}")
-    L += ["", f"판정일 {_H1_JUDGE}: 실주문 거래당 손익 > 0 이고 일단위 p < 0.05 면 합격 (거래가 적으면 6개월로 연장)",
-          f"중단: 실주문 누적 −${cfg['max_loss']:,.0f}"]
-    return sl, "\n".join(L)
+        L.append(f"  (참고) 수·목 진입분만: {s['수목만']['거래']}건 {s['수목만']['누적$']:+,.2f}$")
+    if old.get("거래", 0):
+        L += ["", f"■ 이전 1:3 규칙 실주문 (11-02 ~ 11-08): {old['거래']}건 누적 {old['누적$']:+,.2f}$"]
+    L += ["", "■ 기준 (과거 6년 백테스트: 거래당 평균 +$4.4, 1년 약 370건, 최저 잔고 $6,590)",
+          f"  점검일 {_H1_JUDGE}: 실주문 거래당 손익과 규칙 계산이 비슷한지(차이 = 실제 비용) 확인",
+          f"  경고: 최근 3개월 −${cfg['warn3m']:,.0f} 이하 (주문 계속)",
+          f"  중단: 가상 잔고 ${cfg['stop_bal']:,.0f} 아래"]
+    return sl, "\n".join(L), warn
 
 
 def _h1_send(today):
     cfg = _h1_cfg()
-    s, body = _h1_email_body(today, cfg)
-    return _pr_send_email(f"[24봉 다이버전스] {today} 누적 {s.get('누적$', 0):+,.0f}$ ({s.get('거래', 0)}건)",
+    s, body, warn = _h1_email_body(today, cfg)
+    return _pr_send_email(f"{'⚠ ' if warn else ''}[24봉 묶음] {today} 누적 {s.get('누적$', 0):+,.0f}$ ({s.get('거래', 0)}건)",
                           body)                                   # type: ignore[name-defined]
 
 
@@ -14026,7 +14045,9 @@ def h24_status_endpoint(run: int = 0):
     cfg = _h1_cfg()
     out = {"설정": {"계산": "on" if cfg["live"] else "off", "데모주문": "on" if cfg["orders"] else "off",
                    "메일": "on" if cfg["email"] else "off", "거래당위험$": cfg["risk"],
-                   "중단손실$": cfg["max_loss"], "시작": f"{_H1_START:%Y-%m-%d %H:%M} ET", "판정일": _H1_JUDGE}}
+                   "규칙": "RSI 다이버전스 + MACD 같은 방향 + 12시·금요일 진입 금지 · 손절 1.5ATR · 익절 없음 · 24봉 청산",
+                   "중단잔고$": cfg["stop_bal"], "3개월경고$": -cfg["warn3m"],
+                   "시작": f"{_H1_START:%Y-%m-%d %H:%M} ET", "점검일": _H1_JUDGE}}
     if not cfg["demo"]:
         out["경고"] = "OANDA_LIVE 가 데모가 아니다 — 주문하지 않는다"
     code, j = _h1_api("GET", f"/v3/accounts/{cfg['account']}/summary") if cfg["account"] else (0, {})
@@ -14041,6 +14062,8 @@ def h24_status_endpoint(run: int = 0):
         rs = _h1_rows(_H1_TAB_SIM, _H1_HEAD_SIM)
         out["누적_실주문"] = _h1_summary(rl, "합계$") if rl is not None else "시트 열기 실패"
         out["누적_규칙"] = _h1_summary(rs, "손익$") if rs is not None else "시트 열기 실패"
+        if rl is not None:
+            out["이전_1대3_실주문"] = _h1_summary(rl, "합계$", _H1_OLDP)
     except Exception as e:
         out["누적"] = f"시트 오류: {str(e)[:100]}"
     out["보유_실주문"] = _h1_open_live(cfg) or "없음"
@@ -14069,8 +14092,6 @@ def h24_spreads_endpoint():
             out[ins] = {"중앙pip": round(float(v.median()), 2), "75%pip": round(float(v.quantile(.75)), 2),
                         "최대pip": round(float(v.max()), 2), "표본": int(len(v))}
     return {"기록시간수": len(df), "처음": df["시각"].iloc[0], "마지막": df["시각"].iloc[-1], "통화별": out}
-
-
 # ═══════════════════════════════════════════════════════════════════
 # 🟩 [HIST-1] OANDA 과거 캔들 내려받기 (분석용, 주문과 무관)   (2026-11-05)
 #
