@@ -14156,13 +14156,25 @@ def _h1_nav(cfg):
     return float(((j or {}).get("account") or {}).get("NAV") or 0) if code == 200 else 0.0
 
 
+def _h1_carry_text():
+    """메일용: 통화별 스왑 받는 방향을 한 줄로"""
+    d = _H1_FINCACHE.get("dir") or {}
+    if not d:
+        return "아직 조회 전"
+    parts = []
+    for k, v in d.items():
+        side = "매수" if v > 0 else ("매도" if v < 0 else "?")
+        parts.append(k + " " + side + " 유리")
+    return ", ".join(parts) + " (" + str(_H1_FINCACHE.get("src", "")) + ")"
+
+
 def _h1_email_body(today, cfg):
     rl = _h1_rows(_H1_TAB_LIVE, _H1_HEAD_LIVE) or []
     rs = _h1_rows(_H1_TAB_SIM, _H1_HEAD_SIM) or []
     sl, ss = _h1_summary(rl, "합계$"), _h1_summary(rs, "손익$")
     old = _h1_summary(rl, "합계$", _H1_OLDP)
     L = [f"1시간봉 RSI 다이버전스 묶음 + 일봉 추세 + FOMC 2배 + 금리 방향 크기 · 익절 없음 · {_H1_MAXBARS}봉 청산 — {today} (ET)",
-         f"금리 방향: {', '.join(f'{k} {'매수' if v > 0 else '매도' if v < 0 else '?'} 유리' for k, v in (_H1_FINCACHE.get('dir') or {}).items()) or '아직 조회 전'} ({_H1_FINCACHE.get('src', '')}) · 받는 방향 {cfg['carry_up']}배, 내는 방향 {cfg['carry_dn']}배",
+         f"금리 방향: {_h1_carry_text()} · 받는 방향 {cfg['carry_up']}배, 내는 방향 {cfg['carry_dn']}배",
          "묶음 = MACD 같은 방향 + 12시·금요일 진입 금지 / 추세 = 일봉 200EMA 방향만 / FOMC 전 24시간 진입은 위험 2배",
          "시간 금지 = " + (", ".join(f"{k} {min(v)}~{max(v)}시" for k, v in cfg["blocks"].items()) or "없음"),
          (f"OANDA **실계좌** · 거래당 ${cfg['risk']:,.0f} 위험 (FOMC 전 2배) · 순자산 ${_h1_nav(cfg):,.0f} · 중단선 ${cfg['stop_nav']:,.0f}"
