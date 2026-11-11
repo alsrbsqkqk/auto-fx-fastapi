@@ -13381,7 +13381,7 @@ def gapgo_live_status_endpoint():
 
 
 # ═══════════════════════════════════════════════════════════════════
-# 🟩 [H24-7] 1시간봉 RSI 다이버전스 묶음 + 일봉 추세 방향 + FOMC 전 2배 · 손절 1.0ATR · 익절 없음 · 24봉 청산   (2026-11-09)
+# 🟩 [H24-8] 1시간봉 RSI 다이버전스 묶음 + 일봉 추세 + FOMC 전 2배 + 금리 방향 크기 조절 · 손절 1.0ATR · 익절 없음 · 28봉 청산   (2026-11-11)
 #
 #   ■ 규칙 (2026-11-09 고정, 2026-11-10 17:00 ET 시작)
 #     1시간봉(mid), RSI(14). TradingView 기본 'RSI Divergence' 정의: RSI 피벗 좌5/우5, 직전 피벗과 5~60봉 간격
@@ -13391,6 +13391,9 @@ def gapgo_live_status_endpoint():
 #     [추세] 어제 일봉(17:00 ET 마감) 종가가 일봉 200 EMA 위면 매수만, 아래면 매도만
 #     [시간] 통화별 진입 금지 시간 (ET, 진입 시각 기준): EUR_USD 17~20시, USD_JPY 02~06시 (H24_BLOCK 로 변경)
 #     [달러] 달러 순노출이 같은 방향으로 2개를 넘으면 진입 안 함 (실주문만, H24_USD_CAP 로 변경 · 0 = 끔)
+#     [금리] 금리가 높은 통화를 사는 방향(스왑을 받는 쪽)은 1.25배, 반대는 0.75배 (H24_CARRY_UP / H24_CARRY_DN, 둘 다 1 이면 끔)
+#            방향 판정: OANDA 계좌의 통화별 스왑 금리(longRate/shortRate)로. 못 받으면 H24_RATES 표(통화별 정책금리)로
+#     [보유] 진입 후 1시간봉 28개 끝나면 시장가 청산 (H24_HOLD_BARS, 이전 24)
 #     [기록] 실주문이 청산되면 MFE(최대 유리)·MAE(최대 불리)를 손절폭 배수로 'H24_MFE' 탭에 기록
 #     [크기] 진입 시각이 FOMC 발표(14:00 ET) 전 24시간 안이면 거래 위험 2배 ($200), 아니면 $100
 #     손절 1.0×ATR14 (H24_SL_ATR 로 변경 가능), 익절 없음, 진입 후 1시간봉 24개 끝나면 시장가 청산
@@ -13420,6 +13423,9 @@ def gapgo_live_status_endpoint():
 #     H24_SL_ATR      손절 폭 (ATR 배수, 기본 1.0)
 #     H24_BLOCK       통화별 진입 금지 시간. 기본 "EUR_USD:17-20,USD_JPY:2-6" · 끄려면 "none"
 #     H24_USD_CAP     달러 순노출 한도 (기본 2, 0 = 끔)
+#     H24_HOLD_BARS   보유 봉 수 (기본 28)
+#     H24_CARRY_UP / H24_CARRY_DN   금리 받는 방향 / 내는 방향 크기 배수 (기본 1.25 / 0.75)
+#     H24_RATES       통화별 연 금리 표, OANDA 스왑 금리를 못 받을 때만 사용 (기본 "USD:4.0,EUR:2.5,GBP:3.75,JPY:1.25,AUD:4.85")
 #
 #   ■ 엔드포인트: /h24_status  /h24_status?run=1  /h24_test_email  /h24_spreads
 #   ■ 필요한 기존 심볼: app · OANDA_API_KEY · OANDA_BASE_URL · ACCOUNT_ID · _get_spreadsheet · _pr_send_email
@@ -13447,7 +13453,7 @@ if _H1_REAL:                                                       # 실계좌�
     _H1_START = _h1_pd.Timestamp(_rs, tz=_H1_NY) if _rs else _h1_pd.Timestamp.now(tz=_H1_NY).floor("h")
 _H1_FETCH_FROM = _H1_START - _h1_pd.Timedelta(days=21)     # 지표 준비 구간 (고정)
 _H1_JUDGE = "2027-02-10"
-_H1_MAXBARS = 24
+_H1_MAXBARS = int(float(_h1_os.environ.get("H24_HOLD_BARS", "28")))   # 보유 봉 수
 _H1_SLM = float(_h1_os.environ.get("H24_SL_ATR", "1.0"))    # 손절 = ATR14 × 이 값. 익절 없음
 _H1_TAG = "H24C"
 _H1_KEYP = "H24R-" if _H1_REAL else "H24C-"                # 이 규칙 거래 키 앞머리 (실계좌 H24R-)
@@ -13457,6 +13463,47 @@ _H1_EMA_D = 200                                            # 일봉 추세 기�
 _H1_FOMC = ["2026-12-09", "2027-01-27", "2027-03-17", "2027-04-28", "2027-06-09",
             "2027-07-28", "2027-09-15", "2027-10-27", "2027-12-08"]
 _H1_DCACHE = {}
+_H1_FINCACHE = {"t": None, "dir": {}}
+_H1_RATES_DEFAULT = "USD:4.0,EUR:2.5,GBP:3.75,JPY:1.25,AUD:4.85"       # 2026-11 기준 정책금리, 보조용
+
+
+def _h1_rates_table():
+    out = {}
+    for part in str(_h1_os.environ.get("H24_RATES", _H1_RATES_DEFAULT)).split(","):
+        try:
+            k, v = part.strip().split(":"); out[k.strip().upper()] = float(v)
+        except Exception:
+            continue
+    return out
+
+
+def _h1_carry_dirs(cfg):
+    """통화별로 스왑을 받는 방향: +1 = 매수가 받음, -1 = 매도가 받음, 0 = 모름.
+    1순위 OANDA 계좌 상품 정보의 financing(longRate/shortRate), 2순위 H24_RATES 정책금리 차이. 1시간 캐시."""
+    now = _h1_dt.now(_H1_NY)
+    if _H1_FINCACHE["t"] and (now - _H1_FINCACHE["t"]).total_seconds() < 3600:
+        return _H1_FINCACHE["dir"]
+    dirs = {}; src = "없음"
+    if cfg.get("account"):
+        code, j = _h1_api("GET", f"/v3/accounts/{cfg['account']}/instruments", params={"instruments": ",".join(_H1_PAIRS)})
+        if code == 200:
+            for ins in (j or {}).get("instruments", []):
+                f = ins.get("financing") or {}
+                try:
+                    lr, sr = float(f["longRate"]), float(f["shortRate"])
+                    dirs[ins["name"]] = 1 if lr > sr else (-1 if sr > lr else 0); src = "OANDA 스왑금리"
+                except Exception:
+                    continue
+    if len(dirs) < len(_H1_PAIRS):
+        tbl = _h1_rates_table()
+        for ins in _H1_PAIRS:
+            if ins in dirs:
+                continue
+            b, q = ins.split("_")
+            if b in tbl and q in tbl:
+                d = tbl[b] - tbl[q]; dirs[ins] = 1 if d > 0 else (-1 if d < 0 else 0); src = src if src != "없음" else "H24_RATES 표"
+    _H1_FINCACHE.update(t=now, dir=dirs, src=src)
+    return dirs
 _H1_BLOCK_DEFAULT = "EUR_USD:17-20,USD_JPY:2-6"
 
 
@@ -13507,6 +13554,7 @@ def _h1_cfg():
             "real": on("H24_REAL", "off"), "risk_set": g("H24_RISK_USD") is not None,
             "stop_nav": float(g("H24_STOP_NAV", "0") or 0), "blocks": _h1_blocks(),
             "usd_cap": int(float(g("H24_USD_CAP", "2") or 0)),
+            "carry_up": float(g("H24_CARRY_UP", "1.25")), "carry_dn": float(g("H24_CARRY_DN", "0.75")),
             "fomc": sorted(set(_H1_FOMC + [x.strip() for x in str(g("H24_FOMC_EXTRA", "")).split(",") if x.strip()])),
             "demo": "fxpractice" in str(globals().get("OANDA_BASE_URL", "")),
             "account": str(globals().get("ACCOUNT_ID") or "")}
@@ -13603,7 +13651,13 @@ def _h1_wilder(x, n):
     return a
 
 
-def _h1_engine(df, pip, cost, dc, fomc, blk=frozenset(), maxbars=_H1_MAXBARS):
+def _h1_engine(df, pip, cost, dc, fomc, blk=frozenset(), maxbars=_H1_MAXBARS, cdir=0, cup=1.0, cdn=1.0):
+    """cdir: 스왑 받는 방향(+1 매수, -1 매도, 0 모름). 거래 배수 = (FOMC 전 2배) × (받는 방향 cup, 내는 방향 cdn)"""
+    def _mult(i, sd):
+        m = 2.0 if pre[i] else 1.0
+        if cdir:
+            m *= cup if sd == cdir else cdn
+        return m
     """dc = 완성된 일봉 종가 (FX 날짜 순). fomc = 발표일 목록.
     반환: (청산된 거래, 열린 거래 또는 None, 지금 진입할 신호 또는 None)"""
     o, h, l, c = (df[k].values.astype(float) for k in "ohlc")
@@ -13680,7 +13734,7 @@ def _h1_engine(df, pip, cost, dc, fomc, blk=frozenset(), maxbars=_H1_MAXBARS):
             continue
         if i == n - 1:                                   # 마지막 완성 봉에서 신호 → 다음 봉 시가에 진입
             pending = {"side": sd, "atr": float(A[i]), "sig_bar": idx[i], "ref": float(c[i]),
-                       "mult": 2.0 if pre[i] else 1.0}
+                       "mult": _mult(i, sd)}
             break
         e = o[i + 1]
         sl = e - sd * _H1_SLM * A[i]
@@ -13696,7 +13750,7 @@ def _h1_engine(df, pip, cost, dc, fomc, blk=frozenset(), maxbars=_H1_MAXBARS):
         if res is None and st <= n - 1:
             res = (st, c[st], "시간청산")
         risk = _H1_SLM * A[i] / pip
-        tr = {"t": idx[i + 1], "side": sd, "e": e, "sl": sl, "risk": risk, "mult": 2.0 if pre[i] else 1.0}
+        tr = {"t": idx[i + 1], "side": sd, "e": e, "sl": sl, "risk": risk, "mult": _mult(i, sd), "fomc": bool(pre[i])}
         if res is None:
             opened = tr
             break
@@ -13997,6 +14051,10 @@ def _h1_tick(force=False):
             _H1_STATE["rec_live"] = {r["키"] for r in rl}
             _H1_STATE["ord"] = {r["키"]: r for r in ro}
         new_sim, sim_by_key, retry = [], {}, False
+        try:
+            cdirs = _h1_carry_dirs(cfg) if (cfg["carry_up"] != 1.0 or cfg["carry_dn"] != 1.0) else {}
+        except Exception as e:
+            _h1_log(f"스왑 방향 조회 실패: {str(e)[:80]}"); cdirs = {}
         for instr, (pip, prec, cst) in _H1_PAIRS.items():
             try:
                 df = _h1_fetch(instr)
@@ -14005,7 +14063,8 @@ def _h1_tick(force=False):
                 _h1_log(f"{instr} 캔들 실패: {str(e)[:120]} — 30초 뒤 다시 시도")
                 retry = True                             # 이 시간 신호를 놓치지 않도록 다시 계산
                 continue
-            closed, opened, pend = _h1_engine(df, pip, cst, dc, cfg["fomc"], frozenset(cfg["blocks"].get(instr, ())))
+            closed, opened, pend = _h1_engine(df, pip, cst, dc, cfg["fomc"], frozenset(cfg["blocks"].get(instr, ())),
+                                              cdir=cdirs.get(instr, 0), cup=cfg["carry_up"], cdn=cfg["carry_dn"])
             _H1_STATE["open_sim"][instr] = None
             if opened is not None and opened["t"] >= _H1_START:
                 _H1_STATE["open_sim"][instr] = {
@@ -14022,7 +14081,7 @@ def _h1_tick(force=False):
                 new_sim.append([key, instr, "매수" if tr["side"] == 1 else "매도", f"{tr['t']:%Y-%m-%d %H:%M}",
                                 round(tr["e"], prec), round(tr["sl"], prec), "없음",
                                 f"{tr['xt']:%Y-%m-%d %H:%M}", round(tr["x"], prec),
-                                tr["why"] + (" · FOMC 2배" if tr["mult"] > 1 else ""),
+                                tr["why"] + (" · FOMC 2배" if tr.get("fomc") else "") + (f" · 배수 {tr['mult']:.2f}" if tr["mult"] != 1.0 else ""),
                                 round(tr["pips"], 2), round(tr["R"], 3), round(usd, 2), f"{now:%Y-%m-%d %H:%M}"])
             if pend is not None and opened is None:
                 if _h1_place(instr, pend, cfg, now) == "retry":
@@ -14102,7 +14161,8 @@ def _h1_email_body(today, cfg):
     rs = _h1_rows(_H1_TAB_SIM, _H1_HEAD_SIM) or []
     sl, ss = _h1_summary(rl, "합계$"), _h1_summary(rs, "손익$")
     old = _h1_summary(rl, "합계$", _H1_OLDP)
-    L = [f"1시간봉 RSI 다이버전스 묶음 + 일봉 추세 + FOMC 2배 · 익절 없음 · 24봉 청산 — {today} (ET)",
+    L = [f"1시간봉 RSI 다이버전스 묶음 + 일봉 추세 + FOMC 2배 + 금리 방향 크기 · 익절 없음 · {_H1_MAXBARS}봉 청산 — {today} (ET)",
+         f"금리 방향: {', '.join(f'{k} {'매수' if v > 0 else '매도' if v < 0 else '?'} 유리' for k, v in (_H1_FINCACHE.get('dir') or {}).items()) or '아직 조회 전'} ({_H1_FINCACHE.get('src', '')}) · 받는 방향 {cfg['carry_up']}배, 내는 방향 {cfg['carry_dn']}배",
          "묶음 = MACD 같은 방향 + 12시·금요일 진입 금지 / 추세 = 일봉 200EMA 방향만 / FOMC 전 24시간 진입은 위험 2배",
          "시간 금지 = " + (", ".join(f"{k} {min(v)}~{max(v)}시" for k, v in cfg["blocks"].items()) or "없음"),
          (f"OANDA **실계좌** · 거래당 ${cfg['risk']:,.0f} 위험 (FOMC 전 2배) · 순자산 ${_h1_nav(cfg):,.0f} · 중단선 ${cfg['stop_nav']:,.0f}"
@@ -14140,7 +14200,7 @@ def _h1_email_body(today, cfg):
         L += ["", f"■ 다음 FOMC 발표: {', '.join(nf)} 14:00 ET (전 24시간 진입은 위험 2배)"]
     if _H1_REAL:
         L += ["", "※ 실계좌: 위 '가상잔고'는 $10,000 기준 참고값. 실제 잔고는 맨 위 순자산을 본다"]
-    L += ["", "■ 기준 (과거 6년 백테스트, 스프레드·스왑 포함: 손절 1.0ATR, 시간 금지·달러 한도 포함: 1년 약 162건, 6년 +$23,399, 최대 낙폭 −$4,230)",
+    L += ["", "■ 기준 (과거 6년 백테스트, 스프레드·스왑 포함: 28봉·금리 크기 조절 포함: 2021~26 +$34,903 / 최대 낙폭 −$3,561 — 단, 처음 보는 2010~20년에서는 11년 중 9년 손실)",
           f"  점검일 {_H1_JUDGE}: 실주문 거래당 손익과 규칙 계산이 비슷한지(차이 = 실제 비용) 확인",
           f"  경고: 최근 3개월 −${cfg['warn3m']:,.0f} 이하 (주문 계속)",
           (f"  중단: 순자산 ${cfg['stop_nav']:,.0f} 아래" if _H1_REAL else f"  중단: 가상 잔고 ${cfg['stop_bal']:,.0f} 아래")]
@@ -14195,7 +14255,10 @@ def h24_status_endpoint(run: int = 0):
     out = {"설정": {"계산": "on" if cfg["live"] else "off", "데모주문": "on" if cfg["orders"] else "off",
                    "메일": "on" if cfg["email"] else "off", "거래당위험$": cfg["risk"],
                    "규칙": "RSI 다이버전스 + MACD 같은 방향 + 12시·금요일 금지 + 일봉 200EMA 방향만 + FOMC 전 2배 · 익절 없음 · 24봉",
-                   "손절ATR": _H1_SLM, "달러노출한도": cfg["usd_cap"],
+                   "손절ATR": _H1_SLM, "달러노출한도": cfg["usd_cap"], "보유봉": _H1_MAXBARS,
+                   "금리크기": f"받는 방향 {cfg['carry_up']}배 / 내는 방향 {cfg['carry_dn']}배",
+                   "금리방향": {k: ("매수 유리" if v > 0 else "매도 유리" if v < 0 else "모름") for k, v in (_H1_FINCACHE.get("dir") or {}).items()} or "아직 조회 전",
+                   "금리방향출처": _H1_FINCACHE.get("src", ""),
                    "진입금지시간ET": {k: f"{min(v)}~{max(v)}시" if len(v) == max(v) - min(v) + 1 else sorted(v) for k, v in cfg["blocks"].items()},
                    "다음FOMC": [f for f in cfg["fomc"] if f >= f"{_h1_dt.now(_H1_NY):%Y-%m-%d}"][:3],
                    "중단잔고$": cfg["stop_bal"], "3개월경고$": -cfg["warn3m"],
