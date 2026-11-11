@@ -13427,6 +13427,27 @@ def gapgo_live_status_endpoint():
 #     H24_CARRY_UP / H24_CARRY_DN   금리 받는 방향 / 내는 방향 크기 배수 (기본 1.25 / 0.75)
 #     H24_RATES       통화별 연 금리 표, OANDA 스왑 금리를 못 받을 때만 사용 (기본 "USD:4.0,EUR:2.5,GBP:3.75,JPY:1.25,AUD:4.85")
 #
+#   ■ 2026-11-11 추가 — 안전장치
+#     1) 시트 호출 시간제한: H24_SHEET_TIMEOUT 초 (기본 20). 매달려도 봇이 얼지 않는다
+#     2) 멈춤 감시: 70분 넘게 계산이 성공하지 못하면 메일 (6시간에 한 번)
+#     3) 주문 거절·중단선·시트먹통 즉시 메일
+#     4) H24_SW12 on/off (기본 on) — 직전 H24_SW12_WIN(12)개월 '규칙(가상)' 손익 합계가
+#        H24_SW12_MIN(0) 미만이면 그 달 새 실주문을 내지 않는다. 가상기록은 계속 쌓여 저절로 재개된다
+#        H24_HIST = 월별 씨앗 "2025-11:-183,..." (거래당 $100 기준). 시트 기록이 있는 달은 기록이 이긴다
+#        검증(2010~2026): 장치 없음 2010-20 −$39,516 / 2021-26 +$34,460 / 낙폭 −$47,488
+#                        장치 적용 2010-20    −$549 / 2021-26 +$34,900 / 낙폭  −$7,063
+#     5) H24_ATR_MIN (기본 0 = 끔) — ATR14 가 스프레드의 이 배수 미만이면 진입하지 않는다. 켤 값: 8
+#        켜면 2010-20 +$5,077 / 2021-26 +$25,549 / 낙폭 −$3,708 (최근 6년 이익을 $9,351 포기)
+#     7) H24_POST_FOMC (기본 24, 끄려면 0) — FOMC 발표 후 이 시간 동안 진입하지 않는다
+#        2021~26: 금지 없음 +$34,460 / 24시간 +$35,215 / 48시간 +$36,299
+#        2010~20: 금지 없음 −$39,516 / 24시간 −$39,962 / 48시간 −$39,726  ← 과거 구간에서는 효과 없음
+#        12개월 장치와 함께: 24시간 → 2021-26 +$35,522 · 2010-20 −$1,188 · 낙폭 −$7,576
+#                          48시간 → 2021-26 +$36,553 · 2010-20   +$390 · 낙폭 −$5,703
+#        최근 6년에 맞춘 선택임을 알고 쓴다 (사용자 지시, 2026-11-11)
+#     6) 중앙은행 발표 예고: FOMC + BOJ 를 3일 전부터 요약 메일 맨 위와 제목에 알린다 (H24_BOJ_EXTRA 로 추가)
+#
+#   ■ 추가 엔드포인트: /h24_test_alert  /h24_months
+#
 #   ■ 엔드포인트: /h24_status  /h24_status?run=1  /h24_test_email  /h24_spreads
 #   ■ 필요한 기존 심볼: app · OANDA_API_KEY · OANDA_BASE_URL · ACCOUNT_ID · _get_spreadsheet · _pr_send_email
 # ═══════════════════════════════════════════════════════════════════
@@ -13462,6 +13483,15 @@ _H1_EMA_D = 200                                            # 일봉 추세 기�
 # FOMC 발표일 (14:00 ET). 출처: federalreserve.gov 2027 일정 발표 (2025-09-05)
 _H1_FOMC = ["2026-12-09", "2027-01-27", "2027-03-17", "2027-04-28", "2027-06-09",
             "2027-07-28", "2027-09-15", "2027-10-27", "2027-12-08"]
+# BOJ 금융정책결정회의 발표일 (이틀 회의의 둘째 날, 일본 낮 = ET 밤~새벽). 출처: boj.or.jp 공표 일정
+_H1_BOJ = ["2026-12-18", "2027-01-22", "2027-03-18", "2027-04-28", "2027-06-11",
+           "2027-07-22", "2027-09-22", "2027-10-29", "2027-12-17"]
+# [12개월 장치] 씨앗: 거래당 $100 기준 월별 '규칙(가상)' 손익. 봇 기록이 쌓인 달은 기록값이 이긴다
+_H1_HIST_DEFAULT = ("2025-11:-183,2025-12:145,2026-01:1795,2026-02:-1090,2026-03:52,2026-04:285,"
+                    "2026-05:166,2026-06:4604,2026-07:943,2026-08:660,2026-09:-365,2026-10:-431")
+_H1_MSTATE = {"t": None, "m": {}}                                  # 월별 가상손익 캐시 (1시간)
+_H1_WATCH = {"last_ok": None, "stall_sent": None, "alert": {}}     # 멈춤 감시 · 알림 중복 방지
+_H1_SHEET_TIMEOUT = float(_h1_os.environ.get("H24_SHEET_TIMEOUT", "20"))   # 시트 호출 시간제한(초)
 _H1_DCACHE = {}
 _H1_FINCACHE = {"t": None, "dir": {}}
 _H1_RATES_DEFAULT = "USD:4.0,EUR:2.5,GBP:3.75,JPY:1.25,AUD:4.85"       # 2026-11 기준 정책금리, 보조용
@@ -13556,6 +13586,12 @@ def _h1_cfg():
             "usd_cap": int(float(g("H24_USD_CAP", "2") or 0)),
             "carry_up": float(g("H24_CARRY_UP", "1.25")), "carry_dn": float(g("H24_CARRY_DN", "0.75")),
             "fomc": sorted(set(_H1_FOMC + [x.strip() for x in str(g("H24_FOMC_EXTRA", "")).split(",") if x.strip()])),
+            "boj": sorted(set(_H1_BOJ + [x.strip() for x in str(g("H24_BOJ_EXTRA", "")).split(",") if x.strip()])),
+            "sw12": on("H24_SW12", "on"), "sw12_thr": float(g("H24_SW12_MIN", "0") or 0),
+            "sw12_win": int(float(g("H24_SW12_WIN", "12") or 12)),
+            "atrmin": float(g("H24_ATR_MIN", "0") or 0),
+            "postf": float(g("H24_POST_FOMC", "24") or 0),
+            "hist": str(g("H24_HIST", _H1_HIST_DEFAULT)),
             "demo": "fxpractice" in str(globals().get("OANDA_BASE_URL", "")),
             "account": str(globals().get("ACCOUNT_ID") or "")}
 
@@ -13580,6 +13616,155 @@ def _h1_api(method, path, **kw):
         return r.status_code, j
     except Exception as e:
         return 0, {"error": str(e)[:160]}
+
+
+# ───────────────── 안전장치 1·2·3: 시간제한 · 즉시 알림 · 멈춤 감시 ─────────────────
+
+def _h1_timeout(fn, secs, default=None, what=""):
+    """fn() 을 별도 스레드에서 돌리고 secs 초 안에 안 끝나면 default 를 돌려준다.
+    구글 시트 호출이 응답 없이 매달려 봇 전체가 얼어붙는 것을 막는다 (2026-11-11 사고)."""
+    box = {}
+
+    def _run():
+        try:
+            box["v"] = fn()
+        except Exception as e:
+            box["e"] = e
+
+    th = _h1_threading.Thread(target=_run, daemon=True)
+    th.start()
+    th.join(secs)
+    if th.is_alive():
+        _h1_log(f"시트 응답 없음 ({what}, {secs:.0f}초 초과) — 이번 차례는 건너뜀")
+        _h1_alert("시트 응답 없음",
+                  f"{what} 호출이 {secs:.0f}초 안에 응답하지 않았다.\n"
+                  "이번 차례만 건너뛰고 계산은 계속 돌린다. 반복되면 구글 시트 쪽을 봐야 한다.",
+                  key="sheet", every=3600)
+        return default
+    if "e" in box:
+        raise box["e"]
+    return box.get("v", default)
+
+
+def _h1_alert(title, body, key=None, every=3600):
+    """즉시 알림 메일. 같은 key 는 every 초에 한 번만 보낸다."""
+    now = _h1_dt.now(_H1_NY)
+    k = key or title
+    last = _H1_WATCH["alert"].get(k)
+    if last and (now - last).total_seconds() < every:
+        return False
+    _H1_WATCH["alert"][k] = now
+    try:
+        ok = _pr_send_email(                                       # type: ignore[name-defined]
+            f"{'[실계좌] ' if _H1_REAL else ''}[H24 알림] {title}",
+            f"{now:%Y-%m-%d %H:%M} ET\n\n{body}\n\n"
+            "상태 확인: https://auto-fx-fastapi.onrender.com/h24_status")
+    except Exception as e:
+        _h1_log(f"알림 메일 실패: {str(e)[:80]}")
+        return False
+    _h1_log(f"알림 메일 {'보냄' if ok else '실패'}: {title}")
+    return ok
+
+
+def _h1_watchdog():
+    """계산이 멈췄는지 본다. 70분 넘게 한 번도 성공하지 못했으면 메일 (6시간에 한 번)."""
+    now = _h1_dt.now(_H1_NY)
+    ok = _H1_WATCH.get("last_ok")
+    if ok is None:
+        return
+    mins = (now - ok).total_seconds() / 60
+    if mins < 70:
+        _H1_WATCH["stall_sent"] = None
+        return
+    sent = _H1_WATCH.get("stall_sent")
+    if sent and (now - sent).total_seconds() < 6 * 3600:
+        return
+    _H1_WATCH["stall_sent"] = now
+    bars = ", ".join(f"{p} {v.index[-1]:%m-%d %H:%M}" for p, v in
+                     ((p, _H1_CACHE.get(p)) for p in _H1_PAIRS) if v is not None and len(v))
+    _h1_alert("⛔ 봇이 멈췄다",
+              f"마지막으로 계산이 성공한 시각: {ok:%Y-%m-%d %H:%M} ET ({mins:.0f}분 전)\n"
+              f"가진 데이터 마지막 봉: {bars or '없음'}\n"
+              f"계산 잠금: {'잡혀 있음 (어딘가에 매달림)' if _H1_LOCK.locked() else '풀려 있음'}\n\n"
+              "Render 대시보드에서 서비스를 재시작하면 풀린다.",
+              key="stall", every=6 * 3600)
+
+
+# ───────────────── 안전장치 4: 12개월 가상손익 스위치 ─────────────────
+#   직전 12개월 '규칙(가상)' 손익 합계가 기준 미만이면 그 달은 새 실주문을 내지 않는다.
+#   2010~2026 검증: 장치 없음 2010-20 −$39,516 / 2021-26 +$34,460 / 낙폭 −$47,488
+#                  장치 적용 2010-20    −$549 / 2021-26 +$34,900 / 낙폭  −$7,063
+#   가상기록은 꺼져 있는 동안에도 계속 쌓이므로 저절로 다시 켜진다.
+
+def _h1_hist_seed(raw):
+    out = {}
+    for part in str(raw or "").split(","):
+        try:
+            k, v = part.strip().split(":")
+            out[k.strip()] = float(v)
+        except Exception:
+            continue
+    return out
+
+
+def _h1_month_pl(cfg, force=False):
+    """월별 '규칙(가상)' 손익 {'2026-01': 1795.0, ...}. 씨앗 위에 시트 기록을 덮어쓴다. 1시간 캐시."""
+    now = _h1_dt.now(_H1_NY)
+    if not force and _H1_MSTATE["t"] and (now - _H1_MSTATE["t"]).total_seconds() < 3600:
+        return _H1_MSTATE["m"]
+    m = _h1_hist_seed(cfg["hist"])
+    rows = _h1_rows(_H1_TAB_SIM, _H1_HEAD_SIM)
+    if rows is None:
+        return m                                                   # 시트 실패 → 캐시 갱신 안 함
+    got = {}
+    for r in _h1_mine(rows):
+        mm = str(r.get("진입시각") or "")[:7]
+        if len(mm) == 7:
+            try:
+                got[mm] = got.get(mm, 0.0) + float(r.get("손익$") or 0)
+            except Exception:
+                continue
+    m.update(got)
+    _H1_MSTATE.update(t=now, m=m)
+    return m
+
+
+def _h1_sw12(cfg):
+    """(주문해도 되나?, 직전 N개월 합계, 쓴 달 수). 12개월이 안 모였으면 그냥 거래한다."""
+    if not cfg["sw12"]:
+        return True, None, 0
+    try:
+        m = _h1_month_pl(cfg)
+    except Exception as e:
+        _h1_log(f"12개월 장치 확인 실패: {str(e)[:80]} — 통과 처리")
+        return True, None, 0
+    if not m:
+        return True, None, 0
+    cur = f"{_h1_dt.now(_H1_NY):%Y-%m}"
+    keys = sorted(k for k in m if k < cur)[-cfg["sw12_win"]:]
+    s = sum(m[k] for k in keys) if keys else None
+    if len(keys) < cfg["sw12_win"]:
+        return True, s, len(keys)
+    return s >= cfg["sw12_thr"], s, len(keys)
+
+
+# ───────────────── 안전장치 5: 중앙은행 발표 예고 (FOMC · BOJ) ─────────────────
+
+def _h1_cb_soon(cfg, today, days=3):
+    """오늘부터 days 일 안에 있는 FOMC·BOJ 발표 (오늘은 제외) → [(날짜, 이름, 며칠뒤)]"""
+    try:
+        t0 = _h1_dt.strptime(today, "%Y-%m-%d").date()
+    except Exception:
+        return []
+    out = []
+    for d, who in sorted([(x, "FOMC") for x in cfg["fomc"]] + [(x, "BOJ") for x in cfg["boj"]]):
+        try:
+            dd = (_h1_dt.strptime(d, "%Y-%m-%d").date() - t0).days
+        except Exception:
+            continue
+        if 1 <= dd <= days:
+            out.append((d, who, dd))
+    return out
 
 
 # ───────────────────────── 데이터 ─────────────────────────
@@ -13651,7 +13836,8 @@ def _h1_wilder(x, n):
     return a
 
 
-def _h1_engine(df, pip, cost, dc, fomc, blk=frozenset(), maxbars=_H1_MAXBARS, cdir=0, cup=1.0, cdn=1.0):
+def _h1_engine(df, pip, cost, dc, fomc, blk=frozenset(), maxbars=_H1_MAXBARS, cdir=0, cup=1.0, cdn=1.0,
+               atrmin=0.0, postf=0.0):
     """cdir: 스왑 받는 방향(+1 매수, -1 매도, 0 모름). 거래 배수 = (FOMC 전 2배) × (받는 방향 cup, 내는 방향 cdn)"""
     def _mult(i, sd):
         m = 2.0 if pre[i] else 1.0
@@ -13708,9 +13894,12 @@ def _h1_engine(df, pip, cost, dc, fomc, blk=frozenset(), maxbars=_H1_MAXBARS, cd
     up = _h1_np.where(pos >= 0, up_d[_h1_np.clip(pos, 0, None)], False)
     # [크기] FOMC 발표 전 24시간 안 진입
     pre = _h1_np.zeros(n, bool)
+    post = _h1_np.zeros(n, bool)                          # [발표 직후] 진입 금지 구간
     for f in fomc:
         ft = _h1_pd.Timestamp(f"{f} 14:00", tz=_H1_NY)
         pre |= _h1_np.asarray((et > ft - _h1_pd.Timedelta(hours=24)) & (et <= ft))
+        if postf:
+            post |= _h1_np.asarray((et > ft) & (et <= ft + _h1_pd.Timedelta(hours=postf)))
 
     closed, opened, pending = [], None, None
     i = 210
@@ -13729,6 +13918,10 @@ def _h1_engine(df, pip, cost, dc, fomc, blk=frozenset(), maxbars=_H1_MAXBARS, cd
             sd = 0                                       # 일봉 추세 반대 방향
         if sd and ehr[i] in blk:
             sd = 0                                       # 이 통화의 진입 금지 시간
+        if sd and atrmin and not (A[i] / pip >= cost * atrmin):
+            sd = 0                                       # [변동성 하한] 스프레드 대비 ATR 이 너무 작다
+        if sd and post[i]:
+            sd = 0                                       # [발표 직후] FOMC 발표 후 postf 시간 진입 금지
         if not sd:
             i += 1
             continue
@@ -13768,7 +13961,7 @@ def _h1_key(instr, t):
 
 # ───────────────────────── 시트 ─────────────────────────
 
-def _h1_ws(tab, head):
+def _h1_ws_raw(tab, head):
     ss = _get_spreadsheet()                          # type: ignore[name-defined]
     if ss is None:
         return None
@@ -13780,23 +13973,31 @@ def _h1_ws(tab, head):
         return ws
 
 
-def _h1_rows(tab, head):
-    ws = _h1_ws(tab, head)
-    if ws is None:
-        return None
-    vals = ws.get_all_values()
-    if not vals:
-        ws.update("A1", [head])
-        return []
-    return [dict(zip(vals[0], r)) for r in vals[1:] if r and r[0]]
+def _h1_ws(tab, head):                               # [안전1] 시간제한
+    return _h1_timeout(lambda: _h1_ws_raw(tab, head), _H1_SHEET_TIMEOUT, None, f"시트 열기({tab})")
 
 
-def _h1_append(tab, head, rows):
-    ws = _h1_ws(tab, head)
-    if ws is None:
-        return False
-    ws.append_rows(rows, value_input_option="RAW")
-    return True
+def _h1_rows(tab, head):                             # [안전1] 시간제한
+    def _go():
+        ws = _h1_ws_raw(tab, head)
+        if ws is None:
+            return None
+        vals = ws.get_all_values()
+        if not vals:
+            ws.update("A1", [head])
+            return []
+        return [dict(zip(vals[0], r)) for r in vals[1:] if r and r[0]]
+    return _h1_timeout(_go, _H1_SHEET_TIMEOUT * 2, None, f"시트 읽기({tab})")
+
+
+def _h1_append(tab, head, rows):                     # [안전1] 시간제한
+    def _go():
+        ws = _h1_ws_raw(tab, head)
+        if ws is None:
+            return False
+        ws.append_rows(rows, value_input_option="RAW")
+        return True
+    return bool(_h1_timeout(_go, _H1_SHEET_TIMEOUT * 2, False, f"시트 쓰기({tab})"))
 
 
 # ───────────────────────── 주문 ─────────────────────────
@@ -13827,6 +14028,18 @@ def _h1_place(instr, pend, cfg, now):
     if not cfg["orders"]:
         _h1_log(f"{instr} {side_ko} 신호 (주문 off)")
         return
+    gate, s12, nmon = _h1_sw12(cfg)                      # [안전4] 12개월 가상손익 스위치
+    if not gate:
+        _h1_log(f"{instr} {side_ko} 신호 — 직전 {nmon}개월 가상손익 {s12:+,.0f}$ "
+                f"< 기준 {cfg['sw12_thr']:+,.0f}$ → 12개월 장치가 막음")
+        _h1_alert("⛔ 12개월 장치 작동 — 새 주문 중단",
+                  f"직전 {nmon}개월 '규칙(가상)' 손익 합계가 {s12:+,.0f}$ 다 (기준 {cfg['sw12_thr']:+,.0f}$).\n"
+                  "이 전략이 1년 동안 돈을 못 벌었다는 뜻이라 새 실주문을 내지 않는다.\n\n"
+                  "· 가상기록은 계속 쌓인다 → 직전 12개월이 다시 플러스가 되면 저절로 재개된다\n"
+                  "· 이미 열린 거래는 손절·시간청산으로 정상 종료된다\n"
+                  "· 끄려면 Render 환경변수 H24_SW12=off",
+                  key="sw12", every=24 * 3600)
+        return
     if not cfg["demo"]:
         if not cfg["real"]:
             _h1_log(f"{instr} {side_ko} 신호 — 실계좌인데 H24_REAL 이 꺼져 있어 주문하지 않음")
@@ -13842,6 +14055,10 @@ def _h1_place(instr, pend, cfg, now):
             return "retry"
         if nav < cfg["stop_nav"]:
             _h1_log(f"{instr} {side_ko} 신호 — 순자산 ${nav:,.0f} < 중단선 ${cfg['stop_nav']:,.0f}, 주문 중단")
+            _h1_alert("⛔ 중단선 아래 — 새 주문 중단",
+                      f"순자산 ${nav:,.0f} 이 중단선 ${cfg['stop_nav']:,.0f} 아래로 내려갔다.\n"
+                      "새 주문을 내지 않는다. 이미 열린 거래는 정상 종료된다.",
+                      key="stopnav", every=12 * 3600)
             return
     else:
         bal = 10000 + _h1_live_total()
@@ -13902,6 +14119,15 @@ def _h1_place(instr, pend, cfg, now):
     if code == 0 or code >= 500 or "HALTED" in str(why):
         _H1_STATE["tried"].discard(key)          # 일시적 실패 → 다음 tick 에 다시
         return "retry"
+    _h1_alert(f"⛔ 주문 거절 — {instr} {side_ko}",          # [안전3] 거절 즉시 알림
+              f"{instr} {side_ko} {units:,}단위 주문이 거절됐다. 이 신호는 놓쳤다.\n\n"
+              f"응답 코드: {code}\n사유: {why}\n"
+              f"신호 시각: {entry_t:%Y-%m-%d %H:%M} ET\n"
+              f"손절 {dist / pip:.1f}pip · 거래당 위험 ${risk_usd:,.0f}\n\n"
+              "ACCOUNT_NEW_POSITIONS_LOCKED → OANDA 계좌 쪽 확인 (본인정보·입금승인 등)\n"
+              "INSUFFICIENT_MARGIN → 수량이 계좌 대비 큼 (H24_RISK_USD 확인)\n"
+              "MARKET_HALTED → 장이 닫혀 있음 (다음 신호를 기다리면 됨)",
+              key=f"rej-{code}-{str(why)[:40]}", every=1800)
     row = [key, instr, side_ko, f"{now:%Y-%m-%d %H:%M}", units, "", "", round(dist / pip, 1),
            "없음", f"실패: {str(why)[:60]}"]
     _H1_STATE["ord"][key] = dict(zip(_H1_HEAD_ORD, row))
@@ -14036,6 +14262,7 @@ def _h1_tick(force=False):
         now = _h1_dt.now(_H1_NY)
         bar = _h1_pd.Timestamp(now).floor("1h")
         if not force and _H1_STATE["last_bar"] == bar:
+            _H1_WATCH["last_ok"] = now                   # [안전2] 살아 있음
             _h1_email_check(now, cfg)
             return
         if not force and now.minute < 1:
@@ -14064,7 +14291,8 @@ def _h1_tick(force=False):
                 retry = True                             # 이 시간 신호를 놓치지 않도록 다시 계산
                 continue
             closed, opened, pend = _h1_engine(df, pip, cst, dc, cfg["fomc"], frozenset(cfg["blocks"].get(instr, ())),
-                                              cdir=cdirs.get(instr, 0), cup=cfg["carry_up"], cdn=cfg["carry_dn"])
+                                              cdir=cdirs.get(instr, 0), cup=cfg["carry_up"], cdn=cfg["carry_dn"],
+                                              atrmin=cfg["atrmin"], postf=cfg["postf"])
             _H1_STATE["open_sim"][instr] = None
             if opened is not None and opened["t"] >= _H1_START:
                 _H1_STATE["open_sim"][instr] = {
@@ -14102,6 +14330,8 @@ def _h1_tick(force=False):
                 except Exception as e:
                     _h1_log(f"스프레드 기록 실패: {str(e)[:80]}")
         _H1_STATE["last_bar"] = None if retry else bar
+        if not retry:
+            _H1_WATCH["last_ok"] = now                   # [안전2] 이 봉 계산 성공
         _h1_email_check(now, cfg)
     except Exception as e:
         _h1_log(f"tick 예외: {str(e)[:150]}")
@@ -14173,12 +14403,38 @@ def _h1_email_body(today, cfg):
     rs = _h1_rows(_H1_TAB_SIM, _H1_HEAD_SIM) or []
     sl, ss = _h1_summary(rl, "합계$"), _h1_summary(rs, "손익$")
     old = _h1_summary(rl, "합계$", _H1_OLDP)
-    L = [f"1시간봉 RSI 다이버전스 묶음 + 일봉 추세 + FOMC 2배 + 금리 방향 크기 · 익절 없음 · {_H1_MAXBARS}봉 청산 — {today} (ET)",
+    L = [f"1시간봉 RSI 다이버전스 묶음 + 일봉 추세 + FOMC 2배/발표후 금지 + 금리 방향 크기 · 익절 없음 · {_H1_MAXBARS}봉 청산 — {today} (ET)",
          f"금리 방향: {_h1_carry_text()} · 받는 방향 {cfg['carry_up']}배, 내는 방향 {cfg['carry_dn']}배",
          "묶음 = MACD 같은 방향 + 12시·금요일 진입 금지 / 추세 = 일봉 200EMA 방향만 / FOMC 전 24시간 진입은 위험 2배",
          "시간 금지 = " + (", ".join(f"{k} {min(v)}~{max(v)}시" for k, v in cfg["blocks"].items()) or "없음"),
          (f"OANDA **실계좌** · 거래당 ${cfg['risk']:,.0f} 위험 (FOMC 전 2배) · 순자산 ${_h1_nav(cfg):,.0f} · 중단선 ${cfg['stop_nav']:,.0f}"
           if _H1_REAL else f"OANDA 데모 실주문 · 거래당 ${cfg['risk']:,.0f} 위험 · 가상계좌 $10,000"), ""]
+    soon = _h1_cb_soon(cfg, today, 3)                              # [안전5] 중앙은행 발표 예고
+    if soon:
+        L.append("■ 📅 중앙은행 발표 예고")
+        for d, who, dd in soon:
+            when = "내일" if dd == 1 else f"{dd}일 뒤"
+            tail = ("14:00 ET · 발표 전 24시간 진입은 위험 2배" if who == "FOMC"
+                    else "일본 낮 = ET 밤~새벽 · 엔화 3쌍 주의 (USD/JPY · EUR/JPY · AUD/JPY)")
+            L.append(f"  {who} {d} ({when}) — {tail}")
+        if len({w for _, w, _ in soon}) > 1:
+            L.append("  ⚠ FOMC 와 BOJ 가 같은 주에 겹친다. 과거 최악의 주들이 이 조합이었다"
+                     " (2023·2024·2025년 7월 말). 쉬고 싶으면 H24_ORDERS=off")
+        L.append("")
+    gate, s12, nmon = _h1_sw12(cfg)                                # [안전4] 12개월 장치
+    if not cfg["sw12"]:
+        L += ["■ 12개월 장치: 꺼짐 (H24_SW12=off)", ""]
+    elif s12 is None or nmon < cfg["sw12_win"]:
+        L += [f"■ 12개월 장치: 켜짐 — 아직 {nmon}개월분"
+              + (f" ({s12:+,.0f}$)" if s12 is not None else "")
+              + f", {cfg['sw12_win']}개월 모이기 전에는 그냥 거래한다", ""]
+    else:
+        L += [f"■ 12개월 장치: {'통과 — 주문함' if gate else '⛔ 작동 — 이 달 새 주문 중단'}"
+              f"  (직전 {nmon}개월 가상손익 {s12:+,.0f}$, 기준 {cfg['sw12_thr']:+,.0f}$)", ""]
+    if cfg["atrmin"]:
+        L += [f"■ 변동성 하한: ATR14 가 스프레드의 {cfg['atrmin']:g}배 미만이면 진입 안 함", ""]
+    if cfg["postf"]:
+        L += [f"■ FOMC 발표 직후 {cfg['postf']:g}시간은 진입하지 않음 (발표 전 24시간은 위험 2배 그대로)", ""]
     warn = sl.get("거래", 0) and sl.get("최근3개월$", 0) <= -cfg["warn3m"]
     if warn:
         L += [f"⚠ 경고: 최근 3개월 실주문 합계 {sl['최근3개월$']:+,.0f}$ (경고선 −${cfg['warn3m']:,.0f}). 주문은 계속한다.", ""]
@@ -14208,8 +14464,10 @@ def _h1_email_body(today, cfg):
     if old.get("거래", 0):
         L += ["", f"■ 직전 묶음 규칙 실주문 (11-08 ~ 11-10): {old['거래']}건 누적 {old['누적$']:+,.2f}$"]
     nf = [f for f in cfg["fomc"] if f >= today][:2]
-    if nf:
-        L += ["", f"■ 다음 FOMC 발표: {', '.join(nf)} 14:00 ET (전 24시간 진입은 위험 2배)"]
+    nb = [f for f in cfg["boj"] if f >= today][:2]
+    if nf or nb:
+        L += ["", f"■ 다음 FOMC: {', '.join(nf) or '없음'}  (14:00 ET, 전 24시간 진입은 위험 2배)",
+              f"■ 다음 BOJ:  {', '.join(nb) or '없음'}  (일본 낮 발표 = ET 밤~새벽)"]
     if _H1_REAL:
         L += ["", "※ 실계좌: 위 '가상잔고'는 $10,000 기준 참고값. 실제 잔고는 맨 위 순자산을 본다"]
     L += ["", "■ 기준 (과거 6년 백테스트, 스프레드·스왑 포함: 28봉·금리 크기 조절 포함: 2021~26 +$34,903 / 최대 낙폭 −$3,561 — 단, 처음 보는 2010~20년에서는 11년 중 9년 손실)",
@@ -14222,7 +14480,12 @@ def _h1_email_body(today, cfg):
 def _h1_send(today):
     cfg = _h1_cfg()
     s, body, warn = _h1_email_body(today, cfg)
-    return _pr_send_email(f"{'⚠ ' if warn else ''}{'[실계좌] ' if _H1_REAL else ''}[24봉 묶음] {today} 누적 {s.get('누적$', 0):+,.0f}$ ({s.get('거래', 0)}건)",
+    soon = _h1_cb_soon(cfg, today, 3)
+    cb = ("📅" + "·".join(sorted({w for _, w, _ in soon})) + " ") if soon else ""
+    stop = "" if _h1_sw12(cfg)[0] else "⛔중단 "
+    return _pr_send_email(f"{'⚠ ' if warn else ''}{stop}{cb}{'[실계좌] ' if _H1_REAL else ''}"
+                          f"[{_H1_MAXBARS}봉 묶음] {today} "
+                          f"누적 {s.get('누적$', 0):+,.0f}$ ({s.get('거래', 0)}건)",
                           body)                                   # type: ignore[name-defined]
 
 
@@ -14250,11 +14513,16 @@ async def _h1_loop():
             await _h1_asyncio.to_thread(_h1_tick)
         except Exception as e:
             print(f"⚠️ [H24] loop 예외: {e}")
+        try:
+            await _h1_asyncio.to_thread(_h1_watchdog)    # [안전2] 계산 잠금과 무관하게 돈다
+        except Exception as e:
+            print(f"⚠️ [H24] 감시 예외: {e}")
         await _h1_asyncio.sleep(30)
 
 
 @app.on_event("startup")                                          # type: ignore[name-defined]
 async def _h24_startup():
+    _H1_WATCH["last_ok"] = _h1_dt.now(_H1_NY)                     # 켠 시각을 기준으로 감시 시작
     _h1_asyncio.create_task(_h1_loop())
 
 
@@ -14266,7 +14534,7 @@ def h24_status_endpoint(run: int = 0):
     cfg = _h1_cfg()
     out = {"설정": {"계산": "on" if cfg["live"] else "off", "데모주문": "on" if cfg["orders"] else "off",
                    "메일": "on" if cfg["email"] else "off", "거래당위험$": cfg["risk"],
-                   "규칙": "RSI 다이버전스 + MACD 같은 방향 + 12시·금요일 금지 + 일봉 200EMA 방향만 + FOMC 전 2배 · 익절 없음 · 24봉",
+                   "규칙": f"RSI 다이버전스 + MACD 같은 방향 + 12시·금요일 금지 + 일봉 200EMA 방향만 + FOMC 전 2배 · FOMC 발표후 금지 · 익절 없음 · {_H1_MAXBARS}봉",
                    "손절ATR": _H1_SLM, "달러노출한도": cfg["usd_cap"], "보유봉": _H1_MAXBARS,
                    "금리크기": f"받는 방향 {cfg['carry_up']}배 / 내는 방향 {cfg['carry_dn']}배",
                    "금리방향": {k: ("매수 유리" if v > 0 else "매도 유리" if v < 0 else "모름") for k, v in (_H1_FINCACHE.get("dir") or {}).items()} or "아직 조회 전",
@@ -14275,6 +14543,23 @@ def h24_status_endpoint(run: int = 0):
                    "다음FOMC": [f for f in cfg["fomc"] if f >= f"{_h1_dt.now(_H1_NY):%Y-%m-%d}"][:3],
                    "중단잔고$": cfg["stop_bal"], "3개월경고$": -cfg["warn3m"],
                    "시작": f"{_H1_START:%Y-%m-%d %H:%M} ET", "점검일": _H1_JUDGE}}
+    try:
+        _g, _s12, _nm = _h1_sw12(cfg)
+        out["설정"]["12개월장치"] = (
+            "꺼짐" if not cfg["sw12"] else
+            (f"아직 {_nm}개월분 — 그냥 거래" if _s12 is None or _nm < cfg["sw12_win"] else
+             ("통과 — 주문함" if _g else "작동 — 새 주문 중단")
+             + f" (직전 {_nm}개월 {_s12:+,.0f}$, 기준 {cfg['sw12_thr']:+,.0f}$)"))
+    except Exception as e:
+        out["설정"]["12개월장치"] = f"확인 실패: {str(e)[:60]}"
+    out["설정"]["변동성하한"] = f"ATR >= 스프레드 x {cfg['atrmin']:g}" if cfg["atrmin"] else "끔"
+    out["설정"]["FOMC발표후금지"] = f"{cfg['postf']:g}시간" if cfg["postf"] else "끔"
+    out["설정"]["다음BOJ"] = [f for f in cfg["boj"] if f >= f"{_h1_dt.now(_H1_NY):%Y-%m-%d}"][:3]
+    _ok = _H1_WATCH.get("last_ok")
+    out["설정"]["마지막계산"] = (
+        f"{_ok:%Y-%m-%d %H:%M} ET ({(_h1_dt.now(_H1_NY) - _ok).total_seconds() / 60:.0f}분 전)"
+        if _ok else "아직 없음")
+    out["설정"]["계산잠금"] = "잡혀 있음" if _H1_LOCK.locked() else "풀려 있음"
     if not cfg["demo"]:
         miss = [k for k, ok in (("H24_REAL=on", cfg["real"]), ("H24_RISK_USD", cfg["risk_set"]), ("H24_STOP_NAV", cfg["stop_nav"] > 0)) if not ok]
         out["실계좌"] = ("실계좌 주문 켜짐" if not miss else f"실계좌 연결됨 — 주문하지 않음 (빠진 설정: {', '.join(miss)})")
@@ -14305,6 +14590,32 @@ def h24_status_endpoint(run: int = 0):
 def h24_test_email_endpoint():
     ok = _h1_send(_h1_dt.now(_H1_NY).date().isoformat())
     return {"보냄": ok, "안내": "메일함(스팸함 포함)을 확인해라. 안 오면 PR_SMTP_USER / PR_SMTP_PASS 확인"}
+
+
+@app.get("/h24_test_alert")                                        # type: ignore[name-defined]
+def h24_test_alert_endpoint():
+    """즉시 알림 메일이 실제로 오는지 시험 (안전장치 2·3 이 쓰는 경로)"""
+    _H1_WATCH["alert"].pop("시험", None)
+    ok = _h1_alert("시험", "알림 경로 시험용 메일이다. 이게 왔으면 멈춤·주문거절 알림도 온다.", key="시험", every=0)
+    return {"보냄": ok}
+
+
+@app.get("/h24_months")                                            # type: ignore[name-defined]
+def h24_months_endpoint():
+    """12개월 장치가 보는 월별 가상손익 (씨앗 + 시트 기록)"""
+    cfg = _h1_cfg()
+    try:
+        m = _h1_month_pl(cfg, force=True)
+    except Exception as e:
+        return {"오류": str(e)[:150]}
+    g, s, n = _h1_sw12(cfg)
+    cur = f"{_h1_dt.now(_H1_NY):%Y-%m}"
+    use = sorted(k for k in m if k < cur)[-cfg["sw12_win"]:]
+    return {"월별$": {k: round(m[k], 2) for k in sorted(m)},
+            "쓰는달": use, "합계$": None if s is None else round(s, 2),
+            "기준$": cfg["sw12_thr"], "창": cfg["sw12_win"],
+            "판정": "꺼짐" if not cfg["sw12"] else ("통과 — 주문함" if g else "작동 — 새 주문 중단"),
+            "안내": "이 달(진행 중)은 합계에 넣지 않는다. 씨앗은 환경변수 H24_HIST"}
 
 
 @app.get("/h24_spreads")                                          # type: ignore[name-defined]
