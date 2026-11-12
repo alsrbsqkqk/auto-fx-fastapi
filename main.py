@@ -14670,6 +14670,33 @@ def h24_test_email_endpoint():
     return {"보냄": ok, "안내": "메일함(스팸함 포함)을 확인해라. 안 오면 PR_SMTP_USER / PR_SMTP_PASS 확인"}
 
 
+@app.get("/h24_instruments")                                       # type: ignore[name-defined]
+def h24_instruments_endpoint():
+    """이 계좌에서 실제로 거래할 수 있는 상품 전부 (OANDA 가 직접 알려주는 목록, 읽기 전용)"""
+    cfg = _h1_cfg()
+    if not cfg["account"]:
+        return {"오류": "계좌 없음"}
+    code, j = _h1_api("GET", f"/v3/accounts/{cfg['account']}/instruments")
+    if code != 200:
+        return {"오류": f"조회 실패 {code}", "내용": str(j)[:200]}
+    ins = (j or {}).get("instruments", [])
+    by = {}
+    for x in ins:
+        t = x.get("type", "?")
+        by.setdefault(t, []).append({
+            "이름": x.get("name"), "표시": x.get("displayName"),
+            "최소단위": x.get("minimumTradeSize"),
+            "최대레버리지": (round(1 / float(x.get("marginRate") or 1)) if x.get("marginRate") else None),
+            "최대수량": x.get("maximumOrderUnits")})
+    for t in by:
+        by[t].sort(key=lambda r: r["이름"] or "")
+    return {"계좌": cfg["account"], "종류": "데모" if cfg["demo"] else "실계좌",
+            "총개수": len(ins),
+            "종류별개수": {t: len(v) for t, v in sorted(by.items())},
+            "상품": by,
+            "안내": "type 이 CURRENCY = 통화쌍 · CFD = 차액결제상품 · METAL = 금속. 미국 계좌는 보통 CURRENCY 만 나온다"}
+
+
 @app.get("/h24_test_alert")                                        # type: ignore[name-defined]
 def h24_test_alert_endpoint():
     """즉시 알림 메일이 실제로 오는지 시험 (안전장치 2·3 이 쓰는 경로)"""
@@ -14757,6 +14784,71 @@ def _hs_fetch(instr, gran, start, end=None, max_req=400):
             break
         frm, first = cs[-1]["time"], False
     return rows
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 🟩 [HIST-2] Alpaca 과거 캔들 내려받기 (분석용, 주문과 무관)   (2026-11-12)
+#
+#   GET /alpaca_history?sym=SPY&tf=H1&start=2016-01-01
+#     주식/ETF → data.alpaca.markets/v2/stocks/bars (무료 플랜은 IEX 피드)
+#     암호화폐 → sym=BTCUSD 또는 BTC/USD  → /v1beta3/crypto/us/bars (피드 제한 없음)
+#   tf: M15 · M30 · H1 · H4 · D
+#   필요한 기존 심볼: app · ALPACA_HEADERS · ALPACA_DATA_BASE_URL
+# ═══════════════════════════════════════════════════════════════════
+_AH_TF = {"M15": "15Min", "M30": "30Min", "H1": "1Hour", "H4": "4Hour", "D": "1Day"}
+_AH_CRYPTO = {"BTC", "ETH", "LTC", "BCH", "LINK", "UNI", "AAVE", "DOGE", "SOL", "AVAX", "DOT", "SHIB"}
+
+
+@app.get("/alpaca_history")                                       # type: ignore[name-defined]
+def alpaca_history_endpoint(sym: str = "SPY", tf: str = "H1", start: str = "2016-01-01",
+                            end: str = "", feed: str = "iex"):
+    sym = sym.strip().upper().replace("-", "/")
+    tf = tf.strip().upper()
+    if tf not in _AH_TF:
+        return _HSJSON({"오류": "tf 는 M15/M30/H1/H4/D 중 하나"}, status_code=400)
+    base = sym.split("/")[0]
+    is_crypto = ("/" in sym) or (base in _AH_CRYPTO and len(sym) <= 7)
+    if is_crypto and "/" not in sym:
+        sym = base + "/USD"
+    try:
+        s0 = _hs_dt.fromisoformat(start).strftime("%Y-%m-%dT%H:%M:%SZ")
+        e0 = _hs_dt.fromisoformat(end).strftime("%Y-%m-%dT%H:%M:%SZ") if end else None
+    except Exception:
+        return _HSJSON({"오류": "start/end 는 2016-01-01 형식"}, status_code=400)
+    url = (f"{ALPACA_DATA_BASE_URL}/v1beta3/crypto/us/bars" if is_crypto      # type: ignore[name-defined]
+           else f"{ALPACA_DATA_BASE_URL}/v2/stocks/bars")                     # type: ignore[name-defined]
+    rows, tok, pages = [], None, 0
+    while pages < 400:
+        pages += 1
+        p = {"symbols": sym, "timeframe": _AH_TF[tf], "start": s0, "limit": 10000, "sort": "asc"}
+        if e0:
+            p["end"] = e0
+        if not is_crypto:
+            p["adjustment"] = "all"
+            p["feed"] = feed
+        if tok:
+            p["page_token"] = tok
+        try:
+            r = _hs_rq.get(url, headers=ALPACA_HEADERS, params=p, timeout=(5, 60))   # type: ignore[name-defined]
+        except Exception as ex:
+            return _HSJSON({"오류": f"요청 실패: {str(ex)[:200]}"}, status_code=502)
+        if r.status_code != 200:
+            return _HSJSON({"오류": f"Alpaca {r.status_code}", "내용": r.text[:300],
+                            "안내": "무료 플랜은 주식이 IEX 피드다. 암호화폐는 sym=BTCUSD 형태로."}, status_code=502)
+        j = r.json()
+        bars = (j.get("bars") or {}).get(sym, []) if isinstance(j.get("bars"), dict) else (j.get("bars") or [])
+        for b in bars:
+            rows.append(f'{b["t"]},{b["o"]},{b["h"]},{b["l"]},{b["c"]},{b.get("v", 0)}')
+        tok = j.get("next_page_token")
+        if not tok or not bars:
+            break
+    if not rows:
+        return _HSJSON({"오류": "받은 캔들이 없다", "심볼": sym,
+                        "안내": "주식은 IEX 피드라 과거가 짧을 수 있다. feed=sip 는 유료 플랜 전용."}, status_code=404)
+    body = "time,open,high,low,close,volume\n" + "\n".join(rows) + "\n"
+    name = f"ALPACA_{sym.replace('/', '')}_{tf}_{rows[0][:10]}_{rows[-1][:10]}.csv.gz"
+    return _HSResponse(content=_hs_gzip.compress(body.encode()), media_type="application/gzip",
+                       headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
 @app.get("/oanda_history")                                        # type: ignore[name-defined]
