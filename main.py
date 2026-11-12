@@ -14799,6 +14799,108 @@ _AH_TF = {"M15": "15Min", "M30": "30Min", "H1": "1Hour", "H4": "4Hour", "D": "1D
 _AH_CRYPTO = {"BTC", "ETH", "LTC", "BCH", "LINK", "UNI", "AAVE", "DOGE", "SOL", "AVAX", "DOT", "SHIB"}
 
 
+@app.get("/alpaca_assets")                                        # type: ignore[name-defined]
+def alpaca_assets_endpoint(syms: str = ""):
+    """이 알파카 계좌에서 실제로 거래 가능한 종목인지 하나씩 확인 (읽기 전용).
+    syms 를 비우면 거래 가능한 ETF 전체 개수만 알려준다."""
+    hdr = ALPACA_HEADERS                                           # type: ignore[name-defined]
+    base = ALPACA_TRADE_BASE_URL                                   # type: ignore[name-defined]
+    want = [x.strip().upper().replace("-", "/") for x in syms.split(",") if x.strip()]
+    if not want:
+        try:
+            r = _hs_rq.get(f"{base}/v2/assets", headers=hdr,
+                           params={"status": "active", "asset_class": "us_equity"}, timeout=(5, 60))
+            a = r.json() if r.status_code == 200 else []
+            rc = _hs_rq.get(f"{base}/v2/assets", headers=hdr,
+                            params={"status": "active", "asset_class": "crypto"}, timeout=(5, 30))
+            c = rc.json() if rc.status_code == 200 else []
+        except Exception as ex:
+            return _HSJSON({"오류": str(ex)[:200]}, status_code=502)
+        return {"미국주식_활성": len(a), "거래가능": sum(1 for x in a if x.get("tradable")),
+                "공매도가능": sum(1 for x in a if x.get("shortable")),
+                "소수점가능": sum(1 for x in a if x.get("fractionable")),
+                "암호화폐_활성": len(c),
+                "암호화폐목록": sorted(x.get("symbol") for x in c)[:60],
+                "안내": "syms=SPY,QQQ,BTCUSD 처럼 넣으면 종목별로 확인한다"}
+    out, ok, bad = {}, [], []
+    for x in want:
+        q = x
+        if q.endswith("USD") and "/" not in q and len(q) <= 8 and q[:-3] in _AH_CRYPTO:
+            q = q[:-3] + "/USD"
+        try:
+            r = _hs_rq.get(f"{base}/v2/assets/{q.replace('/', '%2F')}", headers=hdr, timeout=(5, 20))
+        except Exception as ex:
+            out[x] = {"오류": str(ex)[:80]}; bad.append(x); continue
+        if r.status_code != 200:
+            out[x] = {"상태": f"없음 ({r.status_code})"}; bad.append(x); continue
+        j = r.json()
+        t = bool(j.get("tradable"))
+        out[x] = {"거래가능": "예" if t else "아니오", "종류": j.get("class"),
+                  "거래소": j.get("exchange"), "상태": j.get("status"),
+                  "공매도": "가능" if j.get("shortable") else "불가",
+                  "소수점": "가능" if j.get("fractionable") else "불가",
+                  "이름": (j.get("name") or "")[:40]}
+        (ok if t else bad).append(x)
+    return {"확인": len(want), "거래가능": len(ok), "문제": len(bad),
+            "거래가능목록": ok, "문제목록": bad, "상세": out}
+
+
+@app.get("/alpaca_batch")                                         # type: ignore[name-defined]
+def alpaca_batch_endpoint(syms: str = "SPY,QQQ,IWM", tf: str = "D", start: str = "2015-01-01",
+                          end: str = "", feed: str = "iex"):
+    """여러 종목을 한 번에. 결과 CSV 첫 칸이 symbol. 암호화폐는 BTCUSD 처럼 적는다."""
+    tf = tf.strip().upper()
+    if tf not in _AH_TF:
+        return _HSJSON({"오류": "tf 는 M15/M30/H1/H4/D 중 하나"}, status_code=400)
+    try:
+        s0 = _hs_dt.fromisoformat(start).strftime("%Y-%m-%dT%H:%M:%SZ")
+        e0 = _hs_dt.fromisoformat(end).strftime("%Y-%m-%dT%H:%M:%SZ") if end else None
+    except Exception:
+        return _HSJSON({"오류": "start/end 는 2015-01-01 형식"}, status_code=400)
+    want = [x.strip().upper().replace("-", "/") for x in syms.split(",") if x.strip()]
+    stk, cry = [], []
+    for x in want:
+        if "/" in x: cry.append(x)
+        elif x.endswith("USD") and x[:-3] in _AH_CRYPTO: cry.append(x[:-3] + "/USD")
+        elif x in _AH_CRYPTO: cry.append(x + "/USD")
+        else: stk.append(x)
+    rows, notes = [], {}
+    for group, url, is_c in ((stk, f"{ALPACA_DATA_BASE_URL}/v2/stocks/bars", False),          # type: ignore[name-defined]
+                             (cry, f"{ALPACA_DATA_BASE_URL}/v1beta3/crypto/us/bars", True)):  # type: ignore[name-defined]
+        for i in range(0, len(group), 20):                       # 20개씩 끊어서
+            chunk = group[i:i+20]
+            tok, pages = None, 0
+            while pages < 300:
+                pages += 1
+                p = {"symbols": ",".join(chunk), "timeframe": _AH_TF[tf], "start": s0,
+                     "limit": 10000, "sort": "asc"}
+                if e0: p["end"] = e0
+                if not is_c:
+                    p["adjustment"] = "all"; p["feed"] = feed
+                if tok: p["page_token"] = tok
+                try:
+                    r = _hs_rq.get(url, headers=ALPACA_HEADERS, params=p, timeout=(5, 60))    # type: ignore[name-defined]
+                except Exception as ex:
+                    return _HSJSON({"오류": f"요청 실패: {str(ex)[:200]}"}, status_code=502)
+                if r.status_code != 200:
+                    return _HSJSON({"오류": f"Alpaca {r.status_code}", "내용": r.text[:300]}, status_code=502)
+                j = r.json(); bars = j.get("bars") or {}
+                for sym, bl in bars.items():
+                    notes[sym] = notes.get(sym, 0) + len(bl)
+                    for b in bl:
+                        rows.append(f'{sym},{b["t"]},{b["o"]},{b["h"]},{b["l"]},{b["c"]},{b.get("v", 0)}')
+                tok = j.get("next_page_token")
+                if not tok: break
+    if not rows:
+        return _HSJSON({"오류": "받은 캔들이 없다", "요청": want}, status_code=404)
+    rows.sort()
+    body = "symbol,time,open,high,low,close,volume\n" + "\n".join(rows) + "\n"
+    name = f"ALPACABATCH_{tf}_{len(notes)}sym_{start}.csv.gz"
+    return _HSResponse(content=_hs_gzip.compress(body.encode()), media_type="application/gzip",
+                       headers={"Content-Disposition": f'attachment; filename="{name}"',
+                                "X-Symbols": ",".join(f"{k}:{v}" for k, v in sorted(notes.items()))[:900]})
+
+
 @app.get("/alpaca_history")                                       # type: ignore[name-defined]
 def alpaca_history_endpoint(sym: str = "SPY", tf: str = "H1", start: str = "2016-01-01",
                             end: str = "", feed: str = "iex"):
