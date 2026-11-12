@@ -14806,10 +14806,15 @@ def alpaca_history_endpoint(sym: str = "SPY", tf: str = "H1", start: str = "2016
     tf = tf.strip().upper()
     if tf not in _AH_TF:
         return _HSJSON({"오류": "tf 는 M15/M30/H1/H4/D 중 하나"}, status_code=400)
-    base = sym.split("/")[0]
-    is_crypto = ("/" in sym) or (base in _AH_CRYPTO and len(sym) <= 7)
-    if is_crypto and "/" not in sym:
-        sym = base + "/USD"
+    # BTCUSD / BTC-USD / BTC/USD / BTC 전부 BTC/USD 로 바꾼다
+    if "/" in sym:
+        is_crypto, base = True, sym.split("/")[0]
+    elif sym.endswith("USD") and sym[:-3] in _AH_CRYPTO:
+        is_crypto, base, sym = True, sym[:-3], sym[:-3] + "/USD"
+    elif sym in _AH_CRYPTO:
+        is_crypto, base, sym = True, sym, sym + "/USD"
+    else:
+        is_crypto, base = False, sym
     try:
         s0 = _hs_dt.fromisoformat(start).strftime("%Y-%m-%dT%H:%M:%SZ")
         e0 = _hs_dt.fromisoformat(end).strftime("%Y-%m-%dT%H:%M:%SZ") if end else None
