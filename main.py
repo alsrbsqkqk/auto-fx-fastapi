@@ -13455,6 +13455,18 @@ def gapgo_live_status_endpoint():
 #                              2021~26 중 5개 연도 개선, 한 거래당 최대 위험은 변동 없음
 #        끄려면 H24_FAR_MIN=0
 #
+#     9) H24_RGAP_MIN (기본 3) / H24_RGAP_MULT (기본 1.25)  — 2026-11-12 추가
+#        다이버전스의 '세기' = 두 RSI 피봇의 차이. 이 값이 H24_RGAP_MIN 이상이면 크기를 배로 키운다.
+#        지금까지는 RSI 가 1 어긋난 신호와 30 어긋난 신호를 똑같이 취급하고 있었다.
+#        검증(12개월 장치 + 추세확립 포함): 현재 2010-20 +$2,664 / 2021-26 +$41,377 / 낙폭 −$5,628
+#                                      적용 2010-20 +$4,678 / 2021-26 +$47,202 / 낙폭 −$5,102
+#        2021~26 여섯 해 모두 개선. 기준 3~8 × 배수 1.15~1.6 의 24가지 조합이 전부 개선.
+#        총배수 상한(H24_MULT_CAP)이 그대로라 한 거래당 최대 위험은 변하지 않는다. 끄려면 H24_RGAP_MIN=0
+#
+#     ※ 같이 시험했으나 넣지 않은 것: 본전 손절·추적 손절(둘 다 치명적), 손절폭 0.8/1.2/1.5(현재 1.0 이 최적),
+#        보유봉 20/24/36/48(28 이 최적), 달러한도 1/3/없음(2 가 최적), 진입 타이밍·가격 어긋남·
+#        범위 위치·MACD 크기·변동성 비율(전부 구조 없음), RSI 어긋남을 '필터'로 쓰기(실패)
+#
 #   ■ 추가 엔드포인트: /h24_test_alert  /h24_months
 #
 #   ■ 엔드포인트: /h24_status  /h24_status?run=1  /h24_test_email  /h24_spreads
@@ -13603,6 +13615,8 @@ def _h1_cfg():
             "farmin": float(g("H24_FAR_MIN", "5") or 0),      # 200EMA 에서 이만큼(일봉ATR 배수) 멀면
             "farmul": float(g("H24_FAR_MULT", "1.5") or 1),   #   크기를 이 배수로
             "mcap": float(g("H24_MULT_CAP", "2.5") or 0),     # 모든 배수를 곱한 총합의 상한
+            "rgmin": float(g("H24_RGAP_MIN", "3") or 0),      # RSI 어긋남이 이만큼 이상이면
+            "rgmul": float(g("H24_RGAP_MULT", "1.25") or 1),  #   크기를 이 배수로
             "hist": str(g("H24_HIST", _H1_HIST_DEFAULT)),
             "demo": "fxpractice" in str(globals().get("OANDA_BASE_URL", "")),
             "account": str(globals().get("ACCOUNT_ID") or "")}
@@ -13859,7 +13873,7 @@ def _h1_far_series(dc):
 
 
 def _h1_engine(df, pip, cost, dc, fomc, blk=frozenset(), maxbars=_H1_MAXBARS, cdir=0, cup=1.0, cdn=1.0,
-               atrmin=0.0, postf=0.0, farmin=0.0, farmul=1.0, mcap=0.0):
+               atrmin=0.0, postf=0.0, farmin=0.0, farmul=1.0, mcap=0.0, rgmin=0.0, rgmul=1.0):
     """cdir: 스왑 받는 방향(+1 매수, -1 매도, 0 모름). 거래 배수 = (FOMC 전 2배) × (받는 방향 cup, 내는 방향 cdn)"""
     def _mult(i, sd):
         m = 2.0 if pre[i] else 1.0
@@ -13867,6 +13881,13 @@ def _h1_engine(df, pip, cost, dc, fomc, blk=frozenset(), maxbars=_H1_MAXBARS, cd
             m *= cup if sd == cdir else cdn
         if farmin > 0 and far[i] >= farmin:
             m *= farmul                                   # [추세 확립] 200EMA 에서 멀면 키운다
+        if rgmin > 0:                                     # [신호 강도] RSI 어긋남이 크면 키운다
+            for _k in range(10):
+                _j = i - _k
+                if _j >= 0 and sig[_j] == sd:
+                    if rgp[_j] >= rgmin:
+                        m *= rgmul
+                    break
         if mcap > 0:
             m = min(m, mcap)
         return m
@@ -13897,14 +13918,17 @@ def _h1_engine(df, pip, cost, dc, fomc, blk=frozenset(), maxbars=_H1_MAXBARS, cd
 
     pl, ph = piv(R, True), piv(R, False)
     sig = _h1_np.zeros(n, int)
+    rgp = _h1_np.zeros(n)                                  # [신호 강도] 두 피봇의 RSI 차이
     for arr, sd in ((pl, 1), (ph, -1)):
         last = None
         for i in _h1_np.flatnonzero(arr):
             if last is not None and 5 <= i - last <= 60:
                 if sd == 1 and R[i] > R[last] and l[i] < l[last]:
                     sig[i + LB] = 1
+                    rgp[i + LB] = float(R[i] - R[last])
                 if sd == -1 and R[i] < R[last] and h[i] > h[last]:
                     sig[i + LB] = -1
+                    rgp[i + LB] = float(R[last] - R[i])
             last = i
     hi = _h1_pd.Series(h).rolling(100).max().values
     lo = _h1_pd.Series(l).rolling(100).min().values
@@ -14321,7 +14345,8 @@ def _h1_tick(force=False):
             closed, opened, pend = _h1_engine(df, pip, cst, dc, cfg["fomc"], frozenset(cfg["blocks"].get(instr, ())),
                                               cdir=cdirs.get(instr, 0), cup=cfg["carry_up"], cdn=cfg["carry_dn"],
                                               atrmin=cfg["atrmin"], postf=cfg["postf"],
-                                              farmin=cfg["farmin"], farmul=cfg["farmul"], mcap=cfg["mcap"])
+                                              farmin=cfg["farmin"], farmul=cfg["farmul"], mcap=cfg["mcap"],
+                                              rgmin=cfg["rgmin"], rgmul=cfg["rgmul"])
             try:
                 _H1_STATE["far"][instr] = round(float(_h1_far_series(dc).iloc[-1]), 2)
             except Exception:
@@ -14478,6 +14503,9 @@ def _h1_email_body(today, cfg):
             L.append(f"  {k} {v:>5.2f}" + ("  ← 확립 (크기 키움)" if v >= cfg["farmin"] else "  ← 전환 임박 (기본 크기)"))
         L.append(f"  (총배수 상한 {cfg['mcap']:g}배 — 한 거래 최대 위험 ${cfg['risk'] * cfg['mcap']:,.0f})")
         L.append("")
+    if cfg["rgmin"] > 0:
+        L += [f"■ 신호 강도: RSI 어긋남이 {cfg['rgmin']:g} 이상인 다이버전스는 크기 {cfg['rgmul']:g}배"
+              " (약 58%가 해당. 'H24_규칙' 탭 청산방식 칸의 '배수'로 확인)", ""]
     warn = sl.get("거래", 0) and sl.get("최근3개월$", 0) <= -cfg["warn3m"]
     if warn:
         L += [f"⚠ 경고: 최근 3개월 실주문 합계 {sl['최근3개월$']:+,.0f}$ (경고선 −${cfg['warn3m']:,.0f}). 주문은 계속한다.", ""]
@@ -14577,7 +14605,7 @@ def h24_status_endpoint(run: int = 0):
     cfg = _h1_cfg()
     out = {"설정": {"계산": "on" if cfg["live"] else "off", "데모주문": "on" if cfg["orders"] else "off",
                    "메일": "on" if cfg["email"] else "off", "거래당위험$": cfg["risk"],
-                   "규칙": f"RSI 다이버전스 + MACD 같은 방향 + 12시·금요일 금지 + 일봉 200EMA 방향만 + FOMC 전 2배 · 발표후 금지 · 추세확립 {_h1_os.environ.get('H24_FAR_MULT', '1.5')}배 · 익절 없음 · {_H1_MAXBARS}봉",
+                   "규칙": f"RSI 다이버전스 + MACD 같은 방향 + 12시·금요일 금지 + 일봉 200EMA 방향만 + FOMC 전 2배 · 발표후 금지 · 추세확립 {_h1_os.environ.get('H24_FAR_MULT', '1.5')}배 · 신호강도 {_h1_os.environ.get('H24_RGAP_MULT', '1.25')}배 · 익절 없음 · {_H1_MAXBARS}봉",
                    "손절ATR": _H1_SLM, "달러노출한도": cfg["usd_cap"], "보유봉": _H1_MAXBARS,
                    "금리크기": f"받는 방향 {cfg['carry_up']}배 / 내는 방향 {cfg['carry_dn']}배",
                    "금리방향": {k: ("매수 유리" if v > 0 else "매도 유리" if v < 0 else "모름") for k, v in (_H1_FINCACHE.get("dir") or {}).items()} or "아직 조회 전",
@@ -14599,6 +14627,8 @@ def h24_status_endpoint(run: int = 0):
     out["설정"]["FOMC발표후금지"] = f"{cfg['postf']:g}시간" if cfg["postf"] else "끔"
     out["설정"]["추세확립배수"] = (f"200EMA 거리 {cfg['farmin']:g} 이상이면 {cfg['farmul']:g}배 (총배수 상한 {cfg['mcap']:g})"
                             if cfg["farmin"] > 0 else "끔")
+    out["설정"]["신호강도배수"] = (f"RSI 어긋남 {cfg['rgmin']:g} 이상이면 {cfg['rgmul']:g}배"
+                            if cfg["rgmin"] > 0 else "끔")
     if _H1_STATE.get("far"):
         out["200EMA거리"] = {k: (f"{v:.2f}  {'확립' if v >= cfg['farmin'] else '전환임박'}")
                             for k, v in _H1_STATE["far"].items()}
