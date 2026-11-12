@@ -13446,6 +13446,15 @@ def gapgo_live_status_endpoint():
 #        최근 6년에 맞춘 선택임을 알고 쓴다 (사용자 지시, 2026-11-11)
 #     6) 중앙은행 발표 예고: FOMC + BOJ 를 3일 전부터 요약 메일 맨 위와 제목에 알린다 (H24_BOJ_EXTRA 로 추가)
 #
+#     8) H24_FAR_MIN (기본 5) / H24_FAR_MULT (기본 1.5) / H24_MULT_CAP (기본 2.5)  — 2026-11-12 추가
+#        일봉 종가가 200EMA 에서 '일봉 ATR x H24_FAR_MIN' 이상 떨어져 있으면 = 추세가 확립된 구간 →
+#        그 거래만 크기를 H24_FAR_MULT 배로. 모든 배수의 곱은 H24_MULT_CAP 을 넘지 않는다(지금 최대와 동일).
+#        근거: 추세 전환 ±10일 거래는 승률 18.8%, 그 밖은 31%. 거래 수는 그대로이고 크기만 옮긴다.
+#        검증(12개월 장치 포함): 현재 2010-20 −$1,188 / 2021-26 +$35,522 / 낙폭 −$7,576
+#                              적용 2010-20 +$2,664 / 2021-26 +$41,377 / 낙폭 −$5,628
+#                              2021~26 중 5개 연도 개선, 한 거래당 최대 위험은 변동 없음
+#        끄려면 H24_FAR_MIN=0
+#
 #   ■ 추가 엔드포인트: /h24_test_alert  /h24_months
 #
 #   ■ 엔드포인트: /h24_status  /h24_status?run=1  /h24_test_email  /h24_spreads
@@ -13565,7 +13574,7 @@ _H1_HEAD_ORD = ["키", "통화", "방향", "주문시각", "수량", "체결가"
 _H1_LOCK = _h1_threading.Lock()
 _H1_CACHE = {}
 _H1_STATE = {"rec_sim": None, "rec_live": None, "last_bar": None, "log": [], "open_sim": {},
-             "last_email": None, "tried": set(), "ord": None}
+             "last_email": None, "tried": set(), "ord": None, "far": {}}
 _H1_DIR = "/tmp/h24"
 try:
     _h1_os.makedirs(_H1_DIR, exist_ok=True)
@@ -13591,6 +13600,9 @@ def _h1_cfg():
             "sw12_win": int(float(g("H24_SW12_WIN", "12") or 12)),
             "atrmin": float(g("H24_ATR_MIN", "0") or 0),
             "postf": float(g("H24_POST_FOMC", "24") or 0),
+            "farmin": float(g("H24_FAR_MIN", "5") or 0),      # 200EMA 에서 이만큼(일봉ATR 배수) 멀면
+            "farmul": float(g("H24_FAR_MULT", "1.5") or 1),   #   크기를 이 배수로
+            "mcap": float(g("H24_MULT_CAP", "2.5") or 0),     # 모든 배수를 곱한 총합의 상한
             "hist": str(g("H24_HIST", _H1_HIST_DEFAULT)),
             "demo": "fxpractice" in str(globals().get("OANDA_BASE_URL", "")),
             "account": str(globals().get("ACCOUNT_ID") or "")}
@@ -13836,13 +13848,27 @@ def _h1_wilder(x, n):
     return a
 
 
+def _h1_far_series(dc):
+    """일봉 종가가 200EMA 에서 몇 '일봉 ATR' 만큼 떨어져 있나 (절대값).
+    값이 작다 = 추세 전환이 임박했다 (승률 18.8%) / 크다 = 추세가 확립됐다 (승률 31%)."""
+    e = dc.ewm(span=_H1_EMA_D, adjust=False).mean()
+    a = dc.diff().abs().rolling(14).mean()
+    with _h1_np.errstate(divide="ignore", invalid="ignore"):
+        v = (dc - e) / a
+    return v.abs().replace([_h1_np.inf, -_h1_np.inf], 0.0).fillna(0.0)
+
+
 def _h1_engine(df, pip, cost, dc, fomc, blk=frozenset(), maxbars=_H1_MAXBARS, cdir=0, cup=1.0, cdn=1.0,
-               atrmin=0.0, postf=0.0):
+               atrmin=0.0, postf=0.0, farmin=0.0, farmul=1.0, mcap=0.0):
     """cdir: 스왑 받는 방향(+1 매수, -1 매도, 0 모름). 거래 배수 = (FOMC 전 2배) × (받는 방향 cup, 내는 방향 cdn)"""
     def _mult(i, sd):
         m = 2.0 if pre[i] else 1.0
         if cdir:
             m *= cup if sd == cdir else cdn
+        if farmin > 0 and far[i] >= farmin:
+            m *= farmul                                   # [추세 확립] 200EMA 에서 멀면 키운다
+        if mcap > 0:
+            m = min(m, mcap)
         return m
     """dc = 완성된 일봉 종가 (FX 날짜 순). fomc = 발표일 목록.
     반환: (청산된 거래, 열린 거래 또는 None, 지금 진입할 신호 또는 None)"""
@@ -13892,6 +13918,8 @@ def _h1_engine(df, pip, cost, dc, fomc, blk=frozenset(), maxbars=_H1_MAXBARS, cd
     up_d = (dc > dc.ewm(span=_H1_EMA_D, adjust=False).mean()).values
     pos = dc.index.searchsorted(_h1_fx_date(idx), side="left") - 1
     up = _h1_np.where(pos >= 0, up_d[_h1_np.clip(pos, 0, None)], False)
+    _fv = _h1_far_series(dc).values                       # [추세 확립] 200EMA 까지 거리
+    far = _h1_np.where(pos >= 0, _fv[_h1_np.clip(pos, 0, None)], 0.0)
     # [크기] FOMC 발표 전 24시간 안 진입
     pre = _h1_np.zeros(n, bool)
     post = _h1_np.zeros(n, bool)                          # [발표 직후] 진입 금지 구간
@@ -14292,7 +14320,12 @@ def _h1_tick(force=False):
                 continue
             closed, opened, pend = _h1_engine(df, pip, cst, dc, cfg["fomc"], frozenset(cfg["blocks"].get(instr, ())),
                                               cdir=cdirs.get(instr, 0), cup=cfg["carry_up"], cdn=cfg["carry_dn"],
-                                              atrmin=cfg["atrmin"], postf=cfg["postf"])
+                                              atrmin=cfg["atrmin"], postf=cfg["postf"],
+                                              farmin=cfg["farmin"], farmul=cfg["farmul"], mcap=cfg["mcap"])
+            try:
+                _H1_STATE["far"][instr] = round(float(_h1_far_series(dc).iloc[-1]), 2)
+            except Exception:
+                pass
             _H1_STATE["open_sim"][instr] = None
             if opened is not None and opened["t"] >= _H1_START:
                 _H1_STATE["open_sim"][instr] = {
@@ -14435,6 +14468,16 @@ def _h1_email_body(today, cfg):
         L += [f"■ 변동성 하한: ATR14 가 스프레드의 {cfg['atrmin']:g}배 미만이면 진입 안 함", ""]
     if cfg["postf"]:
         L += [f"■ FOMC 발표 직후 {cfg['postf']:g}시간은 진입하지 않음 (발표 전 24시간은 위험 2배 그대로)", ""]
+    if cfg["farmin"] > 0 and _H1_STATE.get("far"):
+        fr = _H1_STATE["far"]
+        L.append(f"■ 추세 확립도 (200EMA 까지 거리, {cfg['farmin']:g} 이상이면 크기 {cfg['farmul']:g}배)")
+        for k in _H1_PAIRS:
+            v = fr.get(k)
+            if v is None:
+                continue
+            L.append(f"  {k} {v:>5.2f}" + ("  ← 확립 (크기 키움)" if v >= cfg["farmin"] else "  ← 전환 임박 (기본 크기)"))
+        L.append(f"  (총배수 상한 {cfg['mcap']:g}배 — 한 거래 최대 위험 ${cfg['risk'] * cfg['mcap']:,.0f})")
+        L.append("")
     warn = sl.get("거래", 0) and sl.get("최근3개월$", 0) <= -cfg["warn3m"]
     if warn:
         L += [f"⚠ 경고: 최근 3개월 실주문 합계 {sl['최근3개월$']:+,.0f}$ (경고선 −${cfg['warn3m']:,.0f}). 주문은 계속한다.", ""]
@@ -14534,7 +14577,7 @@ def h24_status_endpoint(run: int = 0):
     cfg = _h1_cfg()
     out = {"설정": {"계산": "on" if cfg["live"] else "off", "데모주문": "on" if cfg["orders"] else "off",
                    "메일": "on" if cfg["email"] else "off", "거래당위험$": cfg["risk"],
-                   "규칙": f"RSI 다이버전스 + MACD 같은 방향 + 12시·금요일 금지 + 일봉 200EMA 방향만 + FOMC 전 2배 · FOMC 발표후 금지 · 익절 없음 · {_H1_MAXBARS}봉",
+                   "규칙": f"RSI 다이버전스 + MACD 같은 방향 + 12시·금요일 금지 + 일봉 200EMA 방향만 + FOMC 전 2배 · 발표후 금지 · 추세확립 {_h1_os.environ.get('H24_FAR_MULT', '1.5')}배 · 익절 없음 · {_H1_MAXBARS}봉",
                    "손절ATR": _H1_SLM, "달러노출한도": cfg["usd_cap"], "보유봉": _H1_MAXBARS,
                    "금리크기": f"받는 방향 {cfg['carry_up']}배 / 내는 방향 {cfg['carry_dn']}배",
                    "금리방향": {k: ("매수 유리" if v > 0 else "매도 유리" if v < 0 else "모름") for k, v in (_H1_FINCACHE.get("dir") or {}).items()} or "아직 조회 전",
@@ -14554,6 +14597,11 @@ def h24_status_endpoint(run: int = 0):
         out["설정"]["12개월장치"] = f"확인 실패: {str(e)[:60]}"
     out["설정"]["변동성하한"] = f"ATR >= 스프레드 x {cfg['atrmin']:g}" if cfg["atrmin"] else "끔"
     out["설정"]["FOMC발표후금지"] = f"{cfg['postf']:g}시간" if cfg["postf"] else "끔"
+    out["설정"]["추세확립배수"] = (f"200EMA 거리 {cfg['farmin']:g} 이상이면 {cfg['farmul']:g}배 (총배수 상한 {cfg['mcap']:g})"
+                            if cfg["farmin"] > 0 else "끔")
+    if _H1_STATE.get("far"):
+        out["200EMA거리"] = {k: (f"{v:.2f}  {'확립' if v >= cfg['farmin'] else '전환임박'}")
+                            for k, v in _H1_STATE["far"].items()}
     out["설정"]["다음BOJ"] = [f for f in cfg["boj"] if f >= f"{_h1_dt.now(_H1_NY):%Y-%m-%d}"][:3]
     _ok = _H1_WATCH.get("last_ok")
     out["설정"]["마지막계산"] = (
