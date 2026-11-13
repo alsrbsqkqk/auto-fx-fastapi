@@ -14138,9 +14138,62 @@ def _h1_blocked_all(cfg):
     return rows
 
 
+def _h1_real_sim_trades():
+    """시트 'H24_규칙' 에 기록된 실제 거래. 겹침 판정의 기준이 된다."""
+    rows = _h1_timeout(lambda: _h1_rows(_H1_TAB_SIM, _H1_HEAD_SIM), 12, None, "규칙탭") or []
+    out = []
+    for r in rows:
+        if not str(r.get("키", "")).startswith(_H1_KEYP):
+            continue
+        try:
+            t = _h1_pd.Timestamp(str(r["진입시각"]).strip(), tz=_H1_NY)
+        except Exception:
+            continue
+        try:
+            xt = _h1_pd.Timestamp(str(r["청산시각"]).strip(), tz=_H1_NY)
+        except Exception:
+            xt = None
+        try:
+            usd = float(str(r.get("손익$", "") or 0).replace(",", ""))
+        except Exception:
+            usd = 0.0
+        out.append({"통화": str(r.get("통화", "")).replace("_", "/"),
+                    "방향": str(r.get("방향", "")).strip(), "t": t, "xt": xt, "usd": usd})
+    return out
+
+
+def _h1_blocked_mark(rows):
+    """막힌 신호가 실제 거래와 '같은 움직임'인지 표시. 그런 건 누적에서 뺀다.
+
+    두 경우를 잡는다.
+      (가) 그 시점에 이미 같은 방향 포지션이 열려 있었다 → 필터와 무관하게 못 들어갔다
+      (나) 그림자 보유기간 안에 같은 방향 실제 진입이 있었다 → 같은 움직임을 늦게 잡았다
+    """
+    try:
+        real = _h1_real_sim_trades()
+    except Exception:
+        real = []
+    for r in rows:
+        r["겹침"] = None
+        if r["사유"] == "통과" or not real:
+            continue
+        hold = r.get("보유h") or _H1_MAXBARS
+        end = r["시각"] + _h1_pd.Timedelta(hours=float(hold))
+        for q in real:
+            if q["통화"] != r["통화"] or q["방향"] != r["방향"]:
+                continue
+            if q["t"] <= r["시각"] and (q["xt"] is None or q["xt"] > r["시각"]):
+                r["겹침"] = {"종류": "이미 보유 중", "t": q["t"], "usd": q["usd"]}
+                break
+            if r["시각"] < q["t"] <= end:
+                r["겹침"] = {"종류": "같은 움직임", "t": q["t"], "usd": q["usd"]}
+                break
+    return rows
+
+
 def _h1_blocked_lines(cfg, today):
     """메일에 들어갈 줄들."""
-    rows = _h1_blocked_all(cfg)
+    rows = _h1_blocked_mark(_h1_blocked_all(cfg))
     if not rows:
         return ["■ 신호 기록: 아직 없음 (캔들 준비 중)", ""]
     risk = cfg["risk"]
@@ -14155,8 +14208,9 @@ def _h1_blocked_lines(cfg, today):
         L.append(f"  {r['시각']:%m-%d %H:%M}  {r['통화']} {r['방향']}  {mark}")
     L.append("")
 
-    # 그림자 결과: 막혔고 + 28봉이 끝난 것
     done = [r for r in rows if r["사유"] != "통과" and r["확정"] and r["R"] is not None]
+    pure = [r for r in done if not r["겹침"]]          # 진짜로 막힌 것만
+    dup = [r for r in done if r["겹침"]]                # 실제 거래와 같은 움직임
     fresh = [r for r in done if (td - r["시각"].date()).days <= days + 2]
     L.append(f"■ 막힌 신호의 그림자 결과 (들어갔다면 어떻게 됐을까) — 최근 {len(fresh)}건")
     if not fresh:
@@ -14166,24 +14220,27 @@ def _h1_blocked_lines(cfg, today):
         verdict = "막은 게 이득" if r["R"] < 0 else "막아서 손해"
         L.append(f"  {r['시각']:%m-%d %H:%M} {r['통화']} {r['방향']} "
                  f"[{r['사유']}] → {r['청산']} {r['R']:+.2f}R ({usd:+,.0f}$) · {verdict}")
+        if r["겹침"]:
+            g = r["겹침"]
+            L.append(f"     ⚠ {g['종류']} — 실제로 {g['t']:%m-%d %H:%M} 에 진입해 {g['usd']:+,.0f}$. 누적에서 뺀다")
     L.append("")
 
-    # 누적: 사유별로 얼마나 아꼈나
-    if done:
-        tot = -sum(r["R"] for r in done) * risk
-        L.append(f"■ 누적 — 필터가 막아서 아낀 돈 {tot:+,.0f}$  ({len(done)}건, {_H1_START:%m-%d} 부터)")
+    if pure or dup:
+        tot = -sum(r["R"] for r in pure) * risk
+        L.append(f"■ 누적 — 필터가 막아서 아낀 돈 {tot:+,.0f}$  ({len(pure)}건, {_H1_START:%m-%d} 부터)")
         agg = {}
-        for r in done:
+        for r in pure:
             a = agg.setdefault(r["사유"], [0, 0.0])
             a[0] += 1; a[1] += -r["R"] * risk
         for w, (nn, v) in sorted(agg.items(), key=lambda x: -x[1][1]):
             L.append(f"  {w:<14} {nn:>3}건  {v:+,.0f}$")
+        if dup:
+            L.append(f"  (제외됨 {len(dup)}건 — 봇이 같은 움직임을 실제로 잡았거나 이미 포지션 보유 중)")
         L.append("  (+ 면 막아서 이득, − 면 막아서 손해. 기본 위험 기준이라 크기 배수는 빼고 계산)")
-        L.append("  ※ 과거 6년 기준으로는 일봉 200EMA 필터 하나가 −196R(기본위험이면 약 −$19,600)의")
-        L.append("     손실을 막아줬다. 거래가 없는 날은 이 필터가 일하고 있는 날이다.")
+        L.append("  ※ 이 숫자는 방향 감각용이다. 필터를 켤지 끌지는 6년 전체 재시뮬레이션으로 판단한다:")
+        L.append("     일봉 200EMA 필터를 끄면 2010~2020년 −$39,516, 켜면 +$4,678")
     L.append("")
     return L
-
 
 def _h1_key(instr, t):
     return f"{_H1_KEYP}{instr}-{t:%Y%m%d%H%M}"
@@ -14721,7 +14778,7 @@ def _h1_email_body(today, cfg):
         L += ["", "※ 실계좌: 위 '가상잔고'는 $10,000 기준 참고값. 실제 잔고는 맨 위 순자산을 본다"]
     if str(_h1_os.environ.get("H24_BLK_LOG", "on")).strip().lower() in ("on", "1", "true", "yes"):
         try:
-            L += _h1_timeout(lambda: _h1_blocked_lines(cfg, today), 25,
+            L += _h1_timeout(lambda: _h1_blocked_lines(cfg, today), 40,
                              ["■ 신호 기록: 계산 시간 초과 — 건너뜀", ""], "신호기록") or []
         except Exception as _e:
             L += [f"■ 신호 기록: 실패 ({str(_e)[:80]}) — 주문에는 영향 없음", ""]
@@ -14912,7 +14969,7 @@ def h24_blocked_endpoint(days: int = 7):
     """잡힌 신호와 '그림자 거래' 결과. 5시 메일을 기다리지 않고 지금 보려고."""
     cfg = _h1_cfg()
     try:
-        rows = _h1_blocked_all(cfg)
+        rows = _h1_blocked_mark(_h1_blocked_all(cfg))
     except Exception as e:
         return {"오류": str(e)[:150]}
     if not rows:
@@ -14920,21 +14977,34 @@ def h24_blocked_endpoint(days: int = 7):
     td = _h1_dt.now(_H1_NY).date()
     sel = [r for r in rows if (td - r["시각"].date()).days < max(1, days)]
     done = [r for r in rows if r["사유"] != "통과" and r["확정"] and r["R"] is not None]
+    pure = [r for r in done if not r["겹침"]]
+    dup = [r for r in done if r["겹침"]]
     agg = {}
-    for r in done:
+    for r in pure:
         a = agg.setdefault(r["사유"], {"건수": 0, "아낀$": 0.0})
         a["건수"] += 1
         a["아낀$"] = round(a["아낀$"] - r["R"] * cfg["risk"], 2)
-    return {"기간": f"최근 {days}일", "신호": [
-                {"시각ET": f"{r['시각']:%m-%d %H:%M}", "통화": r["통화"], "방향": r["방향"],
-                 "결과": "진입" if r["사유"] == "통과" else f"막힘 — {r['사유']}",
-                 "그림자": (None if r["사유"] == "통과" else
-                          ("진행중" if not r["확정"] else
-                           f"{r['청산']} {r['R']:+.2f}R ({r['R'] * cfg['risk']:+,.0f}$)"))}
-                for r in sel],
-            "누적_막아서_아낀돈$": round(-sum(r["R"] for r in done) * cfg["risk"], 2),
-            "사유별": agg, "기준시각": _H1_START.strftime("%Y-%m-%d %H:%M"),
-            "안내": "+ 면 막아서 이득. 기본 위험 기준(크기 배수 제외). 28봉 안 지난 건 '진행중'"}
+
+    def one(r):
+        d = {"시각ET": f"{r['시각']:%m-%d %H:%M}", "통화": r["통화"], "방향": r["방향"],
+             "결과": "진입" if r["사유"] == "통과" else f"막힘 — {r['사유']}",
+             "그림자": (None if r["사유"] == "통과" else
+                      ("진행중" if not r["확정"] else
+                       f"{r['청산']} {r['R']:+.2f}R ({r['R'] * cfg['risk']:+,.0f}$)"))}
+        if r.get("겹침"):
+            g = r["겹침"]
+            d["겹침"] = f"{g['종류']} — 실제 진입 {g['t']:%m-%d %H:%M} ({g['usd']:+,.0f}$) · 누적 제외"
+        return d
+
+    return {"기간": f"최근 {days}일", "신호": [one(r) for r in sel],
+            "누적_막아서_아낀돈$": round(-sum(r["R"] for r in pure) * cfg["risk"], 2),
+            "사유별": agg, "겹쳐서_제외한건수": len(dup),
+            "겹침내역": [f"{r['시각']:%m-%d %H:%M} {r['통화']} {r['방향']} [{r['사유']}] "
+                      f"→ {r['겹침']['종류']}, 실제 {r['겹침']['t']:%m-%d %H:%M} {r['겹침']['usd']:+,.0f}$"
+                      for r in dup],
+            "기준시각": _H1_START.strftime("%Y-%m-%d %H:%M"),
+            "안내": ("+ 면 막아서 이득. 기본 위험 기준(크기 배수 제외). 28봉 안 지난 건 '진행중'. "
+                   "봇이 같은 움직임을 실제로 잡았거나 이미 포지션을 들고 있던 신호는 누적에서 뺀다")}
 
 
 @app.get("/h24_spreads")                                          # type: ignore[name-defined]
