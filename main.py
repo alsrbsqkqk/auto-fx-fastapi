@@ -14007,6 +14007,184 @@ def _h1_engine(df, pip, cost, dc, fomc, blk=frozenset(), maxbars=_H1_MAXBARS, cd
     return closed, opened, pending
 
 
+# ───────────────────────── 걸러진 신호 · 그림자 거래 ─────────────────────────
+# 매매 경로와 완전히 분리된 읽기 전용 계산. 여기서 예외가 나도 주문에는 영향이 없다.
+# "그림자 거래" = 필터에 걸려서 안 들어간 신호가, 만약 들어갔다면 어떻게 끝났을까.
+
+_H1_BLK_WHY = ["MACD 반대", "12시 ET 금지", "금요일 금지", "일봉 200EMA 반대",
+               "통화별 금지시간", "FOMC 직후", "변동성 하한"]
+
+
+def _h1_blocked_scan(instr, df, dc, cfg, pip, cost, blk):
+    """걸러진 신호 목록. 엔진의 필터 순서를 그대로 따라간다."""
+    o, h, l, c = (df[k].values.astype(float) for k in "ohlc")
+    idx, n = df.index, len(df)
+    if n < 230:
+        return []
+    d = _h1_np.r_[0, _h1_np.diff(c)]
+    g = _h1_wilder(_h1_np.maximum(d, 0), 14)
+    L = _h1_wilder(_h1_np.maximum(-d, 0), 14)
+    with _h1_np.errstate(divide="ignore", invalid="ignore"):
+        R = 100 - 100 / (1 + g / L)
+    pc = _h1_np.r_[c[0], c[:-1]]
+    A = _h1_wilder(_h1_np.maximum(h - l, _h1_np.maximum(abs(h - pc), abs(l - pc))), 14)
+    LB = 5
+
+    def piv(x, low):
+        p = _h1_np.zeros(n, bool)
+        for i in range(LB, n - LB):
+            w = x[i - LB:i + LB + 1]
+            if _h1_np.isnan(w).any():
+                continue
+            p[i] = x[i] == (w.min() if low else w.max())
+        return p
+
+    pl, ph = piv(R, True), piv(R, False)
+    sig = _h1_np.zeros(n, int)
+    for arr, sd in ((pl, 1), (ph, -1)):
+        last = None
+        for i in _h1_np.flatnonzero(arr):
+            if last is not None and 5 <= i - last <= 60 and i + LB < n:
+                if sd == 1 and R[i] > R[last] and l[i] < l[last]:
+                    sig[i + LB] = 1
+                if sd == -1 and R[i] < R[last] and h[i] > h[last]:
+                    sig[i + LB] = -1
+            last = i
+    hi = _h1_pd.Series(h).rolling(100).max().values
+    lo = _h1_pd.Series(l).rolling(100).min().values
+    cs = _h1_pd.Series(c)
+    mac = cs.ewm(span=12, adjust=False).mean() - cs.ewm(span=26, adjust=False).mean()
+    mh = (mac - mac.ewm(span=9, adjust=False).mean()).values
+    et = idx + _h1_pd.Timedelta(hours=1)
+    ehr, edw = et.hour.values, et.dayofweek.values
+    up_d = (dc > dc.ewm(span=_H1_EMA_D, adjust=False).mean()).values
+    pos = dc.index.searchsorted(_h1_fx_date(idx), side="left") - 1
+    up = _h1_np.where(pos >= 0, up_d[_h1_np.clip(pos, 0, None)], False)
+    post = _h1_np.zeros(n, bool)
+    if cfg["postf"]:
+        for f in cfg["fomc"]:
+            ft = _h1_pd.Timestamp(f"{f} 14:00", tz=_H1_NY)
+            post |= _h1_np.asarray((et > ft) & (et <= ft + _h1_pd.Timedelta(hours=cfg["postf"])))
+
+    def shadow(i, sd):
+        """안 막혔으면? 다음 봉 시가 진입 · 1.0ATR 손절 · 28봉 시간청산"""
+        if i + 1 > n - 1 or not _h1_np.isfinite(A[i]) or A[i] <= 0:
+            return None
+        e = o[i + 1]; sl = e - sd * _H1_SLM * A[i]; res = None
+        st = i + _H1_MAXBARS
+        for k in range(i + 1, min(st, n - 1) + 1):
+            if sd == 1:
+                if o[k] <= sl: res = (k, o[k], "손절"); break
+                if l[k] <= sl: res = (k, sl, "손절"); break
+            else:
+                if o[k] >= sl: res = (k, o[k], "손절"); break
+                if h[k] >= sl: res = (k, sl, "손절"); break
+        if res is None:
+            if st > n - 1:
+                return {"done": False}          # 아직 28봉이 안 지났다
+            res = (st, c[st], "시간청산")
+        k, ex, why = res
+        risk = _H1_SLM * A[i] / pip
+        pips = (ex - e) / pip * sd - cost
+        return {"done": True, "R": pips / risk, "exit": why, "hrs": k - i,
+                "xt": idx[k], "x": ex}
+
+    out, prev = [], {}
+    for i in range(210, n):
+        b = [s for s in sig[max(0, i - 9):i + 1] if s]
+        sd = 0
+        if b:
+            mid = (hi[i] + lo[i]) / 2
+            if 1 in b and c[i] < mid: sd = 1
+            elif -1 in b and c[i] > mid: sd = -1
+        if not sd:
+            prev = {}
+            continue
+        why = None
+        if _h1_np.sign(mh[i]) != sd: why = "MACD 반대"
+        elif ehr[i] == 12: why = "12시 ET 금지"
+        elif edw[i] == 4: why = "금요일 금지"
+        elif bool(up[i]) != (sd == 1): why = "일봉 200EMA 반대"
+        elif ehr[i] in blk: why = "통화별 금지시간"
+        elif cfg["atrmin"] and not (A[i] / pip >= cost * cfg["atrmin"]): why = "변동성 하한"
+        elif post[i]: why = "FOMC 직후"
+        if prev.get(sd) == why:
+            continue                             # 같은 신호가 같은 이유로 연달아 → 첫 봉만
+        prev = {sd: why}
+        if idx[i] < _H1_START:
+            continue
+        sh = shadow(i, sd) or {"done": False}
+        out.append({"통화": instr.replace("_", "/"), "봉": idx[i], "시각": et[i],
+                    "방향": "매수" if sd == 1 else "매도", "사유": why or "통과",
+                    "확정": bool(sh.get("done")), "R": sh.get("R"),
+                    "청산": sh.get("exit"), "보유h": sh.get("hrs")})
+    return out
+
+
+def _h1_blocked_all(cfg):
+    """5개쌍 전부 훑는다. 캔들은 이미 메모리에 있는 것만 쓴다 (새로 받지 않음)."""
+    rows = []
+    for instr, (pip, prec, cst) in _H1_PAIRS.items():
+        df = _H1_CACHE.get(instr)
+        if df is None or df.empty:
+            continue
+        try:
+            dc = _h1_fetch_daily(instr)
+        except Exception:
+            continue
+        rows += _h1_blocked_scan(instr, df, dc, cfg, pip, cst,
+                                 frozenset(cfg["blocks"].get(instr, ())))
+    rows.sort(key=lambda r: r["봉"])
+    return rows
+
+
+def _h1_blocked_lines(cfg, today):
+    """메일에 들어갈 줄들."""
+    rows = _h1_blocked_all(cfg)
+    if not rows:
+        return ["■ 신호 기록: 아직 없음 (캔들 준비 중)", ""]
+    risk = cfg["risk"]
+    td = _h1_pd.Timestamp(today).date()
+    days = int(float(_h1_os.environ.get("H24_BLK_DAYS", "2")))
+    recent = [r for r in rows if (td - r["시각"].date()).days < days]
+    L = [f"■ 최근 {days}일 잡힌 신호 {len(recent)}건  (시각은 진입했을 시각 ET)"]
+    if not recent:
+        L.append("  없음 — 다이버전스 자체가 안 나왔다")
+    for r in recent:
+        mark = "✅ 진입" if r["사유"] == "통과" else f"⛔ {r['사유']}"
+        L.append(f"  {r['시각']:%m-%d %H:%M}  {r['통화']} {r['방향']}  {mark}")
+    L.append("")
+
+    # 그림자 결과: 막혔고 + 28봉이 끝난 것
+    done = [r for r in rows if r["사유"] != "통과" and r["확정"] and r["R"] is not None]
+    fresh = [r for r in done if (td - r["시각"].date()).days <= days + 2]
+    L.append(f"■ 막힌 신호의 그림자 결과 (들어갔다면 어떻게 됐을까) — 최근 {len(fresh)}건")
+    if not fresh:
+        L.append("  아직 결과가 확정된 것이 없다 (28봉 = 28시간 필요)")
+    for r in fresh:
+        usd = r["R"] * risk
+        verdict = "막은 게 이득" if r["R"] < 0 else "막아서 손해"
+        L.append(f"  {r['시각']:%m-%d %H:%M} {r['통화']} {r['방향']} "
+                 f"[{r['사유']}] → {r['청산']} {r['R']:+.2f}R ({usd:+,.0f}$) · {verdict}")
+    L.append("")
+
+    # 누적: 사유별로 얼마나 아꼈나
+    if done:
+        tot = -sum(r["R"] for r in done) * risk
+        L.append(f"■ 누적 — 필터가 막아서 아낀 돈 {tot:+,.0f}$  ({len(done)}건, {_H1_START:%m-%d} 부터)")
+        agg = {}
+        for r in done:
+            a = agg.setdefault(r["사유"], [0, 0.0])
+            a[0] += 1; a[1] += -r["R"] * risk
+        for w, (nn, v) in sorted(agg.items(), key=lambda x: -x[1][1]):
+            L.append(f"  {w:<14} {nn:>3}건  {v:+,.0f}$")
+        L.append("  (+ 면 막아서 이득, − 면 막아서 손해. 기본 위험 기준이라 크기 배수는 빼고 계산)")
+        L.append("  ※ 과거 6년 기준으로는 일봉 200EMA 필터 하나가 −196R(기본위험이면 약 −$19,600)의")
+        L.append("     손실을 막아줬다. 거래가 없는 날은 이 필터가 일하고 있는 날이다.")
+    L.append("")
+    return L
+
+
 def _h1_key(instr, t):
     return f"{_H1_KEYP}{instr}-{t:%Y%m%d%H%M}"
 
@@ -14541,6 +14719,12 @@ def _h1_email_body(today, cfg):
               f"■ 다음 BOJ:  {', '.join(nb) or '없음'}  (일본 낮 발표 = ET 밤~새벽)"]
     if _H1_REAL:
         L += ["", "※ 실계좌: 위 '가상잔고'는 $10,000 기준 참고값. 실제 잔고는 맨 위 순자산을 본다"]
+    if str(_h1_os.environ.get("H24_BLK_LOG", "on")).strip().lower() in ("on", "1", "true", "yes"):
+        try:
+            L += _h1_timeout(lambda: _h1_blocked_lines(cfg, today), 25,
+                             ["■ 신호 기록: 계산 시간 초과 — 건너뜀", ""], "신호기록") or []
+        except Exception as _e:
+            L += [f"■ 신호 기록: 실패 ({str(_e)[:80]}) — 주문에는 영향 없음", ""]
     L += ["", "■ 기준 (과거 6년 백테스트, 스프레드·스왑 포함: 28봉·금리 크기 조절 포함: 2021~26 +$34,903 / 최대 낙폭 −$3,561 — 단, 처음 보는 2010~20년에서는 11년 중 9년 손실)",
           f"  점검일 {_H1_JUDGE}: 실주문 거래당 손익과 규칙 계산이 비슷한지(차이 = 실제 비용) 확인",
           f"  경고: 최근 3개월 −${cfg['warn3m']:,.0f} 이하 (주문 계속)",
@@ -14721,6 +14905,36 @@ def h24_months_endpoint():
             "기준$": cfg["sw12_thr"], "창": cfg["sw12_win"],
             "판정": "꺼짐" if not cfg["sw12"] else ("통과 — 주문함" if g else "작동 — 새 주문 중단"),
             "안내": "이 달(진행 중)은 합계에 넣지 않는다. 씨앗은 환경변수 H24_HIST"}
+
+
+@app.get("/h24_blocked")                                          # type: ignore[name-defined]
+def h24_blocked_endpoint(days: int = 7):
+    """잡힌 신호와 '그림자 거래' 결과. 5시 메일을 기다리지 않고 지금 보려고."""
+    cfg = _h1_cfg()
+    try:
+        rows = _h1_blocked_all(cfg)
+    except Exception as e:
+        return {"오류": str(e)[:150]}
+    if not rows:
+        return {"안내": "아직 기록 없음 (캔들 준비 중이거나 시작 시각 이전)"}
+    td = _h1_dt.now(_H1_NY).date()
+    sel = [r for r in rows if (td - r["시각"].date()).days < max(1, days)]
+    done = [r for r in rows if r["사유"] != "통과" and r["확정"] and r["R"] is not None]
+    agg = {}
+    for r in done:
+        a = agg.setdefault(r["사유"], {"건수": 0, "아낀$": 0.0})
+        a["건수"] += 1
+        a["아낀$"] = round(a["아낀$"] - r["R"] * cfg["risk"], 2)
+    return {"기간": f"최근 {days}일", "신호": [
+                {"시각ET": f"{r['시각']:%m-%d %H:%M}", "통화": r["통화"], "방향": r["방향"],
+                 "결과": "진입" if r["사유"] == "통과" else f"막힘 — {r['사유']}",
+                 "그림자": (None if r["사유"] == "통과" else
+                          ("진행중" if not r["확정"] else
+                           f"{r['청산']} {r['R']:+.2f}R ({r['R'] * cfg['risk']:+,.0f}$)"))}
+                for r in sel],
+            "누적_막아서_아낀돈$": round(-sum(r["R"] for r in done) * cfg["risk"], 2),
+            "사유별": agg, "기준시각": _H1_START.strftime("%Y-%m-%d %H:%M"),
+            "안내": "+ 면 막아서 이득. 기본 위험 기준(크기 배수 제외). 28봉 안 지난 건 '진행중'"}
 
 
 @app.get("/h24_spreads")                                          # type: ignore[name-defined]
