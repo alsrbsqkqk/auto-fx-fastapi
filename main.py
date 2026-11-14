@@ -14520,8 +14520,19 @@ _H1_SPREAD_LIST = ["USD_JPY", "EUR_USD", "GBP_USD", "EUR_JPY", "AUD_JPY", "AUD_U
 _H1_TAB_SPR = "H24_스프레드"
 
 
+def _h1_market_closed(now):
+    """FX 장 마감 구간: 금 17:00 ET ~ 일 17:00 ET.
+    이때 OANDA 는 마지막 종가 호가를 계속 돌려주므로, 기록하면 가짜 데이터가 쌓인다."""
+    d, h = now.weekday(), now.hour              # 월=0 … 금=4, 토=5, 일=6
+    return (d == 5) or (d == 4 and h >= 17) or (d == 6 and h < 17)
+
+
 def _h1_record_spreads(cfg, now):
-    """매시간 한 번, 후보 통화들의 현재 스프레드(pip)를 시트에 한 줄 남긴다"""
+    """매시간 한 번, 후보 통화들의 현재 스프레드(pip)를 시트에 한 줄 남긴다.
+    [2026-11-14] 장이 닫혀 있으면 기록하지 않는다.
+    주말 내내 같은 값(예: 4.9/1.8/9.1/12.1/12.2)이 48시간 반복돼 쌓이던 문제."""
+    if _h1_market_closed(now):
+        return
     code, j = _h1_api("GET", f"/v3/accounts/{cfg['account']}/pricing",
                       params={"instruments": ",".join(_H1_SPREAD_LIST)})
     if code != 200:
@@ -14529,14 +14540,21 @@ def _h1_record_spreads(cfg, now):
     sp = {}
     for p in (j or {}).get("prices", []):
         try:
+            if not p.get("tradeable", True):    # OANDA 가 '거래 불가'로 표시한 호가
+                continue
             ins = p["instrument"]
             pip = 0.01 if ins.endswith("_JPY") else 0.0001
             sp[ins] = round((float(p["asks"][0]["price"]) - float(p["bids"][0]["price"])) / pip, 2)
         except Exception:
             continue
-    if sp:
-        _h1_append(_H1_TAB_SPR, ["시각"] + _H1_SPREAD_LIST,
-                   [[f"{now:%Y-%m-%d %H:%M}"] + [sp.get(x, "") for x in _H1_SPREAD_LIST]])
+    if not sp:
+        return
+    row = tuple(sp.get(x, "") for x in _H1_SPREAD_LIST)
+    if _H1_WATCH.get("spr_last") == row:        # 직전과 완전히 같으면 멈춘 호가다
+        return
+    _H1_WATCH["spr_last"] = row
+    _h1_append(_H1_TAB_SPR, ["시각"] + _H1_SPREAD_LIST,
+               [[f"{now:%Y-%m-%d %H:%M}"] + list(row)])
 
 
 # ───────────────────────── 계산 1회 ─────────────────────────
