@@ -14191,6 +14191,47 @@ def _h1_blocked_mark(rows):
     return rows
 
 
+_H1_TAB_SIG = "H24_신호"
+_H1_HEAD_SIG = ["키", "시각ET", "통화", "방향", "결과", "차단사유",
+                "그림자R", "그림자손익$", "청산방식", "보유h", "겹침", "기록시각"]
+
+
+def _h1_sig_rows(cfg, rows):
+    """신호 기록 탭에 넣을 행. 스캔이 매번 전부 다시 계산하므로 탭을 통째로 덮어쓴다.
+    28봉이 지나면 '진행중' 이던 행의 결과가 저절로 채워진다."""
+    now = _h1_dt.now(_H1_NY)
+    out = []
+    for r in rows:
+        통과 = (r["사유"] == "통과")
+        g = r.get("겹침")
+        out.append([
+            f"{r['통화'].replace('/', '_')}-{r['시각']:%Y%m%d%H%M}",
+            f"{r['시각']:%Y-%m-%d %H:%M}", r["통화"], r["방향"],
+            "진입" if 통과 else "막힘",
+            "" if 통과 else r["사유"],
+            "" if (통과 or r["R"] is None) else round(float(r["R"]), 3),
+            "" if (통과 or r["R"] is None) else round(float(r["R"]) * cfg["risk"], 2),
+            "" if 통과 else (r["청산"] or ("진행중" if not r["확정"] else "")),
+            "" if (통과 or not r.get("보유h")) else int(r["보유h"]),
+            (f"{g['종류']} · 실제 {g['t']:%m-%d %H:%M} {g['usd']:+,.0f}$" if g else ""),
+            f"{now:%Y-%m-%d %H:%M}",
+        ])
+    return out
+
+
+def _h1_sig_sheet(cfg):
+    """매시간 호출. 신호 기록 탭을 현재 계산 결과로 전면 갱신한다.
+    매매 경로와 무관한 읽기 전용 계산이므로 여기서 터져도 주문에는 영향이 없다."""
+    if str(_h1_os.environ.get("H24_SIG_SHEET", "on")).strip().lower() not in ("on", "1", "true", "yes"):
+        return
+    try:
+        rows = _h1_blocked_mark(_h1_blocked_all(cfg))
+        if rows and _h1_rewrite(_H1_TAB_SIG, _H1_HEAD_SIG, _h1_sig_rows(cfg, rows)):
+            _h1_log(f"신호 기록 {len(rows)}행 갱신")
+    except Exception as e:
+        _h1_log(f"신호 기록 실패: {str(e)[:80]}")
+
+
 def _h1_blocked_lines(cfg, today):
     """메일에 들어갈 줄들."""
     rows = _h1_blocked_mark(_h1_blocked_all(cfg))
@@ -14277,6 +14318,27 @@ def _h1_rows(tab, head):                             # [안전1] 시간제한
             return []
         return [dict(zip(vals[0], r)) for r in vals[1:] if r and r[0]]
     return _h1_timeout(_go, _H1_SHEET_TIMEOUT * 2, None, f"시트 읽기({tab})")
+
+
+def _h1_rewrite(tab, head, rows):
+    """탭 전체를 머리글 + rows 로 덮어쓴다.
+    신호 기록처럼 '매번 전부 다시 계산하는' 표에 쓴다. rows 가 비면 아무것도 안 한다
+    (스캔이 실패했을 때 기존 기록을 날리지 않도록)."""
+    def _go():
+        if not rows:
+            return False
+        ws = _h1_ws_raw(tab, head)
+        if ws is None:
+            return False
+        body = [list(head)] + [list(r) for r in rows]
+        try:
+            ws.resize(rows=max(len(body) + 50, 1000), cols=len(head))
+        except Exception:
+            pass
+        ws.clear()
+        ws.update("A1", body)
+        return True
+    return bool(_h1_timeout(_go, _H1_SHEET_TIMEOUT * 3, False, f"시트 전면기록({tab})"))
 
 
 def _h1_append(tab, head, rows):                     # [안전1] 시간제한
@@ -14642,6 +14704,8 @@ def _h1_tick(force=False):
                     _h1_record_spreads(cfg, now)
                 except Exception as e:
                     _h1_log(f"스프레드 기록 실패: {str(e)[:80]}")
+                # [신호 기록] 매시간 한 번. 읽기 전용이라 주문과 무관하다.
+                _h1_timeout(lambda: _h1_sig_sheet(cfg), 45, None, "신호기록탭")
         _H1_STATE["last_bar"] = None if retry else bar
         if not retry:
             _H1_WATCH["last_ok"] = now                   # [안전2] 이 봉 계산 성공
