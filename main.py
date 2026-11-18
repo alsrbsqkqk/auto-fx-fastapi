@@ -13872,6 +13872,25 @@ def _h1_far_series(dc):
     return v.abs().replace([_h1_np.inf, -_h1_np.inf], 0.0).fillna(0.0)
 
 
+def _h1_trend_info(dc, pip):
+    """일봉 200EMA 의 방향·거리·전환 예상을 한 번에 낸다.
+      up      : 가격이 EMA 위인가 (상승 추세) → True 면 매수만 통과
+      gap     : 현재가 − EMA (pip). 부호가 곧 방향이다
+      dist    : |gap| ÷ 일평균 변동폭. '한 방향으로 며칠 가야 EMA 에 닿나' 와 같다
+      ema_d   : EMA 가 하루에 움직이는 양 (pip). 가격이 그대로일 때 EMA 가 따라오는 속도
+      half    : 가격이 그대로일 때 차이가 절반으로 줄기까지 걸리는 일수"""
+    e = dc.ewm(span=_H1_EMA_D, adjust=False).mean()
+    a = dc.diff().abs().rolling(14).mean()
+    px, em, av = float(dc.iloc[-1]), float(e.iloc[-1]), float(a.iloc[-1])
+    gap = (px - em) / pip
+    dist = abs(gap) / (av / pip) if av > 0 else 0.0
+    alpha = 2.0 / (_H1_EMA_D + 1)                 # EMA 가중치
+    ema_d = alpha * (px - em) / pip               # 하루치 EMA 이동 (pip, 부호 포함)
+    half = _h1_np.log(0.5) / _h1_np.log(1 - alpha)  # 약 70일 (EMA 길이로만 정해진다)
+    return {"up": px > em, "px": px, "ema": em, "gap": gap,
+            "dist": dist, "ema_d": ema_d, "half": float(half)}
+
+
 def _h1_engine(df, pip, cost, dc, fomc, blk=frozenset(), maxbars=_H1_MAXBARS, cdir=0, cup=1.0, cdn=1.0,
                atrmin=0.0, postf=0.0, farmin=0.0, farmul=1.0, mcap=0.0, rgmin=0.0, rgmul=1.0):
     """cdir: 스왑 받는 방향(+1 매수, -1 매도, 0 모름). 거래 배수 = (FOMC 전 2배) × (받는 방향 cup, 내는 방향 cdn)"""
@@ -14100,14 +14119,18 @@ def _h1_blocked_scan(instr, df, dc, cfg, pip, cost, blk):
         if not sd:
             prev = {}
             continue
-        why = None
-        if _h1_np.sign(mh[i]) != sd: why = "MACD 반대"
-        elif ehr[i] == 12: why = "12시 ET 금지"
-        elif edw[i] == 4: why = "금요일 금지"
-        elif bool(up[i]) != (sd == 1): why = "일봉 200EMA 반대"
-        elif ehr[i] in blk: why = "통화별 금지시간"
-        elif cfg["atrmin"] and not (A[i] / pip >= cost * cfg["atrmin"]): why = "변동성 하한"
-        elif post[i]: why = "FOMC 직후"
+        # 걸린 사유를 '전부' 모은다. 하나만 풀어도 통과하는 게 아니라
+        # 여러 개가 동시에 막고 있는 경우가 많아서, 시트에 다 적어둔다.
+        allw = []
+        if _h1_np.sign(mh[i]) != sd: allw.append("MACD 반대")
+        if ehr[i] == 12: allw.append("12시 ET 금지")
+        if edw[i] == 4: allw.append("금요일 금지")
+        if bool(up[i]) != (sd == 1): allw.append("일봉 200EMA 반대")
+        if ehr[i] in blk: allw.append("통화별 금지시간")
+        if cfg["atrmin"] and not (A[i] / pip >= cost * cfg["atrmin"]): allw.append("변동성 하한")
+        if post[i]: allw.append("FOMC 직후")
+        why = allw[0] if allw else None          # 집계용 대표 사유 (기존 순서 유지)
+        whyall = " + ".join(allw)                # 기록용 전체 사유
         if prev.get(sd) == why:
             continue                             # 같은 신호가 같은 이유로 연달아 → 첫 봉만
         prev = {sd: why}
@@ -14116,6 +14139,7 @@ def _h1_blocked_scan(instr, df, dc, cfg, pip, cost, blk):
         sh = shadow(i, sd) or {"done": False}
         out.append({"통화": instr.replace("_", "/"), "봉": idx[i], "시각": et[i],
                     "방향": "매수" if sd == 1 else "매도", "사유": why or "통과",
+                    "사유전체": whyall or "통과", "사유수": len(allw),
                     "확정": bool(sh.get("done")), "R": sh.get("R"),
                     "청산": sh.get("exit"), "보유h": sh.get("hrs")})
     return out
@@ -14192,7 +14216,7 @@ def _h1_blocked_mark(rows):
 
 
 _H1_TAB_SIG = "H24_신호"
-_H1_HEAD_SIG = ["키", "시각ET", "통화", "방향", "결과", "차단사유",
+_H1_HEAD_SIG = ["키", "시각ET", "통화", "방향", "결과", "차단사유", "사유수", "대표사유",
                 "그림자R", "그림자손익$", "청산방식", "보유h", "겹침", "기록시각"]
 
 
@@ -14208,6 +14232,8 @@ def _h1_sig_rows(cfg, rows):
             f"{r['통화'].replace('/', '_')}-{r['시각']:%Y%m%d%H%M}",
             f"{r['시각']:%Y-%m-%d %H:%M}", r["통화"], r["방향"],
             "진입" if 통과 else "막힘",
+            "" if 통과 else r.get("사유전체", r["사유"]),
+            "" if 통과 else r.get("사유수", 1),
             "" if 통과 else r["사유"],
             "" if (통과 or r["R"] is None) else round(float(r["R"]), 3),
             "" if (통과 or r["R"] is None) else round(float(r["R"]) * cfg["risk"], 2),
@@ -14666,6 +14692,7 @@ def _h1_tick(force=False):
                                               rgmin=cfg["rgmin"], rgmul=cfg["rgmul"])
             try:
                 _H1_STATE["far"][instr] = round(float(_h1_far_series(dc).iloc[-1]), 2)
+                _H1_STATE.setdefault("trend", {})[instr] = _h1_trend_info(dc, pip)
             except Exception:
                 pass
             _H1_STATE["open_sim"][instr] = None
@@ -14812,15 +14839,31 @@ def _h1_email_body(today, cfg):
         L += [f"■ 변동성 하한: ATR14 가 스프레드의 {cfg['atrmin']:g}배 미만이면 진입 안 함", ""]
     if cfg["postf"]:
         L += [f"■ FOMC 발표 직후 {cfg['postf']:g}시간은 진입하지 않음 (발표 전 24시간은 위험 2배 그대로)", ""]
-    if cfg["farmin"] > 0 and _H1_STATE.get("far"):
-        fr = _H1_STATE["far"]
-        L.append(f"■ 추세 확립도 (200EMA 까지 거리, {cfg['farmin']:g} 이상이면 크기 {cfg['farmul']:g}배)")
+    if _H1_STATE.get("trend"):
+        tr = _H1_STATE["trend"]
+        L.append("■ 일봉 200EMA 상태 — 방향 · 거리 · 전환 예상")
+        L.append("  (EMA 위 = 상승 → 매수만 통과 / EMA 아래 = 하락 → 매도만 통과)")
         for k in _H1_PAIRS:
-            v = fr.get(k)
-            if v is None:
+            t = tr.get(k)
+            if not t:
                 continue
-            L.append(f"  {k} {v:>5.2f}" + ("  ← 확립 (크기 키움)" if v >= cfg["farmin"] else "  ← 전환 임박 (기본 크기)"))
-        L.append(f"  (총배수 상한 {cfg['mcap']:g}배 — 한 거래 최대 위험 ${cfg['risk'] * cfg['mcap']:,.0f})")
+            prec = _H1_PAIRS[k][1]
+            dirs = "상승 ↑" if t["up"] else "하락 ↓"
+            pass_side = "매수만 통과" if t["up"] else "매도만 통과"
+            mult = (cfg["farmul"] if (cfg["farmin"] > 0 and t["dist"] >= cfg["farmin"]) else 1.0)
+            tag = "확립" if (cfg["farmin"] > 0 and t["dist"] >= cfg["farmin"]) else "전환 임박"
+            L.append(f"  {k}  {dirs}  현재 {t['px']:.{prec}f} / EMA {t['ema']:.{prec}f}"
+                     f"  차이 {t['gap']:+.1f}pip  거리 {t['dist']:.2f} ({tag})")
+            L.append(f"      → {pass_side} · 크기 {mult:g}배")
+            # 전환 예상: 가격이 EMA 까지 가는 길 / EMA 가 가격 쪽으로 오는 길
+            way = "하락" if t["up"] else "상승"
+            L.append(f"      → 전환하려면 가격이 {way} {abs(t['gap']):.0f}pip "
+                     f"(하루 평균만큼 쉬지 않고 가면 약 {t['dist']:.1f}일)")
+            L.append(f"      → 가격이 지금 자리에 머물면 EMA 가 하루 {t['ema_d']:+.1f}pip 씩 따라옴 "
+                     f"(차이 절반까지 약 {t['half']:.0f}일)")
+        L.append(f"  ※ 거리 {cfg['farmin']:g} 이상이면 크기 {cfg['farmul']:g}배 (총배수 상한 {cfg['mcap']:g}배"
+                 f" — 한 거래 최대 위험 ${cfg['risk'] * cfg['mcap']:,.0f})")
+        L.append("  ※ '전환 임박' 구간은 과거 승률이 18.8% 로 낮다 (확립 구간 31%). 그래서 크기를 안 키운다")
         L.append("")
     if cfg["rgmin"] > 0:
         L += [f"■ 신호 강도: RSI 어긋남이 {cfg['rgmin']:g} 이상인 다이버전스는 크기 {cfg['rgmul']:g}배"
