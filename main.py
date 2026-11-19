@@ -13596,6 +13596,24 @@ except Exception:
     pass
 
 
+_H1_LIFE_DEFAULT = "EUR_USD:3"     # [2026-11-19] 통화쌍별 신호 수명(시간). 없는 쌍은 10
+
+
+def _h1_life(raw=None):
+    """'EUR_USD:3,GBP_USD:12' → {'EUR_USD': 3, ...}. 신호가 확정된 뒤 몇 시간 동안 진입 기회를 주나.
+    [2026-11-19] 17년 재시뮬: EUR/USD 는 늦게 들어갈수록 두 시대 모두 손해 (확정 6~9시간 뒤 진입
+    거래당 −$58). 엔화쌍은 반대로 늦게 들어간 게 제일 좋다. 그래서 EUR/USD 만 3시간."""
+    raw = _H1_LIFE_DEFAULT if raw is None else raw
+    out = {}
+    for part in str(raw or "").split(","):
+        try:
+            k, v = part.strip().split(":")
+            out[k.strip().upper().replace("/", "_")] = max(1, int(float(v)))
+        except Exception:
+            continue
+    return out
+
+
 def _h1_cfg():
     g = _h1_os.environ.get
     on = lambda k, d: str(g(k, d)).strip().lower() in ("on", "1", "true", "yes")
@@ -13617,6 +13635,7 @@ def _h1_cfg():
             "mcap": float(g("H24_MULT_CAP", "2.5") or 0),     # 모든 배수를 곱한 총합의 상한
             "rgmin": float(g("H24_RGAP_MIN", "3") or 0),      # RSI 어긋남이 이만큼 이상이면
             "rgmul": float(g("H24_RGAP_MULT", "1.25") or 1),  #   크기를 이 배수로
+            "life": _h1_life(g("H24_SIG_LIFE", _H1_LIFE_DEFAULT)),   # 통화쌍별 신호 수명(시간), 기본 10
             "hist": str(g("H24_HIST", _H1_HIST_DEFAULT)),
             "demo": "fxpractice" in str(globals().get("OANDA_BASE_URL", "")),
             "account": str(globals().get("ACCOUNT_ID") or "")}
@@ -13892,8 +13911,11 @@ def _h1_trend_info(dc, pip):
 
 
 def _h1_engine(df, pip, cost, dc, fomc, blk=frozenset(), maxbars=_H1_MAXBARS, cdir=0, cup=1.0, cdn=1.0,
-               atrmin=0.0, postf=0.0, farmin=0.0, farmul=1.0, mcap=0.0, rgmin=0.0, rgmul=1.0):
-    """cdir: 스왑 받는 방향(+1 매수, -1 매도, 0 모름). 거래 배수 = (FOMC 전 2배) × (받는 방향 cup, 내는 방향 cdn)"""
+               atrmin=0.0, postf=0.0, farmin=0.0, farmul=1.0, mcap=0.0, rgmin=0.0, rgmul=1.0, life=10):
+    """cdir: 스왑 받는 방향(+1 매수, -1 매도, 0 모름). 거래 배수 = (FOMC 전 2배) × (받는 방향 cup, 내는 방향 cdn)
+    life: 신호가 확정된 뒤 몇 봉(시간) 동안 진입 기회를 주나. 기본 10, EUR/USD 3 (2026-11-19)"""
+    life = max(1, int(life))
+
     def _mult(i, sd):
         m = 2.0 if pre[i] else 1.0
         if cdir:
@@ -13901,7 +13923,7 @@ def _h1_engine(df, pip, cost, dc, fomc, blk=frozenset(), maxbars=_H1_MAXBARS, cd
         if farmin > 0 and far[i] >= farmin:
             m *= farmul                                   # [추세 확립] 200EMA 에서 멀면 키운다
         if rgmin > 0:                                     # [신호 강도] RSI 어긋남이 크면 키운다
-            for _k in range(10):
+            for _k in range(life):
                 _j = i - _k
                 if _j >= 0 and sig[_j] == sd:
                     if rgp[_j] >= rgmin:
@@ -13975,7 +13997,7 @@ def _h1_engine(df, pip, cost, dc, fomc, blk=frozenset(), maxbars=_H1_MAXBARS, cd
     closed, opened, pending = [], None, None
     i = 210
     while i < n:
-        b = [s for s in sig[max(0, i - 9):i + 1] if s]
+        b = [s for s in sig[max(0, i - life + 1):i + 1] if s]    # 최근 life 봉 안의 신호
         sd = 0
         if b:
             mid = (hi[i] + lo[i]) / 2
@@ -14109,8 +14131,9 @@ def _h1_blocked_scan(instr, df, dc, cfg, pip, cost, blk):
                 "xt": idx[k], "x": ex}
 
     out, prev = [], {}
+    life = max(1, int((cfg.get("life") or {}).get(instr, 10)))   # 엔진과 같은 신호 수명
     for i in range(210, n):
-        b = [s for s in sig[max(0, i - 9):i + 1] if s]
+        b = [s for s in sig[max(0, i - life + 1):i + 1] if s]
         sd = 0
         if b:
             mid = (hi[i] + lo[i]) / 2
@@ -14734,6 +14757,7 @@ def _h1_tick(force=False):
                                               cdir=cdirs.get(instr, 0), cup=cfg["carry_up"], cdn=cfg["carry_dn"],
                                               atrmin=cfg["atrmin"], postf=cfg["postf"],
                                               farmin=cfg["farmin"], farmul=cfg["farmul"], mcap=cfg["mcap"],
+                                              life=cfg["life"].get(instr, 10),
                                               rgmin=cfg["rgmin"], rgmul=cfg["rgmul"])
             try:
                 _H1_STATE["far"][instr] = round(float(_h1_far_series(dc).iloc[-1]), 2)
@@ -15042,6 +15066,7 @@ def h24_status_endpoint(run: int = 0):
                             if cfg["farmin"] > 0 else "끔")
     out["설정"]["신호강도배수"] = (f"RSI 어긋남 {cfg['rgmin']:g} 이상이면 {cfg['rgmul']:g}배"
                             if cfg["rgmin"] > 0 else "끔")
+    out["설정"]["신호수명"] = {p: f"{cfg['life'].get(p, 10)}시간" for p in _H1_PAIRS}
     if _H1_STATE.get("far"):
         out["200EMA거리"] = {k: (f"{v:.2f}  {'확립' if v >= cfg['farmin'] else '전환임박'}")
                             for k, v in _H1_STATE["far"].items()}
