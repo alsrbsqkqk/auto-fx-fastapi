@@ -15150,6 +15150,64 @@ def h24_spreads_endpoint():
     return {"기록시간수": len(df), "처음": df["시각"].iloc[0], "마지막": df["시각"].iloc[-1], "통화별": out}
 
 
+def _h1_usd_per_quote(instr):
+    """1 단위 호가통화 = 몇 USD 인가. 손익을 달러로 바꾸는 데 쓴다."""
+    q = instr.split("_")[1]
+    if q == "USD":
+        return 1.0
+    uq = _H1_CACHE.get(f"USD_{q}")
+    if uq is not None and len(uq):
+        return 1.0 / float(uq["c"].iloc[-1])
+    return None
+
+
+@app.get("/h24_bars")                                             # type: ignore[name-defined]
+def h24_bars_endpoint(instr: str = "USD_JPY", n: int = 40):
+    """[2026-11-19] 시간봉을 ET 시각 그대로 보여준다. 읽기 전용 — 주문과 무관.
+
+    왜 만들었나: 보유 중인 거래가 '진입 후 시간대별로 얼마였나' 를 물었을 때
+    답할 방법이 없었다. 상태창은 '지금 평가손익' 하나만 준다.
+    보유 중이면 봉마다 평가손익($)·R배수와 손절 닿았는지까지 같이 준다.
+    캐시에 이미 있는 봉을 쓰므로 OANDA 를 다시 부르지 않는다."""
+    n = max(2, min(int(n), 300))
+    df = _H1_CACHE.get(instr)
+    if df is None or not len(df):
+        return {"오류": f"{instr} 봉 캐시가 비어 있다. /h24_status?run=1 을 한 번 불러라"}
+    df = df.tail(n)
+    pos = (_H1_STATE.get("open_sim") or {}).get(instr) or {}
+    e = pos.get("진입가"); sl = pos.get("손절가")
+    sd = 1 if pos.get("방향") == "매수" else -1
+    units, uq = None, _h1_usd_per_quote(instr)
+    try:
+        for p in (_h1_open_live(_h1_cfg()) or []):
+            if isinstance(p, dict) and p.get("통화") == instr:
+                units = abs(float(p.get("수량") or 0)); break
+    except Exception:
+        pass
+    risk = (units * abs(e - sl) * uq) if (e and sl and units and uq) else None
+    rows = []
+    for ts, r0 in df.iterrows():
+        r = {"시각ET": f"{ts:%m-%d %H:%M}", "시": round(float(r0["o"]), 5),
+             "고": round(float(r0["h"]), 5), "저": round(float(r0["l"]), 5),
+             "종": round(float(r0["c"]), 5)}
+        if e and units and uq:
+            # 호가통화가 USD 가 아니고 그 쌍이 USD_xxx 자신이면, 그 봉 종가로 환산해야 정확하다
+            u = (1.0 / float(r0["c"])) if instr.startswith("USD_") else uq
+            r["평가$"] = round(units * (float(r0["c"]) - e) * sd * u, 2)
+            best = float(r0["h"]) if sd == 1 else float(r0["l"])
+            r["봉중최선$"] = round(units * (best - e) * sd * u, 2)
+            if risk:
+                r["R"] = round(r["평가$"] / risk, 2)
+            if sl:
+                r["손절닿음"] = bool(float(r0["l"]) <= sl) if sd == 1 else bool(float(r0["h"]) >= sl)
+        rows.append(r)
+    return {"통화": instr, "봉수": len(rows),
+            "보유": ({"방향": pos.get("방향"), "진입시각": pos.get("진입시각"), "진입가": e,
+                     "손절가": sl, "수량": units, "위험$": round(risk, 2) if risk else None}
+                    if e else "없음"),
+            "봉": rows}
+
+
 # ═══════════════════════════════════════════════════════════════════
 # 🟩 [HIST-1] OANDA 과거 캔들 내려받기 (분석용, 주문과 무관)   (2026-11-05)
 #
