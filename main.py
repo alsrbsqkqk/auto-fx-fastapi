@@ -14131,7 +14131,10 @@ def _h1_blocked_scan(instr, df, dc, cfg, pip, cost, blk):
         if post[i]: allw.append("FOMC 직후")
         why = allw[0] if allw else None          # 집계용 대표 사유 (기존 순서 유지)
         whyall = " + ".join(allw)                # 기록용 전체 사유
-        if prev.get(sd) == why:
+        # [2026-11-19 버그수정] 통과하면 why 가 None 인데, 아직 기록된 적 없는 방향은
+        #   prev.get(sd) 도 None 을 돌려준다 → None == None 이라 **통과 신호가 전부 버려졌다.**
+        #   실거래로 들어간 신호가 시트에 한 건도 안 남던 원인. 없음 표시를 따로 둔다.
+        if prev.get(sd, "\x00") == why:
             continue                             # 같은 신호가 같은 이유로 연달아 → 첫 봉만
         prev = {sd: why}
         if idx[i] < _H1_START:
@@ -14217,28 +14220,70 @@ def _h1_blocked_mark(rows):
 
 _H1_TAB_SIG = "H24_신호"
 _H1_HEAD_SIG = ["키", "시각ET", "통화", "방향", "결과", "차단사유", "사유수", "대표사유",
-                "그림자R", "그림자손익$", "청산방식", "보유h", "겹침", "기록시각"]
+                "R(규칙)", "손익$(규칙·기본위험)", "청산방식", "보유h",
+                "실체결가", "실수량", "실현손익$", "겹침", "기록시각"]
+
+
+def _h1_real_by_key():
+    """키 → 실제 체결 정보. 'H24_주문'(체결가·수량) 과 'H24_실주문'(실현손익) 을 합친다.
+    [2026-11-19] 신호 탭에서 '이 신호가 실제로 얼마에 들어가서 얼마를 벌었나' 를 보여주려고."""
+    out = {}
+
+    def _split(s):
+        s = str(s or "")
+        for p in (_H1_KEYP, _H1_OLDP):
+            if s.startswith(p):
+                s = s[len(p):]
+                break
+        i = s.rfind("-")
+        return (s[:i], s[i + 1:]) if i > 0 else None
+
+    for tab, head in ((_H1_TAB_ORD, _H1_HEAD_ORD), (_H1_TAB_LIVE, _H1_HEAD_LIVE)):
+        rows = _h1_timeout(lambda t=tab, h=head: _h1_rows(t, h), 12, None, f"{tab} 읽기") or []
+        for r in rows:
+            k = _split(r.get("키"))
+            if not k:
+                continue
+            d = out.setdefault(k, {})
+            for src, dst in (("체결가", "체결가"), ("수량", "수량"),
+                             ("합계$", "실현$"), ("청산시각", "청산시각")):
+                v = r.get(src)
+                if v not in ("", None):
+                    d[dst] = v
+    return out
 
 
 def _h1_sig_rows(cfg, rows):
     """신호 기록 탭에 넣을 행. 스캔이 매번 전부 다시 계산하므로 탭을 통째로 덮어쓴다.
-    28봉이 지나면 '진행중' 이던 행의 결과가 저절로 채워진다."""
+    28봉이 지나면 '진행중' 이던 행의 결과가 저절로 채워진다.
+
+    [2026-11-19] 통과(=실거래로 들어간) 신호도 결과를 채운다. 예전에는 통과 행의
+    금액·청산 칸을 전부 빈칸으로 뒀다. R·손익은 규칙 기준(기본 위험, 크기 배수 제외)이고,
+    실제 체결가·수량·실현손익은 주문/실주문 탭에서 가져와 따로 적는다."""
     now = _h1_dt.now(_H1_NY)
+    try:
+        real = _h1_real_by_key()
+    except Exception:
+        real = {}
     out = []
     for r in rows:
         통과 = (r["사유"] == "통과")
         g = r.get("겹침")
+        ins = r["통화"].replace("/", "_")
+        stamp = f"{r['시각']:%Y%m%d%H%M}"
+        rr = real.get((ins, stamp), {}) if 통과 else {}
         out.append([
-            f"{r['통화'].replace('/', '_')}-{r['시각']:%Y%m%d%H%M}",
+            f"{ins}-{stamp}",
             f"{r['시각']:%Y-%m-%d %H:%M}", r["통화"], r["방향"],
-            "진입" if 통과 else "막힘",
+            ("✅ 실거래 진입" if rr else "✅ 진입(규칙만)") if 통과 else "⛔ 막힘",
             "" if 통과 else r.get("사유전체", r["사유"]),
             "" if 통과 else r.get("사유수", 1),
             "" if 통과 else r["사유"],
-            "" if (통과 or r["R"] is None) else round(float(r["R"]), 3),
-            "" if (통과 or r["R"] is None) else round(float(r["R"]) * cfg["risk"], 2),
-            "" if 통과 else (r["청산"] or ("진행중" if not r["확정"] else "")),
-            "" if (통과 or not r.get("보유h")) else int(r["보유h"]),
+            "" if r["R"] is None else round(float(r["R"]), 3),
+            "" if r["R"] is None else round(float(r["R"]) * cfg["risk"], 2),
+            r["청산"] or ("진행중" if not r["확정"] else ""),
+            "" if not r.get("보유h") else int(r["보유h"]),
+            rr.get("체결가", ""), rr.get("수량", ""), rr.get("실현$", ""),
             (f"{g['종류']} · 실제 {g['t']:%m-%d %H:%M} {g['usd']:+,.0f}$" if g else ""),
             f"{now:%Y-%m-%d %H:%M}",
         ])
@@ -15112,12 +15157,22 @@ def h24_blocked_endpoint(days: int = 7):
         a["건수"] += 1
         a["아낀$"] = round(a["아낀$"] - r["R"] * cfg["risk"], 2)
 
+    try:
+        real = _h1_real_by_key()
+    except Exception:
+        real = {}
+
     def one(r):
+        통과 = (r["사유"] == "통과")
+        rr = real.get((r["통화"].replace("/", "_"), f"{r['시각']:%Y%m%d%H%M}"), {}) if 통과 else {}
         d = {"시각ET": f"{r['시각']:%m-%d %H:%M}", "통화": r["통화"], "방향": r["방향"],
-             "결과": "진입" if r["사유"] == "통과" else f"막힘 — {r['사유']}",
-             "그림자": (None if r["사유"] == "통과" else
-                      ("진행중" if not r["확정"] else
-                       f"{r['청산']} {r['R']:+.2f}R ({r['R'] * cfg['risk']:+,.0f}$)"))}
+             "결과": (("✅ 실거래 진입" if rr else "✅ 진입(규칙만)") if 통과
+                    else f"막힘 — {r['사유']}"),
+             "규칙결과": ("진행중" if not r["확정"] else
+                      f"{r['청산']} {r['R']:+.2f}R ({r['R'] * cfg['risk']:+,.0f}$)")
+             if r["R"] is not None or not r["확정"] else None}
+        if rr:
+            d["실거래"] = {k: v for k, v in rr.items() if v not in ("", None)}
         if r.get("겹침"):
             g = r["겹침"]
             d["겹침"] = f"{g['종류']} — 실제 진입 {g['t']:%m-%d %H:%M} ({g['usd']:+,.0f}$) · 누적 제외"
