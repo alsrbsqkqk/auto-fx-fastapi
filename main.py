@@ -13583,9 +13583,11 @@ def _h1_live_rates(cfg):
                     lr, sr = float(f["longRate"]) * 100, float(f["shortRate"]) * 100
                 except Exception:
                     continue
+                if abs(lr - sr) < 1e-4:               # 롱·숏이 같으면 금리차 정보가 없는 것이다
+                    continue                          # (장 마감 직후 0 이 오는 일이 있다)
                 pr[ins["name"]] = ((lr - sr) / 2.0, lr, sr, -(lr + sr) / 2.0)
     if not pr:
-        return {}, {}, "조회 실패"
+        return {}, {}, "OANDA 조회 실패"
     cur = {"USD": _H1_USD_ANCHOR}
     for _ in range(len(want) + 1):                    # 이어 붙여 나머지 통화를 푼다
         for ins, v in pr.items():
@@ -13594,7 +13596,15 @@ def _h1_live_rates(cfg):
                 cur[q] = cur[b] - v[0]
             elif q in cur and b not in cur:
                 cur[b] = cur[q] + v[0]
-    return cur, pr, "OANDA 스왑금리 역산"
+    # 다 못 풀었으면(쌍 일부만 응답) 씨앗 마지막 달로 빈칸을 메운다 — 0 을 써서 거짓말하지 않는다
+    seed = _h1_rate_months()
+    miss = [c for c in _H1_CCY_COL if c not in cur]
+    if miss and seed:
+        for c in miss:
+            if c in seed[-1][1]:
+                cur[c] = seed[-1][1][c]
+    return cur, pr, ("OANDA 스왑금리 역산" if not miss
+                     else f"OANDA 역산 + 일부는 기록값({', '.join(miss)})")
 
 
 def _h1_fix_anchor(cur, prev, order):
@@ -13662,9 +13672,15 @@ def _h1_carry_dirs(cfg):
                 f = ins.get("financing") or {}
                 try:
                     lr, sr = float(f["longRate"]), float(f["shortRate"])
-                    dirs[ins["name"]] = 1 if lr > sr else (-1 if sr > lr else 0); src = "OANDA 스왑금리"
                 except Exception:
                     continue
+                # [2026-11-20] 롱·숏이 사실상 같으면 쓸 수 있는 정보가 아니다. 비워두고 아래 표로 넘긴다.
+                #   장 마감 직후 등에 OANDA 가 0 을 돌려주는 일이 있는데, 그때 '모름'(0) 으로 두면
+                #   금리 배수(1.25/0.75)가 통째로 빠져 백테스트와 달라진다.
+                if abs(lr - sr) < 1e-6:
+                    continue
+                dirs[ins["name"]] = 1 if lr > sr else -1
+                src = "OANDA 스왑금리"
     if len(dirs) < len(_H1_PAIRS):
         tbl = _h1_rates_table()
         for ins in _H1_PAIRS:
@@ -15369,7 +15385,8 @@ def h24_status_endpoint(run: int = 0):
                    "규칙": f"RSI 다이버전스 + MACD 같은 방향 + 12시·금요일 금지 + 일봉 200EMA 방향만 + FOMC 전 2배 · 발표후 금지 · 추세확립 {_h1_os.environ.get('H24_FAR_MULT', '1.5')}배 · 신호강도 {_h1_os.environ.get('H24_RGAP_MULT', '1.25')}배 · 익절 없음 · {_H1_MAXBARS}봉",
                    "손절ATR": _H1_SLM, "달러노출한도": cfg["usd_cap"], "보유봉": _H1_MAXBARS,
                    "금리크기": f"받는 방향 {cfg['carry_up']}배 / 내는 방향 {cfg['carry_dn']}배",
-                   "금리방향": {k: ("매수 유리" if v > 0 else "매도 유리" if v < 0 else "모름") for k, v in (_H1_FINCACHE.get("dir") or {}).items()} or "아직 조회 전",
+                   "금리방향": {k: ("매수 유리" if v > 0 else "매도 유리" if v < 0 else "모름 — 배수 안 걸림")
+                             for k, v in (_h1_carry_dirs(cfg) or {}).items()} or "아직 조회 전",
                    "금리방향출처": _H1_FINCACHE.get("src", ""),
                    "진입금지시간ET": {k: f"{min(v)}~{max(v)}시" if len(v) == max(v) - min(v) + 1 else sorted(v) for k, v in cfg["blocks"].items()},
                    "다음FOMC": [f for f in cfg["fomc"] if f >= f"{_h1_dt.now(_H1_NY):%Y-%m-%d}"][:3],
