@@ -13486,8 +13486,11 @@ from zoneinfo import ZoneInfo as _H1Zone
 
 _H1_NY = _H1Zone("America/New_York")
 _H1_PAIRS = {"USD_JPY": (0.01, 3, 1.5), "EUR_USD": (0.0001, 5, 1.5),
-             "GBP_USD": (0.0001, 5, 1.5), "EUR_JPY": (0.01, 3, 2.5), "AUD_JPY": (0.01, 3, 2.5)}   # pip, 자릿수, 가정비용
+             "EUR_JPY": (0.01, 3, 2.5), "AUD_JPY": (0.01, 3, 2.5)}   # pip, 자릿수, 가정비용
 # 2026-11-03: AUD_USD 제외 (손절 폭 대비 비용이 가장 큼 + AUD/JPY 와 같은 호주달러 노출 중복)
+# 2026-11-19: GBP_USD 제외 (사용자 결정). 2021-26 영·미 금리차 평균 0.24% 로 거의 없고 6번 뒤집힘 →
+#   한쪽으로 미는 힘이 없어 일봉 추세가 가장 지저분(2026년 200EMA 29회 교차), 손절 75%.
+#   스프레드 기록(_H1_SPREAD_LIST)에는 남겨 관찰은 계속한다.
 _H1_START = _h1_pd.Timestamp("2026-11-10 17:00", tz=_H1_NY)       # 이 규칙 시작 (데모)
 _H1_REAL = bool(globals().get("OANDA_LIVE", False))               # 실계좌 엔드포인트인가
 if _H1_REAL:                                                       # 실계좌는 배포 시각부터 기록·주문
@@ -13515,7 +13518,124 @@ _H1_WATCH = {"last_ok": None, "stall_sent": None, "alert": {}}     # 멈춤 감�
 _H1_SHEET_TIMEOUT = float(_h1_os.environ.get("H24_SHEET_TIMEOUT", "20"))   # 시트 호출 시간제한(초)
 _H1_DCACHE = {}
 _H1_FINCACHE = {"t": None, "dir": {}}
-_H1_RATES_DEFAULT = "USD:4.0,EUR:2.5,GBP:3.75,JPY:1.25,AUD:4.85"       # 2026-11 기준 정책금리, 보조용
+#: 2026-11-20 기준 정책금리. 미국은 목표범위 3.75~4.00 의 중간값, 영국은 11/05 인상 반영.
+_H1_RATES_DEFAULT = "USD:3.875,EUR:2.5,GBP:4.0,JPY:1.25,AUD:4.85"
+
+#: [2026-11-20] 미국 정책금리(목표범위 중간값). **사람이 건드리는 유일한 숫자다.**
+#  나머지 통화 금리는 OANDA 스왑금리에서 자동으로 역산한다 (_h1_live_rates).
+#  연준이 움직이면 이 값만 바꾸면 되고, 안 바꿔도 봇이 어긋남을 감지해 시트와 메일에 표시한다.
+_H1_USD_ANCHOR = float(_h1_os.environ.get("H24_USD_RATE", "3.875") or 3.875)
+
+#: 2026년 1~11월 월말 정책금리 — **과거 기록이라 바뀌지 않는다. 씨앗으로 한 번만 쓴다.**
+#  이후의 달은 봇이 매달 OANDA 에서 역산해 시트에 스스로 덧붙인다.
+#  "월|미국|유로존|일본|호주|영국|그 달 변경"
+_H1_RATE_SEED = """
+2026-01|3.625|2.00|0.75|3.60|3.75|변경 없음
+2026-02|3.625|2.00|0.75|3.85|3.75|호주 +0.25
+2026-03|3.625|2.00|0.75|4.10|3.75|호주 +0.25
+2026-04|3.625|2.00|0.75|4.10|3.75|변경 없음
+2026-05|3.625|2.00|0.75|4.35|3.75|호주 +0.25
+2026-06|3.625|2.25|1.00|4.35|3.75|유로 +0.25 · 일본 +0.25
+2026-07|3.625|2.25|1.00|4.35|3.75|변경 없음
+2026-08|3.625|2.25|1.00|4.35|3.75|변경 없음
+2026-09|3.875|2.50|1.25|4.60|3.75|미국 +0.25 · 유로 +0.25 · 일본 +0.25 · 호주 +0.25
+2026-10|3.875|2.50|1.25|4.60|3.75|변경 없음
+2026-11|3.875|2.50|1.25|4.85|4.00|호주 +0.25 · 영국 +0.25
+"""
+_H1_CCY_COL = ["USD", "EUR", "JPY", "AUD", "GBP"]            # 위 표의 열 순서
+_H1_TAB_RATE = "금리_정책금리"
+_H1_TAB_DIFF = "금리_통화쌍"
+
+
+def _h1_rate_months():
+    """씨앗 기록 [(월, {통화: 금리}, 메모)] — 시간순. 과거라 바뀌지 않는다."""
+    out = []
+    for line in str(_H1_RATE_SEED).splitlines():
+        p = [x.strip() for x in line.strip().split("|")]
+        if len(p) < 6 or not p[0]:
+            continue
+        try:
+            vals = {c: float(p[1 + i]) for i, c in enumerate(_H1_CCY_COL)}
+        except Exception:
+            continue
+        out.append((p[0], vals, p[6] if len(p) > 6 else ""))
+    return out
+
+
+def _h1_live_rates(cfg):
+    """[2026-11-20] OANDA 스왑금리에서 통화별 금리를 역산한다. **사람 손이 안 간다.**
+
+    OANDA 는 상품마다 longRate / shortRate (연 소수) 를 준다. 두 나라 금리차가 D 면
+    대략 longRate = +D − 수수료, shortRate = −D − 수수료 이므로
+        금리차 D   = (longRate − shortRate) / 2
+        브로커비용 = −(longRate + shortRate) / 2
+    통화쌍 금리차를 이어 붙이면 USD 하나만 알면 나머지 통화가 전부 풀린다.
+    반환: ({통화: 연%}, {쌍: (금리차%, 롱%, 숏%, 비용%)}, 출처)"""
+    want = list(_H1_PAIRS) + ["GBP_USD"]
+    pr = {}
+    if cfg.get("account"):
+        code, j = _h1_api("GET", f"/v3/accounts/{cfg['account']}/instruments",
+                          params={"instruments": ",".join(want)})
+        if code == 200:
+            for ins in (j or {}).get("instruments", []):
+                f = ins.get("financing") or {}
+                try:
+                    lr, sr = float(f["longRate"]) * 100, float(f["shortRate"]) * 100
+                except Exception:
+                    continue
+                pr[ins["name"]] = ((lr - sr) / 2.0, lr, sr, -(lr + sr) / 2.0)
+    if not pr:
+        return {}, {}, "조회 실패"
+    cur = {"USD": _H1_USD_ANCHOR}
+    for _ in range(len(want) + 1):                    # 이어 붙여 나머지 통화를 푼다
+        for ins, v in pr.items():
+            b, q = ins.split("_")
+            if b in cur and q not in cur:
+                cur[q] = cur[b] - v[0]
+            elif q in cur and b not in cur:
+                cur[b] = cur[q] + v[0]
+    return cur, pr, "OANDA 스왑금리 역산"
+
+
+def _h1_fix_anchor(cur, prev, order):
+    """[2026-11-20] 기준점(미국 금리)이 낡았는지 스스로 잡아낸다.
+
+    금리차는 OANDA 에서 오므로 **항상 정확**하다. 틀릴 수 있는 건 절대 수준뿐이고,
+    그건 연준이 움직였는데 기준점을 안 고쳤을 때만 생긴다. 그때의 신호는 뚜렷하다 —
+    **미국은 그대로인데 다른 통화들이 하나같이 같은 폭으로 움직인 것처럼 보인다.**
+    세상이 그렇게 움직일 리는 없으므로, 그 공통 이동분은 미국 몫으로 되돌린다.
+    반환: (고친 금리표, 메모) — 고칠 게 없으면 원본 그대로."""
+    try:
+        d = {c: cur[c] - float(prev[1 + i]) for i, c in enumerate(order) if c in cur}
+    except Exception:
+        return cur, ""
+    if abs(d.get("USD", 1.0)) > 0.005:                # 기준점이 이미 바뀌었으면 손대지 않는다
+        return cur, ""
+    others = [v for c, v in d.items() if c != "USD"]
+    if len(others) < 2:
+        return cur, ""
+    same = [v for v in others if abs(v - others[0]) <= 0.03]
+    for v0 in others:                                  # 가장 많이 겹치는 값을 공통 이동분으로
+        grp = [v for v in others if abs(v - v0) <= 0.03]
+        if len(grp) > len(same):
+            same = grp
+    shift = sum(same) / len(same)
+    if len(same) < max(2, len(others) - 1) or abs(shift) < 0.05:
+        return cur, ""
+    return ({c: v - shift for c, v in cur.items()},
+            f"미국 {-shift:+.2f} 로 보정 (다른 통화가 모두 {shift:+.2f} 움직인 것처럼 나와서)")
+
+
+def _h1_diff_note(d):
+    """금리차 크기 → 한 줄 설명. 2021~26 검증: 수익의 94%가 '받는 방향' 에서 나왔다."""
+    a = abs(d)
+    if a >= 2.0:
+        return "강함 — 한 방향으로 미는 힘이 크다. 추세가 잘 생긴다"
+    if a >= 1.0:
+        return "보통 — 쓸 만하다"
+    if a >= 0.5:
+        return "약함 — 미는 힘이 크지 않다"
+    return "거의 없음 — 추세가 잘 안 생긴다 (GBP/USD 를 뺀 이유)"
 
 
 def _h1_rates_table():
@@ -13586,7 +13706,8 @@ _H1_HEAD_ORD = ["키", "통화", "방향", "주문시각", "수량", "체결가"
 _H1_LOCK = _h1_threading.Lock()
 _H1_CACHE = {}
 _H1_STATE = {"rec_sim": None, "rec_live": None, "last_bar": None, "log": [], "open_sim": {},
-             "last_email": None, "tried": set(), "ord": None, "far": {}}
+             "last_email": None, "tried": set(), "ord": None, "far": {},
+             "rate_day": None, "stops": None}
 _H1_DIR = "/tmp/h24"
 try:
     _h1_os.makedirs(_H1_DIR, exist_ok=True)
@@ -13636,6 +13757,7 @@ def _h1_cfg():
             "rgmin": float(g("H24_RGAP_MIN", "3") or 0),      # RSI 어긋남이 이만큼 이상이면
             "rgmul": float(g("H24_RGAP_MULT", "1.25") or 1),  #   크기를 이 배수로
             "life": _h1_life(g("H24_SIG_LIFE", _H1_LIFE_DEFAULT)),   # 통화쌍별 신호 수명(시간), 기본 10
+            "events": str(g("H24_EVENTS_EXTRA", "")),          # 예정 발표 추가분 (형식: 날짜 시각|이름|등급)
             "hist": str(g("H24_HIST", _H1_HIST_DEFAULT)),
             "demo": "fxpractice" in str(globals().get("OANDA_BASE_URL", "")),
             "account": str(globals().get("ACCOUNT_ID") or "")}
@@ -13689,6 +13811,72 @@ def _h1_timeout(fn, secs, default=None, what=""):
     if "e" in box:
         raise box["e"]
     return box.get("v", default)
+
+
+#: [2026-11-19] 보유 28시간 안에 들어올 수 있는 '예정된' 고영향 발표.
+#  형식: "YYYY-MM-DD HH:MM|이름|등급"  — 시각은 전부 ET.
+#  일본 지표는 8:30 JST = 전날 18:30 ET, BOJ 결정은 정오 JST 전후 = 전날 22:00 ET(추정).
+#  출처: BLS 공식 일정 / 일본 통계국 / BOJ / ECB / 연준. 환경변수 H24_EVENTS_EXTRA 로 추가 가능.
+_H1_EVENTS_DEFAULT = """
+2026-11-26 18:30|일본 도쿄 CPI|중
+2026-12-04 08:30|미국 고용지표 NFP|상
+2026-12-07 22:30|호주 RBA 금리결정|중
+2026-12-09 14:00|미국 FOMC 금리결정|상
+2026-12-10 08:30|미국 CPI|상
+2026-12-17 08:15|유럽 ECB 금리결정|중
+2026-12-17 18:30|일본 CPI|상
+2026-12-17 22:00|일본 BOJ 금리결정 (시각 추정)|상
+2026-12-24 18:30|일본 도쿄 CPI|중
+2027-01-08 08:30|미국 고용지표 NFP|상
+2027-01-13 08:30|미국 CPI|상
+2027-01-21 18:30|일본 CPI|상
+2027-01-21 22:00|일본 BOJ 금리결정 (시각 추정)|상
+2027-01-27 14:00|미국 FOMC 금리결정|상
+2027-01-28 18:30|일본 도쿄 CPI|중
+2027-02-04 08:15|유럽 ECB 금리결정|중
+2027-02-05 08:30|미국 고용지표 NFP|상
+2027-02-11 08:30|미국 CPI|상
+2027-02-18 18:30|일본 CPI|상
+2027-02-25 18:30|일본 도쿄 CPI|중
+"""
+
+
+def _h1_events(extra=None):
+    """예정 발표 목록 → [(시각ET, 이름, 등급)]. 시간순."""
+    out = []
+    for line in (_H1_EVENTS_DEFAULT + "\n" + str(extra or "")).splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        p = [x.strip() for x in line.split("|")]
+        if len(p) < 2:
+            continue
+        try:
+            t = _h1_pd.Timestamp(p[0], tz=_H1_NY)
+        except Exception:
+            continue
+        out.append((t, p[1], p[2] if len(p) > 2 else "중"))
+    return sorted(out, key=lambda x: x[0])
+
+
+def _h1_events_between(a, b, extra=None):
+    """a~b 사이 발표. 보유 구간에 걸리는 것만 고른다."""
+    return [e for e in _h1_events(extra) if a <= e[0] <= b]
+
+
+def _h1_event_lines(a, b, extra=None, pair=None):
+    """메일에 넣을 경고 줄. 통화쌍과 관련된 것을 먼저 표시한다."""
+    ev = _h1_events_between(a, b, extra)
+    if not ev:
+        return ["  이 구간에 예정된 주요 발표 없음"]
+    cur = set((pair or "").split("_"))
+    tag = {"미국": "USD", "유럽": "EUR", "일본": "JPY", "호주": "AUD"}
+    L = []
+    for t, nm, lv in ev:
+        hit = any(v in cur for k, v in tag.items() if nm.startswith(k))
+        L.append(f"  {'⚠' if (lv == '상' and hit) else '·'} {t:%m-%d %H:%M} ET  {nm}"
+                 + ("   ← 이 통화쌍 직접 영향" if hit else ""))
+    return L
 
 
 def _h1_alert(title, body, key=None, every=3600):
@@ -14326,6 +14514,88 @@ def _h1_sig_sheet(cfg):
         _h1_log(f"신호 기록 실패: {str(e)[:80]}")
 
 
+_H1_HEAD_RATE = ["월", "미국", "유로존", "일본", "호주", "영국", "그 달 변경"]
+_H1_HEAD_DIFF = ["통화쌍", "금리차(%p)", "이자 받는 방향", "OANDA 스왑(연%)", "브로커 비용(연%)", "설명"]
+
+
+def _h1_rate_sheet(cfg):
+    """[2026-11-20] 금리 표 두 탭을 하루 한 번 쓴다. 읽기 전용이라 주문과 무관.
+
+    **사람이 손댈 것이 없다.** 2026-01~11 은 씨앗(과거라 안 바뀜), 그 뒤 달은
+    OANDA 스왑금리에서 역산해 봇이 스스로 덧붙인다. 시트 자체가 저장소라서
+    Render 가 재시작해도 지난 달 기록이 살아 있다."""
+    if str(_h1_os.environ.get("H24_RATE_SHEET", "on")).strip().lower() not in ("on", "1", "true", "yes"):
+        return
+    now = _h1_dt.now(_H1_NY)
+    if _H1_STATE.get("rate_day") == now.date():
+        return
+    seed = _h1_rate_months()
+    if not seed:
+        return
+    try:
+        order = ["USD", "EUR", "JPY", "AUD", "GBP"]           # 머리글과 같은 순서
+        cur, pr, src = _h1_live_rates(cfg)
+        ym = f"{now:%Y-%m}"
+        rows1 = [[m] + [f"{v[c]:.2f}" for c in order] + [memo] for m, v, memo in seed]
+        seen = {r[0] for r in rows1}
+        last_seed = seed[-1][0]
+        # 씨앗 이후 달은 시트에 이미 적어둔 것을 그대로 가져온다 (역사는 다시 쓰지 않는다)
+        for r in (_h1_rows(_H1_TAB_RATE, _H1_HEAD_RATE) or []):
+            m = str(r.get("월", "")).strip()
+            if m and m > last_seed and m < ym and m not in seen:
+                rows1.append([m] + [str(r.get(h, "")) for h in _H1_HEAD_RATE[1:]])
+                seen.add(m)
+        rows1.sort(key=lambda x: x[0])
+        fix = ""
+        if cur and ym not in seen:                            # 이번 달 — 매일 최신값으로 덮어쓴다
+            prev = rows1[-1] if rows1 else None
+            if prev:
+                cur, fix = _h1_fix_anchor(cur, prev, order)
+            chg = []
+            for i, c in enumerate(order):
+                if prev and c in cur:
+                    try:
+                        d = cur[c] - float(prev[1 + i])
+                        if abs(d) >= 0.1:
+                            chg.append(f"{_H1_HEAD_RATE[1 + i]} {d:+.2f}")
+                    except Exception:
+                        pass
+            memo = " · ".join(chg) if chg else "변경 없음"
+            rows1.append([ym] + [f"{cur[c]:.2f}" if c in cur else "" for c in order]
+                         + [memo + (f"   [{fix}]" if fix else "")])
+        rows1.append(["", "", "", "", "", "", f"갱신 {now:%Y-%m-%d %H:%M} ET · 출처 {src}"
+                                              f" · 미국({_H1_USD_ANCHOR:.3f})만 기준점, 나머지는 자동 역산"])
+        if not _h1_rewrite(_H1_TAB_RATE, _H1_HEAD_RATE, rows1):
+            return
+        rows2 = []
+        for ins in list(_H1_PAIRS) + ["GBP_USD"]:
+            if ins not in pr:
+                continue
+            d, lr, sr, fee = pr[ins]
+            drop = ins not in _H1_PAIRS                       # 지금 거래하지 않는 쌍
+            side = "매수" if d > 0 else ("매도" if d < 0 else "없음")
+            rows2.append([ins.replace("_", "/"), f"{d:+.2f}",
+                          "—" if drop else f"{side} (크기 1.25배)",
+                          f"롱 {lr:+.2f} / 숏 {sr:+.2f}", f"{fee:.2f}",
+                          "거래 안 함 (2026-11-19 제외)" if drop else _h1_diff_note(d)])
+        rows2 += [["", "", "", "", "", ""],
+                  ["읽는 법", "", "", "", "",
+                   "금리차 = OANDA 스왑금리에서 역산한 두 나라 금리 차이. + 면 매수가 이자를 받는다"],
+                  ["", "", "", "", "",
+                   "2021~26 검증: 이 전략 수익의 94%가 '이자 받는 방향' 거래에서 나왔다"],
+                  ["", "", "", "", "",
+                   "금리차가 좁아지면 성과도 줄 수 있다. 아래 결정일 뒤에 이 표가 자동으로 바뀐다"]]
+        for t, nm, lv in _h1_events_between(now, now + _h1_pd.Timedelta(days=45), cfg.get("events")):
+            if "금리결정" in nm:
+                rows2.append(["", "", "", "", "예정", f"{t:%m-%d} {nm}"])
+        rows2.append(["", "", "", "", "", f"갱신 {now:%Y-%m-%d %H:%M} ET · 출처 {src}"])
+        if _h1_rewrite(_H1_TAB_DIFF, _H1_HEAD_DIFF, rows2):
+            _H1_STATE["rate_day"] = now.date()
+            _h1_log(f"금리 표 갱신 ({len(rows1)}행 / {len(rows2)}행, {src})")
+    except Exception as e:
+        _h1_log(f"금리 표 실패: {str(e)[:80]}")
+
+
 def _h1_blocked_lines(cfg, today):
     """메일에 들어갈 줄들."""
     rows = _h1_blocked_mark(_h1_blocked_all(cfg))
@@ -14557,6 +14827,24 @@ def _h1_place(instr, pend, cfg, now):
                round(dist / pip, 1), "없음", "체결"]
         _H1_STATE["ord"][key] = dict(zip(_H1_HEAD_ORD, row))
         _h1_append(_H1_TAB_ORD, _H1_HEAD_ORD, [row])
+        # [2026-11-19] 진입 즉시 알림 — 보유 구간에 예정된 발표를 같이 알려준다.
+        try:
+            _fp = float(fill.get("price") or 0)
+            _ex = entry_t + _h1_pd.Timedelta(hours=_H1_MAXBARS)
+            _sl = _fp - sd * dist
+            _h1_alert(
+                f"거래 진입 — {instr} {side_ko}",
+                f"{instr} {side_ko} {units:,}단위 체결 {_fp}\n"
+                f"손절 {_sl:.{prec}f} ({dist / pip:.1f}pip) · 익절 없음 · 이 거래 최대손실 약 ${risk_usd:,.0f}\n"
+                f"진입 {entry_t:%m-%d %H:%M} ET → 시간청산 예정 {_ex:%m-%d %H:%M} ET (28시간)\n\n"
+                f"■ 보유 구간에 예정된 주요 발표\n"
+                + "\n".join(_h1_event_lines(entry_t, _ex, cfg.get("events"), instr)) + "\n\n"
+                "참고: 손절은 OANDA 에 직접 걸려 있어 발표 때도 24시간 작동한다.\n"
+                "2010~2026 검증에서 발표가 보유 구간에 든 거래의 최악 손실도 계획된 손절폭 수준이었다.\n"
+                "급하게 손댈 필요는 없다. 이 메일은 '무슨 일이 생기면 그게 뭔지 알고 있으라'는 용도다.",
+                key=f"enter-{key}", every=60)
+        except Exception as _e:
+            _h1_log(f"진입 알림 실패: {str(_e)[:60]}")
         _h1_log(f"{instr} {side_ko} {units:,} 체결 {fill.get('price')} (손절 {dist / pip:.1f}pip, 익절 없음, 위험 ${risk_usd:,.0f})")
         return
     why = ((j or {}).get("orderCancelTransaction") or {}).get("reason") or (j or {}).get("errorMessage") or str(j)[:120]
@@ -14713,6 +15001,32 @@ def _h1_record_spreads(cfg, now):
                [[f"{now:%Y-%m-%d %H:%M}"] + list(row)])
 
 
+def _h1_check_stops(cfg):
+    """[2026-11-20 안전장치] 열린 거래마다 OANDA 쪽에 손절 주문이 실제로 붙어 있는지 확인한다.
+    주문은 stopLossOnFill 로 나가므로 없을 수가 없지만, 없다면 그 거래는 손실 상한이 없다.
+    확인되면 조용히, 없으면 즉시 메일. '있겠지' 하고 넘어가도 되는 종류의 일이 아니다."""
+    if not cfg.get("account"):
+        return
+    code, j = _h1_api("GET", f"/v3/accounts/{cfg['account']}/openTrades")
+    if code != 200:
+        return
+    mine = {str(o.get("거래ID")) for o in (_H1_STATE["ord"] or {}).values() if o.get("거래ID")}
+    bad, ok = [], []
+    for t in (j or {}).get("trades", []):
+        if str(t.get("id")) not in mine:
+            continue
+        sl = (t.get("stopLossOrder") or {}).get("price") or (t.get("trailingStopLossOrder") or {}).get("price")
+        (ok if sl else bad).append(f"{t.get('instrument')} {t.get('id')}"
+                                   + (f" 손절 {sl}" if sl else ""))
+    _H1_STATE["stops"] = {"확인": ok, "손절없음": bad, "시각": f"{_h1_dt.now(_H1_NY):%m-%d %H:%M}"}
+    if bad:
+        _h1_alert("⛔ 손절 없는 거래 발견",
+                  "아래 거래에 OANDA 쪽 손절 주문이 붙어 있지 않다. 손실 상한이 없는 상태다.\n\n  "
+                  + "\n  ".join(bad)
+                  + "\n\nOANDA 화면에서 직접 손절을 걸거나 그 거래를 닫아라.",
+                  key="nostop", every=1800)
+
+
 # ───────────────────────── 계산 1회 ─────────────────────────
 
 def _h1_tick(force=False):
@@ -14802,6 +15116,10 @@ def _h1_tick(force=False):
                     _h1_log(f"스프레드 기록 실패: {str(e)[:80]}")
                 # [신호 기록] 매시간 한 번. 읽기 전용이라 주문과 무관하다.
                 _h1_timeout(lambda: _h1_sig_sheet(cfg), 45, None, "신호기록탭")
+                # [금리 표] 하루 한 번. 안에서 날짜를 보고 알아서 건너뛴다.
+                _h1_timeout(lambda: _h1_rate_sheet(cfg), 40, None, "금리표탭")
+                # [안전] 열린 거래에 손절이 실제로 걸려 있는지 확인
+                _h1_timeout(lambda: _h1_check_stops(cfg), 20, None, "손절점검")
         _H1_STATE["last_bar"] = None if retry else bar
         if not retry:
             _H1_WATCH["last_ok"] = now                   # [안전2] 이 봉 계산 성공
@@ -14948,6 +15266,12 @@ def _h1_email_body(today, cfg):
         tag = "" if str(r.get("키", "")).startswith(_H1_KEYP) else " [이전 규칙]"
         L.append(f"  {r['통화']} {r['방향']} {r['진입시각'][5:]} → {r['청산시각'][5:]}  {float(r['합계$']):+,.2f}$"
                  + (f"  (규칙상 {float(r['규칙상$']):+,.2f}$)" if r.get("규칙상$") not in ("", None) else "") + tag)
+    # [2026-11-19] 앞으로 48시간 안의 예정 발표 — 새 거래가 들어가면 보유 구간에 걸릴 수 있다
+    _now = _h1_dt.now(_H1_NY)
+    L += ["", "■ 앞으로 48시간 예정된 주요 발표 (지금 진입하면 보유 구간에 걸린다)"]
+    L += _h1_event_lines(_now, _now + _h1_pd.Timedelta(hours=48), cfg.get("events"))
+    L += ["  손절은 OANDA 에 직접 걸려 있어 발표 때도 작동한다. 2010~2026 검증에서 발표가",
+          "  보유 구간에 든 거래가 오히려 성적이 좋았고 최악 손실도 계획된 손절폭 수준이었다."]
     L += ["", "■ 보유 중 (실주문)"]
     op = _h1_open_live(cfg)
     L += [f"  {o}" if isinstance(o, str) else
@@ -15067,6 +15391,9 @@ def h24_status_endpoint(run: int = 0):
     out["설정"]["신호강도배수"] = (f"RSI 어긋남 {cfg['rgmin']:g} 이상이면 {cfg['rgmul']:g}배"
                             if cfg["rgmin"] > 0 else "끔")
     out["설정"]["신호수명"] = {p: f"{cfg['life'].get(p, 10)}시간" for p in _H1_PAIRS}
+    _n2 = _h1_dt.now(_H1_NY)
+    out["다음발표"] = [f"{t:%m-%d %H:%M} ET  {nm} ({lv})"
+                   for t, nm, lv in _h1_events_between(_n2, _n2 + _h1_pd.Timedelta(days=14), cfg.get("events"))] or "14일 안에 없음"
     if _H1_STATE.get("far"):
         out["200EMA거리"] = {k: (f"{v:.2f}  {'확립' if v >= cfg['farmin'] else '전환임박'}")
                             for k, v in _H1_STATE["far"].items()}
@@ -15096,6 +15423,7 @@ def h24_status_endpoint(run: int = 0):
             out["직전규칙_실주문"] = _h1_summary(rl, "합계$", _H1_OLDP)
     except Exception as e:
         out["누적"] = f"시트 오류: {str(e)[:100]}"
+    out["손절점검"] = _H1_STATE.get("stops") or "아직 확인 전 (다음 정시 계산 때 확인한다)"
     out["보유_실주문"] = _h1_open_live(cfg) or "없음"
     out["보유_규칙"] = {k: v for k, v in _H1_STATE["open_sim"].items() if v} or "없음"
     out["최근기록"] = _H1_STATE["log"][-12:]
