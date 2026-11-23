@@ -14474,12 +14474,50 @@ def _h1_real_by_key():
             if not k:
                 continue
             d = out.setdefault(k, {})
+            # [2026-11-23 버그수정] 'H24_주문' 탭에는 **실패한 주문도 한 줄 남는다.**
+            #   실패 행은 수량만 채워지고 체결가·거래ID 가 비어 있는데, 예전 코드는 그 수량만 보고
+            #   신호 탭에 "✅ 실거래 진입" 을 찍었다. 11/09 ACCOUNT_NEW_POSITIONS_LOCKED 가 실제로
+            #   그렇게 기록돼서, 들어간 적 없는 거래가 2주 동안 실거래로 보였다.
+            #   → 결과가 '체결' 이 아니면 체결 정보로 쓰지 않고, 실패 사유만 따로 넘긴다.
+            if tab == _H1_TAB_ORD:
+                d["주문결과"] = str(r.get("결과") or "")
+                if not d["주문결과"].startswith("체결"):
+                    continue
             for src, dst in (("체결가", "체결가"), ("수량", "수량"),
                              ("합계$", "실현$"), ("청산시각", "청산시각")):
                 v = r.get(src)
                 if v not in ("", None):
                     d[dst] = v
     return out
+
+
+def _h1_recon(cfg):
+    """[2026-11-23] 시트에 적힌 봇 거래 합계 vs OANDA 계좌의 실제 누적 손익.
+    차이가 0 이 아니면 ⓐ 아직 동기화 안 된 청산 ⓑ 봇 밖에서 직접 한 거래
+    ⓒ 이전 전략(H1DIV) 거래 — 셋 중 하나다. 읽기 전용이라 주문에 영향이 없다."""
+    if not cfg["account"]:
+        return {"상태": "계좌 없음"}
+    code, j = _h1_api("GET", f"/v3/accounts/{cfg['account']}/summary")
+    a = ((j or {}).get("account") or {}) if code == 200 else {}
+    if not a:
+        return {"상태": f"계좌 조회 실패 {code}"}
+    acct = float(a.get("pl") or 0) + float(a.get("financing") or 0)
+    sheet = 0.0
+    for r in (_h1_rows(_H1_TAB_LIVE, _H1_HEAD_LIVE) or []):
+        try:
+            sheet += float(r.get("합계$") or 0)
+        except Exception:
+            continue
+    unreal = 0.0
+    for o in (_h1_open_live(cfg) or []):
+        if isinstance(o, dict):
+            unreal += float(o.get("평가손익$") or 0)
+    return {"시트_실주문_합계$": round(sheet, 2),
+            "계좌_실현누적$(스왑포함)": round(acct, 2),
+            "차이$": round(acct - sheet, 2),
+            "열린거래_평가손익$": round(unreal, 2),
+            "순자산$": round(float(a.get("NAV") or 0), 2),
+            "읽는법": "차이가 0 이 아니면 ⓐ 아직 기록 안 된 청산 ⓑ 봇 밖 거래 ⓒ 이전 전략 거래"}
 
 
 def _h1_sig_rows(cfg, rows):
@@ -14501,11 +14539,16 @@ def _h1_sig_rows(cfg, rows):
         ins = r["통화"].replace("/", "_")
         stamp = f"{r['시각']:%Y%m%d%H%M}"
         rr = real.get((ins, stamp), {}) if 통과 else {}
+        # [2026-11-23] 체결·주문실패·규칙만 세 가지를 구분한다. 예전에는 실패한 주문도
+        #   '실거래 진입' 으로 찍혀서 실제 계좌와 안 맞았다.
+        _fill = bool(rr.get("체결가")) or bool(rr.get("수량"))
+        _ordres = str(rr.get("주문결과") or "")
+        _fail = bool(통과 and _ordres and not _fill)
         out.append([
             f"{ins}-{stamp}",
             f"{r['시각']:%Y-%m-%d %H:%M}", r["통화"], r["방향"],
-            ("✅ 실거래 진입" if rr else "✅ 진입(규칙만)") if 통과 else "⛔ 막힘",
-            "" if 통과 else r.get("사유전체", r["사유"]),
+            ("⚠️ 주문 실패" if _fail else ("✅ 실거래 진입" if _fill else "✅ 진입(규칙만)")) if 통과 else "⛔ 막힘",
+            (_ordres[:80] if _fail else "") if 통과 else r.get("사유전체", r["사유"]),
             "" if 통과 else r.get("사유수", 1),
             "" if 통과 else r["사유"],
             "" if r["R"] is None else round(float(r["R"]), 3),
@@ -15284,6 +15327,18 @@ def _h1_email_body(today, cfg):
         tag = "" if str(r.get("키", "")).startswith(_H1_KEYP) else " [이전 규칙]"
         L.append(f"  {r['통화']} {r['방향']} {r['진입시각'][5:]} → {r['청산시각'][5:]}  {float(r['합계$']):+,.2f}$"
                  + (f"  (규칙상 {float(r['규칙상$']):+,.2f}$)" if r.get("규칙상$") not in ("", None) else "") + tag)
+    # [2026-11-23] 계좌 대조 — 시트와 실제 OANDA 손익이 벌어지면 바로 보이게 한다
+    try:
+        _rc = _h1_recon(cfg)
+        if "차이$" in _rc:
+            L += ["", "■ 계좌 대조 (시트 vs OANDA 실제)",
+                  f"  시트 실주문 합계 {_rc['시트_실주문_합계$']:+,.2f}$ · "
+                  f"계좌 실현누적 {_rc['계좌_실현누적$(스왑포함)']:+,.2f}$ · 차이 {_rc['차이$']:+,.2f}$",
+                  f"  열린 거래 평가손익 {_rc['열린거래_평가손익$']:+,.2f}$ · 순자산 {_rc['순자산$']:,.2f}$"]
+            if abs(float(_rc["차이$"])) >= 1.0:
+                L.append("  ⚠ 차이가 있다: ⓐ 아직 기록 안 된 청산 ⓑ 봇 밖에서 한 거래 ⓒ 이전 전략 거래")
+    except Exception as e:
+        L += ["", f"■ 계좌 대조 — 실패: {str(e)[:70]}"]
     # [2026-11-19] 앞으로 48시간 안의 예정 발표 — 새 거래가 들어가면 보유 구간에 걸릴 수 있다
     _now = _h1_dt.now(_H1_NY)
     L += ["", "■ 앞으로 48시간 예정된 주요 발표 (지금 진입하면 보유 구간에 걸린다)"]
@@ -15443,6 +15498,10 @@ def h24_status_endpoint(run: int = 0):
     except Exception as e:
         out["누적"] = f"시트 오류: {str(e)[:100]}"
     out["손절점검"] = _H1_STATE.get("stops") or "아직 확인 전 (다음 정시 계산 때 확인한다)"
+    try:
+        out["계좌대조"] = _h1_timeout(lambda: _h1_recon(cfg), 20, None, "계좌대조") or "조회 실패"
+    except Exception as e:
+        out["계좌대조"] = f"오류: {str(e)[:80]}"
     out["보유_실주문"] = _h1_open_live(cfg) or "없음"
     out["보유_규칙"] = {k: v for k, v in _H1_STATE["open_sim"].items() if v} or "없음"
     out["최근기록"] = _H1_STATE["log"][-12:]
