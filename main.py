@@ -13573,7 +13573,11 @@ def _h1_live_rates(cfg):
         브로커비용 = −(longRate + shortRate) / 2
     통화쌍 금리차를 이어 붙이면 USD 하나만 알면 나머지 통화가 전부 풀린다.
     반환: ({통화: 연%}, {쌍: (금리차%, 롱%, 숏%, 비용%)}, 출처)"""
-    want = list(_H1_PAIRS) + ["GBP_USD"]
+    # [2026-11-24] 후보 통화쌍을 **조회에만** 추가한다 (거래 대상 아님).
+    #   USD_CAD·USD_CHF·NZD_USD 를 같이 물으면 CAD·CHF·NZD 금리까지 역산된다.
+    #   금리차가 이 전략 수익의 94% 를 설명하므로, 새 통화쌍 후보를 고르려면 이 숫자가 먼저 필요하다.
+    #   표(_H1_CCY_COL 5개)는 그대로라 시트 레이아웃은 바뀌지 않는다.
+    want = list(_H1_PAIRS) + ["GBP_USD", "USD_CAD", "USD_CHF", "NZD_USD"]
     pr = {}
     if cfg.get("account"):
         code, j = _h1_api("GET", f"/v3/accounts/{cfg['account']}/instruments",
@@ -14501,6 +14505,65 @@ def _h1_real_by_key():
                 v = r.get(src)
                 if v not in ("", None):
                     d[dst] = v
+    return out
+
+
+def _h1_margin(cfg):
+    """[2026-11-23] 증거금 — '거래를 넣으려면 계좌에 얼마가 있어야 하나'.
+    증거금률은 계좌·통화쌍·보유규모마다 다르고 OANDA 홈페이지 설명끼리도 어긋나므로
+    **계좌에서 직접 받아온다.** (/instruments 가 통화쌍별 marginRate 를 돌려준다)
+    읽기 전용이라 주문에 영향이 없다."""
+    if not cfg["account"]:
+        return {"상태": "계좌 없음"}
+    code, j = _h1_api("GET", f"/v3/accounts/{cfg['account']}/summary")
+    a = ((j or {}).get("account") or {}) if code == 200 else {}
+    code2, j2 = _h1_api("GET", f"/v3/accounts/{cfg['account']}/instruments")
+    rates = {}
+    if code2 == 200:
+        for ins in (j2 or {}).get("instruments", []):
+            if ins.get("name") in _H1_PAIRS:
+                try:
+                    r = float(ins.get("marginRate") or 0)
+                    if r > 0:
+                        rates[ins["name"]] = r
+                except Exception:
+                    continue
+    out = {"순자산$": round(float(a.get("NAV") or 0), 2),
+           "증거금 사용중$": round(float(a.get("marginUsed") or 0), 2),
+           "증거금 여유$": round(float(a.get("marginAvailable") or 0), 2),
+           "통화쌍별 증거금률": {k: f"{100 * v:.1f}% (레버리지 {1 / v:.0f}:1)" for k, v in sorted(rates.items())}
+           or "조회 실패"}
+    # 지금 변동성 기준으로 '1건 넣으면 증거금이 얼마 필요한가'
+    uj = _H1_CACHE.get("USD_JPY")
+    ujp = float(uj["c"].iloc[-1]) if uj is not None and not uj.empty else 0.0
+    est = {}
+    for instr in _H1_PAIRS:
+        df = _H1_CACHE.get(instr); mr = rates.get(instr)
+        if df is None or df.empty or not mr or len(df) < 20:
+            continue
+        try:
+            h = df["h"].values.astype(float); l = df["l"].values.astype(float); c = df["c"].values.astype(float)
+            pc = _h1_np.r_[c[0], c[:-1]]
+            A = _h1_wilder(_h1_np.maximum(h - l, _h1_np.maximum(abs(h - pc), abs(l - pc))), 14)
+            dist = _H1_SLM * float(A[-1]); px = float(c[-1])
+            if dist <= 0:
+                continue
+            if instr == "EUR_USD":
+                units = cfg["risk"] / dist; noz = units * px
+            elif instr == "USD_JPY":
+                units = cfg["risk"] * px / dist; noz = units
+            else:                                   # EUR_JPY · AUD_JPY (호가 JPY, 기준 EUR/AUD)
+                if ujp <= 0:
+                    continue
+                units = cfg["risk"] * ujp / dist; noz = units * px / ujp
+            est[instr] = {"수량": round(units), "명목$": round(noz), "증거금$": round(noz * mr)}
+        except Exception:
+            continue
+    if est:
+        out["1건당 (지금 변동성·배수 1배 기준)"] = est
+        out["4쌍 동시에 열리면$"] = round(sum(v["증거금$"] for v in est.values()))
+        out["읽는법"] = ("크기 배수가 최대 2.5배까지 가므로 실제로는 이 숫자의 최대 2.5배까지 필요할 수 있다. "
+                      "증거금 여유가 모자라면 주문이 거절된다 — 손실이 아니라 '기회를 놓치는' 쪽의 문제다.")
     return out
 
 
@@ -15560,6 +15623,18 @@ def h24_status_endpoint(run: int = 0):
     except Exception as e:
         out["계좌대조"] = f"오류: {str(e)[:80]}"
     try:
+        out["증거금"] = _h1_timeout(lambda: _h1_margin(cfg), 25, None, "증거금") or "조회 실패"
+    except Exception as e:
+        out["증거금"] = f"오류: {str(e)[:80]}"
+    try:
+        # [2026-11-24] 역산된 통화별 금리 전부 (표에 없는 CAD·CHF·NZD 포함) — 새 통화쌍 검토용
+        _cur, _pr, _src = _h1_timeout(lambda: _h1_live_rates(cfg), 25, (None, None, None), "통화금리")
+        if _cur:
+            out["통화별_금리(역산)"] = {k: f"{v:.2f}%" for k, v in sorted(_cur.items(), key=lambda z: -z[1])}
+            out["통화별_금리_출처"] = _src
+    except Exception as e:
+        out["통화별_금리(역산)"] = f"오류: {str(e)[:80]}"
+    try:
         _dc = _h1_timeout(lambda: _h1_discretion(), 20, None, "재량대조") or []
         out["재량_vs_규칙"] = {"거래": _dc, "누적차이$": round(sum(d["차이$"] for d in _dc), 2),
                             "이긴 횟수": f"{sum(1 for d in _dc if d['차이$'] > 0)}/{len(_dc)}",
@@ -15570,6 +15645,63 @@ def h24_status_endpoint(run: int = 0):
     out["보유_규칙"] = {k: v for k, v in _H1_STATE["open_sim"].items() if v} or "없음"
     out["최근기록"] = _H1_STATE["log"][-12:]
     return out
+
+
+@app.get("/h24_csv")                                               # type: ignore[name-defined]
+def h24_csv_endpoint(instr: str = "USD_CHF", start: str = "2010-01-01", end: str = "",
+                     gran: str = "H1", gz: int = 1):
+    """[2026-11-24] 백테스트용 과거 캔들 내려받기. **읽기 전용 — 주문과 무관하다.**
+
+    브라우저에서 이 주소를 열면 CSV 파일이 바로 받아진다. API 키를 어디에도 입력할 필요가 없다
+    (봇이 이미 Render 환경변수로 들고 있다). 거래하지 않는 통화쌍도 받을 수 있다.
+    형식은 기존 백테스트 파일과 같다: time,open,high,low,close,volume · UTC · 중간가(M).
+
+    예) /h24_csv?instr=USD_CHF&start=2010-01-01
+        /h24_csv?instr=GBP_CHF&start=2010-01-01
+    """
+    from fastapi.responses import Response
+    instr = str(instr or "").strip().upper().replace("/", "_")
+    if not instr or len(instr) != 7 or "_" not in instr:
+        return JSONResponse({"오류": "instr 형식은 USD_CHF 처럼"}, status_code=400)
+    try:
+        frm = _h1_pd.Timestamp(start, tz="UTC")
+        to = _h1_pd.Timestamp(end, tz="UTC") if end else _h1_pd.Timestamp.now(tz="UTC")
+    except Exception as e:
+        return JSONResponse({"오류": f"날짜 형식: {str(e)[:80]}"}, status_code=400)
+    rows, seen, first = [], set(), True
+    for _ in range(60):                                   # 5000봉 × 60 = 30만봉 상한
+        code, j = _h1_api("GET", f"/v3/instruments/{instr}/candles",
+                          params={"granularity": gran, "price": "M", "count": 5000,
+                                  "from": frm.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                  **({} if first else {"includeFirst": "false"})})
+        if code != 200:
+            if rows:
+                break
+            return JSONResponse({"오류": f"OANDA {code}", "내용": str(j)[:200]}, status_code=502)
+        cs = [c for c in (j or {}).get("candles", []) if c.get("complete")]
+        if not cs:
+            break
+        for c in cs:
+            t = c["time"]
+            if t in seen:
+                continue
+            seen.add(t); m = c["mid"]
+            rows.append(f'{t},{m["o"]},{m["h"]},{m["l"]},{m["c"]},{c.get("volume", 0)}')
+        nxt = _h1_pd.Timestamp(cs[-1]["time"])
+        if nxt >= to or len(cs) < 10:
+            break
+        frm, first = nxt, False
+        _t.sleep(0.15)                                    # OANDA 요청 한도 배려
+    if not rows:
+        return JSONResponse({"오류": "받은 캔들이 없다", "통화쌍": instr}, status_code=404)
+    body = ("time,open,high,low,close,volume\n" + "\n".join(rows) + "\n").encode()
+    name = f"OANDA_{instr}_{gran}_{rows[0][:10]}_{rows[-1][:10]}.csv"
+    if gz:
+        import gzip as _gz
+        body = _gz.compress(body, 6); name += ".gz"
+    return Response(content=body, media_type="application/octet-stream",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"',
+                             "X-Rows": str(len(rows))})
 
 
 @app.get("/h24_test_email")                                        # type: ignore[name-defined]
