@@ -13519,7 +13519,8 @@ _H1_MSTATE = {"t": None, "m": {}}                                  # 월별 가�
 _H1_WATCH = {"last_ok": None, "stall_sent": None, "alert": {}}     # 멈춤 감시 · 알림 중복 방지
 _H1_SHEET_TIMEOUT = float(_h1_os.environ.get("H24_SHEET_TIMEOUT", "20"))   # 시트 호출 시간제한(초)
 _H1_DCACHE = {}
-_H1_FINCACHE = {"t": None, "dir": {}}
+#: dir = {쌍: ±1 받는 방향} · gap = {쌍: 금리차 %p} (신호 탭에 "왜 내는 방향인지" 적으려고 같이 캐시한다)
+_H1_FINCACHE = {"t": None, "dir": {}, "gap": {}}
 #: 2026-11-20 기준 정책금리. 미국은 목표범위 3.75~4.00 의 중간값, 영국은 11/05 인상 반영.
 _H1_RATES_DEFAULT = "USD:3.875,EUR:2.5,GBP:4.0,JPY:1.25,AUD:4.85"
 
@@ -13670,7 +13671,7 @@ def _h1_carry_dirs(cfg):
     now = _h1_dt.now(_H1_NY)
     if _H1_FINCACHE["t"] and (now - _H1_FINCACHE["t"]).total_seconds() < 3600:
         return _H1_FINCACHE["dir"]
-    dirs = {}; src = "없음"
+    dirs = {}; gaps = {}; src = "없음"
     if cfg.get("account"):
         code, j = _h1_api("GET", f"/v3/accounts/{cfg['account']}/instruments", params={"instruments": ",".join(_H1_PAIRS)})
         if code == 200:
@@ -13686,6 +13687,7 @@ def _h1_carry_dirs(cfg):
                 if abs(lr - sr) < 1e-6:
                     continue
                 dirs[ins["name"]] = 1 if lr > sr else -1
+                gaps[ins["name"]] = (lr - sr) / 2 * 100      # 금리차 %p (위 _h1_rates_from_swaps 와 같은 역산)
                 src = "OANDA 스왑금리"
     if len(dirs) < len(_H1_PAIRS):
         tbl = _h1_rates_table()
@@ -13694,9 +13696,31 @@ def _h1_carry_dirs(cfg):
                 continue
             b, q = ins.split("_")
             if b in tbl and q in tbl:
-                d = tbl[b] - tbl[q]; dirs[ins] = 1 if d > 0 else (-1 if d < 0 else 0); src = src if src != "없음" else "H24_RATES 표"
-    _H1_FINCACHE.update(t=now, dir=dirs, src=src)
+                d = tbl[b] - tbl[q]; dirs[ins] = 1 if d > 0 else (-1 if d < 0 else 0); gaps[ins] = d
+                src = src if src != "없음" else "H24_RATES 표"
+    _H1_FINCACHE.update(t=now, dir=dirs, gap=gaps, src=src)
     return dirs
+
+
+def _h1_recv_why(instr, sd, cdir):
+    """신호 탭에 적을 '왜 내는 방향인가' 한 줄. (2026-11-24)
+    예: 금리 내는 방향 (USD 4.00% > JPY 1.25%, 금리차 +2.75%p → 매수가 받는 쪽인데 매도 신호)"""
+    b, q = instr.split("_")
+    gap = (_H1_FINCACHE.get("gap") or {}).get(instr)
+    tbl = {}
+    try:
+        tbl = _h1_rates_table() or {}
+    except Exception:
+        pass
+    hi, lo = (b, q) if cdir > 0 else (q, b)
+    lv = ""
+    if hi in tbl and lo in tbl:
+        lv = f"{hi} {tbl[hi]:.2f}% > {lo} {tbl[lo]:.2f}%, "
+    gp = f"금리차 {abs(gap):+.2f}%p → " if isinstance(gap, (int, float)) else ""
+    want = "매수" if cdir > 0 else "매도"
+    got = "매수" if sd > 0 else "매도"
+    return (f"금리 내는 방향 ({lv}{gp}{want}가 받는 쪽인데 {got} 신호 — "
+            f"{hi} 를 파는 방향이라 이자를 내고, 2020-26 이 방향 376건 합계 -$4,312)")
 # [2026-11-23] 17시 ET(FX 롤오버) 를 네 쌍 모두 금지에 추가. EUR_USD 는 17-20 으로 이미 포함.
 #   근거 ⓐ 거래 결과와 무관한 시장 사실: 1시간봉 평균 변동폭이 17시에 하루 중 최저다
 #         (2021-26 평일, 평균 대비 USD/JPY 42% · EUR/USD 38% · EUR/JPY 54% · AUD/JPY 62%).
@@ -13778,6 +13802,8 @@ def _h1_cfg():
             "stop_nav": float(g("H24_STOP_NAV", "0") or 0), "blocks": _h1_blocks(),
             "usd_cap": int(float(g("H24_USD_CAP", "2") or 0)),
             "carry_up": float(g("H24_CARRY_UP", "1.25")), "carry_dn": float(g("H24_CARRY_DN", "0.75")),
+            # [2026-11-24 채택] 금리를 내는 방향(고금리 통화 매도) 진입 금지. 끄려면 H24_RECV_ONLY=0
+            "recvonly": str(g("H24_RECV_ONLY", "1")).strip() not in ("0", "false", "False", ""),
             "fomc": sorted(set(_H1_FOMC + [x.strip() for x in str(g("H24_FOMC_EXTRA", "")).split(",") if x.strip()])),
             "boj": sorted(set(_H1_BOJ + [x.strip() for x in str(g("H24_BOJ_EXTRA", "")).split(",") if x.strip()])),
             "sw12": on("H24_SW12", "on"), "sw12_thr": float(g("H24_SW12_MIN", "0") or 0),
@@ -14134,9 +14160,24 @@ def _h1_trend_info(dc, pip):
 
 
 def _h1_engine(df, pip, cost, dc, fomc, blk=frozenset(), maxbars=_H1_MAXBARS, cdir=0, cup=1.0, cdn=1.0,
-               atrmin=0.0, postf=0.0, farmin=0.0, farmul=1.0, mcap=0.0, rgmin=0.0, rgmul=1.0, life=10):
+               atrmin=0.0, postf=0.0, farmin=0.0, farmul=1.0, mcap=0.0, rgmin=0.0, rgmul=1.0, life=10,
+               recvonly=False):
     """cdir: 스왑 받는 방향(+1 매수, -1 매도, 0 모름). 거래 배수 = (FOMC 전 2배) × (받는 방향 cup, 내는 방향 cdn)
-    life: 신호가 확정된 뒤 몇 봉(시간) 동안 진입 기회를 주나. 기본 10, EUR/USD 3 (2026-11-19)"""
+    life: 신호가 확정된 뒤 몇 봉(시간) 동안 진입 기회를 주나. 기본 10, EUR/USD 3 (2026-11-19)
+
+    recvonly: True 면 **금리를 내는 방향(고금리 통화 매도) 진입을 아예 막는다.** (2026-11-24 채택)
+      근거 ⓐ 2020-26 방향별 분해: 받는 쪽 648건 $+112,694 (거래당 +$174) · 내는 쪽 376건 $-4,312 (거래당 -$11).
+            5쌍 전부 같은 방향이고 예외가 없다.
+      근거 ⓑ 4쌍 포트폴리오 재시뮬 2020-26: $+96,367 → $+100,772, 최대하락 $-15,071 → $-6,452,
+            플러스 연도 6/7 → 7/7, 거래당 $119 → $213.
+      근거 ⓒ 장외표본 2010-19(엔 강세 시대): $-50,545 → $-29,148, 최대하락 $-59,621 → $-42,145.
+            규칙을 만들 때 안 본 구간에서도 손실이 42% 줄었다 = 과최적화가 아니다.
+      근거 ⓓ 확장창 워크포워드: 2013~2026 매 해, 그 전 데이터만 보고 고르면 전부 '금지' 를 골랐다 (한 번도 안 뒤집힘).
+      근거 ⓔ 짝지은 부트스트랩: 2020-26 차이 중간값 $+4,425(우세 71%) · 2010-19 $+21,187(우세 95%),
+            최대하락이 더 얕을 확률 83% / 97%.
+      대가: 거래 수가 811 → 474 건으로 42% 줄어든다. 신호 대기가 주당 2.2건 → 1.3건.
+      주의: 이 규칙은 포트폴리오를 '엔 약세 베팅' 쪽으로 더 몰아준다 (엔화쌍 거래의 96%가 엔 매도).
+            엔화 추세가 뒤집히면 거래가 거의 안 나오는 대신, 나오는 거래는 전부 같은 방향이다."""
     life = max(1, int(life))
 
     def _mult(i, sd):
@@ -14238,6 +14279,8 @@ def _h1_engine(df, pip, cost, dc, fomc, blk=frozenset(), maxbars=_H1_MAXBARS, cd
             sd = 0                                       # [변동성 하한] 스프레드 대비 ATR 이 너무 작다
         if sd and post[i]:
             sd = 0                                       # [발표 직후] FOMC 발표 후 postf 시간 진입 금지
+        if sd and recvonly and cdir and sd != cdir:
+            sd = 0                                       # [금리 방향] 금리를 내는 방향(고금리 통화 매도) 금지
         if not sd:
             i += 1
             continue
@@ -14276,10 +14319,10 @@ def _h1_engine(df, pip, cost, dc, fomc, blk=frozenset(), maxbars=_H1_MAXBARS, cd
 # "그림자 거래" = 필터에 걸려서 안 들어간 신호가, 만약 들어갔다면 어떻게 끝났을까.
 
 _H1_BLK_WHY = ["MACD 반대", "12시 ET 금지", "금요일 금지", "일봉 200EMA 반대",
-               "통화별 금지시간", "FOMC 직후", "변동성 하한"]
+               "통화별 금지시간", "FOMC 직후", "변동성 하한", "금리 내는 방향"]
 
 
-def _h1_blocked_scan(instr, df, dc, cfg, pip, cost, blk):
+def _h1_blocked_scan(instr, df, dc, cfg, pip, cost, blk, cdir=0):
     """걸러진 신호 목록. 엔진의 필터 순서를 그대로 따라간다."""
     o, h, l, c = (df[k].values.astype(float) for k in "ohlc")
     idx, n = df.index, len(df)
@@ -14375,8 +14418,13 @@ def _h1_blocked_scan(instr, df, dc, cfg, pip, cost, blk):
         if ehr[i] in blk: allw.append("통화별 금지시간")
         if cfg["atrmin"] and not (A[i] / pip >= cost * cfg["atrmin"]): allw.append("변동성 하한")
         if post[i]: allw.append("FOMC 직후")
+        # [2026-11-24] 집계·중복제거는 짧은 표식으로 하고(_H1_BLK_WHY 와 맞아야 한다),
+        #   "왜 내는 방향인지" 설명은 기록용 전체 사유에만 길게 붙인다.
+        _recv_bad = bool(cfg.get("recvonly") and cdir and sd != cdir)
+        if _recv_bad: allw.append("금리 내는 방향")
         why = allw[0] if allw else None          # 집계용 대표 사유 (기존 순서 유지)
-        whyall = " + ".join(allw)                # 기록용 전체 사유
+        whyall = " + ".join(_h1_recv_why(instr, sd, cdir) if w == "금리 내는 방향" else w
+                            for w in allw)       # 기록용 전체 사유
         # [2026-11-19 버그수정] 통과하면 why 가 None 인데, 아직 기록된 적 없는 방향은
         #   prev.get(sd) 도 None 을 돌려준다 → None == None 이라 **통과 신호가 전부 버려졌다.**
         #   실거래로 들어간 신호가 시트에 한 건도 안 남던 원인. 없음 표시를 따로 둔다.
@@ -14397,6 +14445,10 @@ def _h1_blocked_scan(instr, df, dc, cfg, pip, cost, blk):
 def _h1_blocked_all(cfg):
     """5개쌍 전부 훑는다. 캔들은 이미 메모리에 있는 것만 쓴다 (새로 받지 않음)."""
     rows = []
+    try:
+        cdirs = _h1_carry_dirs(cfg) if cfg.get("recvonly") else {}
+    except Exception:
+        cdirs = {}
     for instr, (pip, prec, cst) in _H1_PAIRS.items():
         df = _H1_CACHE.get(instr)
         if df is None or df.empty:
@@ -14406,7 +14458,8 @@ def _h1_blocked_all(cfg):
         except Exception:
             continue
         rows += _h1_blocked_scan(instr, df, dc, cfg, pip, cst,
-                                 frozenset(cfg["blocks"].get(instr, ())))
+                                 frozenset(cfg["blocks"].get(instr, ())),
+                                 cdir=cdirs.get(instr, 0))
     rows.sort(key=lambda r: r["봉"])
     return rows
 
@@ -15224,9 +15277,16 @@ def _h1_tick(force=False):
             _H1_STATE["ord"] = {r["키"]: r for r in ro}
         new_sim, sim_by_key, retry = [], {}, False
         try:
-            cdirs = _h1_carry_dirs(cfg) if (cfg["carry_up"] != 1.0 or cfg["carry_dn"] != 1.0) else {}
+            cdirs = (_h1_carry_dirs(cfg)
+                     if (cfg["carry_up"] != 1.0 or cfg["carry_dn"] != 1.0 or cfg["recvonly"]) else {})
         except Exception as e:
             _h1_log(f"스왑 방향 조회 실패: {str(e)[:80]}"); cdirs = {}
+        if cfg["recvonly"]:
+            # [2026-11-24] 금리 방향을 모르면 '내는 방향 금지' 가 조용히 안 걸린다 (= 11-24 전 규칙으로 되돌아감).
+            #   거래가 멈추는 것보다는 낫지만, 모르고 지나가면 안 되니 로그에 남긴다.
+            _miss = [p for p in _H1_PAIRS if not cdirs.get(p)]
+            if _miss:
+                _h1_log("⚠️ 금리 방향 모름 → 내는방향 금지가 안 걸리는 쌍: " + ", ".join(_miss))
         for instr, (pip, prec, cst) in _H1_PAIRS.items():
             try:
                 df = _h1_fetch(instr)
@@ -15240,7 +15300,8 @@ def _h1_tick(force=False):
                                               atrmin=cfg["atrmin"], postf=cfg["postf"],
                                               farmin=cfg["farmin"], farmul=cfg["farmul"], mcap=cfg["mcap"],
                                               life=cfg["life"].get(instr, 10),
-                                              rgmin=cfg["rgmin"], rgmul=cfg["rgmul"])
+                                              rgmin=cfg["rgmin"], rgmul=cfg["rgmul"],
+                                              recvonly=cfg["recvonly"])
             try:
                 _H1_STATE["far"][instr] = round(float(_h1_far_series(dc).iloc[-1]), 2)
                 _H1_STATE.setdefault("trend", {})[instr] = _h1_trend_info(dc, pip)
@@ -15363,7 +15424,8 @@ def _h1_email_body(today, cfg):
     sl, ss = _h1_summary(rl, "합계$"), _h1_summary(rs, "손익$")
     old = _h1_summary(rl, "합계$", _H1_OLDP)
     L = [f"1시간봉 RSI 다이버전스 묶음 + 일봉 추세 + FOMC 2배/발표후 금지 + 금리 방향 크기 · 익절 없음 · {_H1_MAXBARS}봉 청산 — {today} (ET)",
-         f"금리 방향: {_h1_carry_text()} · 받는 방향 {cfg['carry_up']}배, 내는 방향 {cfg['carry_dn']}배",
+         f"금리 방향: {_h1_carry_text()} · 받는 방향 {cfg['carry_up']}배, 내는 방향 "
+         + ("**진입 금지** (2026-11-24 채택)" if cfg["recvonly"] else f"{cfg['carry_dn']}배"),
          "묶음 = MACD 같은 방향 + 12시·금요일 진입 금지 / 추세 = 일봉 200EMA 방향만 / FOMC 전 24시간 진입은 위험 2배",
          "시간 금지 = " + (", ".join(f"{k} {min(v)}~{max(v)}시" for k, v in cfg["blocks"].items()) or "없음"),
          (f"OANDA **실계좌** · 거래당 ${cfg['risk']:,.0f} 위험 (FOMC 전 2배) · 순자산 ${_h1_nav(cfg):,.0f} · 중단선 ${cfg['stop_nav']:,.0f}"
@@ -15561,8 +15623,12 @@ def h24_status_endpoint(run: int = 0):
                    "메일": "on" if cfg["email"] else "off", "거래당위험$": cfg["risk"],
                    "규칙": f"RSI 다이버전스 + MACD 같은 방향 + 12시·금요일 금지 + 일봉 200EMA 방향만 + FOMC 전 2배 · 발표후 금지 · 추세확립 {_h1_os.environ.get('H24_FAR_MULT', '1.5')}배 · 신호강도 {_h1_os.environ.get('H24_RGAP_MULT', '1.25')}배 · 익절 없음 · {_H1_MAXBARS}봉",
                    "손절ATR": _H1_SLM, "달러노출한도": cfg["usd_cap"], "보유봉": _H1_MAXBARS,
-                   "금리크기": f"받는 방향 {cfg['carry_up']}배 / 내는 방향 {cfg['carry_dn']}배",
-                   "금리방향": {k: ("매수 유리" if v > 0 else "매도 유리" if v < 0 else "모름 — 배수 안 걸림")
+                   "금리크기": f"받는 방향 {cfg['carry_up']}배 / 내는 방향 "
+                             + ("진입 금지 (H24_RECV_ONLY=1, 2026-11-24 채택)" if cfg["recvonly"]
+                                else f"{cfg['carry_dn']}배"),
+                   "금리방향": {k: ("매수 유리" if v > 0 else "매도 유리" if v < 0 else "모름 — 필터·배수 안 걸림")
+                                  + (f" (금리차 {abs(_H1_FINCACHE['gap'][k]):+.2f}%p)"
+                                     if k in (_H1_FINCACHE.get("gap") or {}) else "")
                              for k, v in (_h1_carry_dirs(cfg) or {}).items()} or "아직 조회 전",
                    "금리방향출처": _H1_FINCACHE.get("src", ""),
                    "진입금지시간ET": {k: f"{min(v)}~{max(v)}시" if len(v) == max(v) - min(v) + 1 else sorted(v) for k, v in cfg["blocks"].items()},
