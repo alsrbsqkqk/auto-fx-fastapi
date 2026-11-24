@@ -13389,7 +13389,8 @@ def gapgo_live_status_endpoint():
 #     [묶음] 신호 봉의 MACD(12,26,9) 히스토그램이 거래 방향과 같을 때만
 #     [묶음] 진입 시각(신호 봉 + 1시간, ET)이 12시 대(점심)거나 금요일이면 진입 안 함
 #     [추세] 어제 일봉(17:00 ET 마감) 종가가 일봉 200 EMA 위면 매수만, 아래면 매도만
-#     [시간] 통화별 진입 금지 시간 (ET, 진입 시각 기준): EUR_USD 17~20시, USD_JPY 02~06시 (H24_BLOCK 로 변경)
+#     [시간] 통화별 진입 금지 시간 (ET, 진입 시각 기준): EUR_USD 17~20시, USD_JPY 02~06시 + 17시,
+#            EUR_JPY 17시, AUD_JPY 17시 (H24_BLOCK 로 변경). 17시는 FX 롤오버 — 하루 중 가장 얇다
 #     [달러] 달러 순노출이 같은 방향으로 2개를 넘으면 진입 안 함 (실주문만, H24_USD_CAP 로 변경 · 0 = 끔)
 #     [금리] 금리가 높은 통화를 사는 방향(스왑을 받는 쪽)은 1.25배, 반대는 0.75배 (H24_CARRY_UP / H24_CARRY_DN, 둘 다 1 이면 끔)
 #            방향 판정: OANDA 계좌의 통화별 스왑 금리(longRate/shortRate)로. 못 받으면 H24_RATES 표(통화별 정책금리)로
@@ -13421,7 +13422,8 @@ def gapgo_live_status_endpoint():
 #     H24_LIVE / H24_ORDERS / H24_EMAIL on/off   H24_RISK_USD 100   H24_STOP_BALANCE 6000   H24_WARN_3M 2000
 #     H24_FOMC_EXTRA  임시 FOMC 회의 날짜 추가 (예: 2027-02-15,2027-05-03)
 #     H24_SL_ATR      손절 폭 (ATR 배수, 기본 1.0)
-#     H24_BLOCK       통화별 진입 금지 시간. 기본 "EUR_USD:17-20,USD_JPY:2-6" · 끄려면 "none"
+#     H24_BLOCK       통화별 진입 금지 시간. 기본 "EUR_USD:17-20,USD_JPY:2-6,USD_JPY:17-17,
+#                     EUR_JPY:17-17,AUD_JPY:17-17" · 끄려면 "none" (같은 쌍을 여러 번 적으면 합쳐진다)
 #     H24_USD_CAP     달러 순노출 한도 (기본 2, 0 = 끔)
 #     H24_HOLD_BARS   보유 봉 수 (기본 28)
 #     H24_CARRY_UP / H24_CARRY_DN   금리 받는 방향 / 내는 방향 크기 배수 (기본 1.25 / 0.75)
@@ -13691,7 +13693,18 @@ def _h1_carry_dirs(cfg):
                 d = tbl[b] - tbl[q]; dirs[ins] = 1 if d > 0 else (-1 if d < 0 else 0); src = src if src != "없음" else "H24_RATES 표"
     _H1_FINCACHE.update(t=now, dir=dirs, src=src)
     return dirs
-_H1_BLOCK_DEFAULT = "EUR_USD:17-20,USD_JPY:2-6"
+# [2026-11-23] 17시 ET(FX 롤오버) 를 네 쌍 모두 금지에 추가. EUR_USD 는 17-20 으로 이미 포함.
+#   근거 ⓐ 거래 결과와 무관한 시장 사실: 1시간봉 평균 변동폭이 17시에 하루 중 최저다
+#         (2021-26 평일, 평균 대비 USD/JPY 42% · EUR/USD 38% · EUR/JPY 54% · AUD/JPY 62%).
+#         17:00 ET 는 FX 날짜가 바뀌는 시각이라 호가가 가장 얇고 스프레드가 가장 벌어진다.
+#   근거 ⓑ 17시 진입 실적이 두 시대 모두 마이너스: 2021-26 21건 −$4,151(−0.53R) ·
+#         2010-20 57건 −$11,680(−0.65R). 통화쌍×시대 6칸 중 5칸이 마이너스.
+#   근거 ⓒ 전체 재시뮬: 2021-26 +$104,589 → +$106,614 (+$2,025, 이긴 해 4/6, 최대낙폭 불변)
+#                       2010-20 −$70,905 → −$60,792 (+$10,113)
+#   ★ 같은 날 함께 검토한 '데이터로 고른 6시간 창'(EUR_JPY 13-18 등)은 2010-20 만 보고 골라
+#     2021-26 에 적용하는 검정에서 −$1,636(2/6) 로 실패했다. 그래서 그것들은 넣지 않는다.
+#     17시만 넣는 이유는 성적이 아니라 **시장 구조에서 먼저 나온 가설**이기 때문이다.
+_H1_BLOCK_DEFAULT = "EUR_USD:17-20,USD_JPY:2-6,USD_JPY:17-17,EUR_JPY:17-17,AUD_JPY:17-17"
 
 
 def _h1_blocks():
@@ -14488,6 +14501,37 @@ def _h1_real_by_key():
                 v = r.get(src)
                 if v not in ("", None):
                     d[dst] = v
+    return out
+
+
+def _h1_discretion():
+    """[2026-11-23] 재량 청산이 규칙보다 나았나 — 'H24_실주문' 과 'H24_규칙' 을 키로 맞춰 비교한다.
+
+    왜 따로 만드나: 실주문 탭의 '규칙상$' 칸은 **실거래가 규칙보다 먼저 닫히면 비어 있다.**
+    그 시점엔 규칙 거래가 아직 28봉을 못 채워서 비교할 값이 없기 때문이다.
+    (11/22 거래: 실거래 11-23 14:14 청산 · 규칙 11-24 00:00 청산 → 칸이 빈 채로 남았다)
+    여기서는 매번 두 탭을 다시 읽어 맞추므로, 나중에라도 규칙이 닫히면 저절로 채워진다."""
+    live = _h1_rows(_H1_TAB_LIVE, _H1_HEAD_LIVE) or []
+    sim = _h1_rows(_H1_TAB_SIM, _H1_HEAD_SIM) or []
+    rule = {}
+    for r in sim:
+        try:
+            rule[str(r.get("키", ""))] = (float(r.get("손익$") or 0), str(r.get("청산시각") or ""))
+        except Exception:
+            continue
+    out = []
+    for r in live:
+        k = str(r.get("키", ""))
+        if not k.startswith(_H1_KEYP) or k not in rule:
+            continue
+        try:
+            real = float(r.get("합계$") or 0)
+        except Exception:
+            continue
+        rl, rxt = rule[k]
+        out.append({"키": k, "통화": r.get("통화"), "진입": r.get("진입시각"),
+                    "실제청산": r.get("청산시각"), "규칙청산": rxt,
+                    "실제$": round(real, 2), "규칙상$": round(rl, 2), "차이$": round(real - rl, 2)})
     return out
 
 
@@ -15339,6 +15383,19 @@ def _h1_email_body(today, cfg):
                 L.append("  ⚠ 차이가 있다: ⓐ 아직 기록 안 된 청산 ⓑ 봇 밖에서 한 거래 ⓒ 이전 전략 거래")
     except Exception as e:
         L += ["", f"■ 계좌 대조 — 실패: {str(e)[:70]}"]
+    # [2026-11-23] 손으로 끊은 게 규칙보다 나았나 — 표본이 쌓여야 알 수 있으니 매일 누적을 보여준다
+    try:
+        _dc = _h1_discretion()
+        if _dc:
+            _tot = sum(d["차이$"] for d in _dc)
+            _w = sum(1 for d in _dc if d["차이$"] > 0)
+            L += ["", f"■ 재량 vs 규칙 — {len(_dc)}건 중 {_w}건에서 재량이 이김 · 누적 차이 {_tot:+,.2f}$"]
+            for d in _dc[-5:]:
+                L.append(f"  {d['통화']} {str(d['진입'])[5:]} → 실제 {d['실제$']:+,.2f}$ / 규칙 {d['규칙상$']:+,.2f}$ "
+                         f"= {d['차이$']:+,.2f}$")
+            L.append("  (+ 면 손으로 끊은 게 나았다는 뜻. 10건 넘기 전에는 결론 내지 마라)")
+    except Exception as e:
+        L += ["", f"■ 재량 vs 규칙 — 실패: {str(e)[:70]}"]
     # [2026-11-19] 앞으로 48시간 안의 예정 발표 — 새 거래가 들어가면 보유 구간에 걸릴 수 있다
     _now = _h1_dt.now(_H1_NY)
     L += ["", "■ 앞으로 48시간 예정된 주요 발표 (지금 진입하면 보유 구간에 걸린다)"]
@@ -15502,6 +15559,13 @@ def h24_status_endpoint(run: int = 0):
         out["계좌대조"] = _h1_timeout(lambda: _h1_recon(cfg), 20, None, "계좌대조") or "조회 실패"
     except Exception as e:
         out["계좌대조"] = f"오류: {str(e)[:80]}"
+    try:
+        _dc = _h1_timeout(lambda: _h1_discretion(), 20, None, "재량대조") or []
+        out["재량_vs_규칙"] = {"거래": _dc, "누적차이$": round(sum(d["차이$"] for d in _dc), 2),
+                            "이긴 횟수": f"{sum(1 for d in _dc if d['차이$'] > 0)}/{len(_dc)}",
+                            "읽는법": "차이가 + 면 손으로 끊은 게 규칙보다 나았다는 뜻. 표본이 쌓여야 의미가 있다"} if _dc else "비교할 거래 없음"
+    except Exception as e:
+        out["재량_vs_규칙"] = f"오류: {str(e)[:80]}"
     out["보유_실주문"] = _h1_open_live(cfg) or "없음"
     out["보유_규칙"] = {k: v for k, v in _H1_STATE["open_sim"].items() if v} or "없음"
     out["최근기록"] = _H1_STATE["log"][-12:]
