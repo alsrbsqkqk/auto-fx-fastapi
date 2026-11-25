@@ -15759,6 +15759,89 @@ def kalshi_pull_endpoint(pages: int = 3, candles: int = 6):
         return {"오류": str(e)[:200]}
 
 
+@app.get("/kalshi_csv")                                           # type: ignore[name-defined]
+def kalshi_csv_endpoint(budget: int = 60, gz: int = 1, reset: int = 0, cand: int = 1):
+    """[2026-11-25] 과거 계약 + 분 단위 호가를 한 번에 CSV 로 내려받는다.
+    **읽기 전용 — 주문과 무관하다.** Kalshi 공개 조회라 인증도 필요 없다.
+
+    2~3주 기다릴 필요가 없다. 끝난 계약은 과거 것도 캔들이 남아 있어서 지금 다 긁을 수 있다.
+    한 번에 다 못 받으므로 **커서를 서버에 저장**한다. 같은 주소를 여러 번 누르면
+    이어서 받아진다 (처음부터 다시 받으려면 ?reset=1).
+
+    한 줄 = (계약 1개 × 1분). 열:
+      ticker, open_time, close_time, strike(창시작 금값), settle(창끝 금값), result,
+      ts(이 분의 끝, UTC), remain(종료까지 초), mid, bid, ask, high, low, vol, oi
+    """
+    from fastapi.responses import Response
+    if reset:
+        _KX_STATE["csv_cur"] = ""
+    cur = _KX_STATE.get("csv_cur") or ""
+    t0 = _t.time(); budget = max(10, min(int(budget), 110))
+    rows, nmk, stopped = [], 0, "완료"
+    while True:
+        if _t.time() - t0 > budget:
+            stopped = "시간초과 — 같은 주소를 다시 눌러라"; break
+        p = {"series_ticker": _KX_SERIES, "limit": 100, "status": "settled"}
+        if cur:
+            p["cursor"] = cur
+        try:
+            j = _kx_get("/markets", p)
+        except Exception as e:
+            stopped = f"목록 조회 실패: {str(e)[:80]}"; break
+        ms = j.get("markets") or []
+        if not ms:
+            stopped = "더 없음(끝까지 받음)"; break
+        for m in ms:
+            if _t.time() - t0 > budget:
+                stopped = "시간초과 — 같은 주소를 다시 눌러라"; break
+            tk = m.get("ticker") or ""
+            k0 = _kx_f(m.get("floor_strike")); k1 = _kx_f(m.get("expiration_value"))
+            ot, ct = m.get("open_time", ""), m.get("close_time", "")
+            res = m.get("result", "")
+            base = f'{tk},{ot},{ct},{k0},{k1},{res}'
+            nmk += 1
+            if not cand:
+                rows.append(base + ",,,,,,,,"); continue
+            try:
+                st = int(_h1_pd.Timestamp(ot).timestamp()) - 60
+                en = int(_h1_pd.Timestamp(ct).timestamp()) + 120
+                cj = _kx_get(f"/series/{_KX_SERIES}/markets/{tk}/candlesticks",
+                             {"start_ts": st, "end_ts": en, "period_interval": 1}, timeout=12)
+            except Exception:
+                rows.append(base + ",,,,,,,,"); continue
+            cls = int(_h1_pd.Timestamp(ct).timestamp())
+            for cc in (cj.get("candlesticks") or []):
+                ts = cc.get("end_period_ts")
+                if not ts:
+                    continue
+                pr = cc.get("price") or {}; bd = cc.get("yes_bid") or {}; ak = cc.get("yes_ask") or {}
+                rows.append(",".join([base, str(int(ts)), str(cls - int(ts)),
+                                      str(pr.get("close_dollars", "")), str(bd.get("close_dollars", "")),
+                                      str(ak.get("close_dollars", "")), str(pr.get("high_dollars", "")),
+                                      str(pr.get("low_dollars", "")), str(cc.get("volume_fp", "")),
+                                      str(cc.get("open_interest_fp", ""))]))
+            _t.sleep(0.05)                                 # Kalshi 조회 한도 배려
+        if stopped.startswith("시간초과"):
+            break
+        cur = j.get("cursor") or ""
+        if not cur:
+            stopped = "더 없음(끝까지 받음)"; break
+    _KX_STATE["csv_cur"] = cur
+    if not rows:
+        return JSONResponse({"상태": stopped, "계약": nmk, "안내": "reset=1 로 처음부터"}, status_code=404)
+    head = ("ticker,open_time,close_time,strike,settle,result,"
+            "ts,remain,mid,bid,ask,high,low,vol,oi\n")
+    body = (head + "\n".join(rows) + "\n").encode()
+    name = f"KALSHI_{_KX_SERIES}_{nmk}mk_{int(_t.time())}.csv"
+    if gz:
+        import gzip as _gz
+        body = _gz.compress(body, 6); name += ".gz"
+    return Response(content=body, media_type="application/octet-stream",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"',
+                             "X-Markets": str(nmk), "X-Rows": str(len(rows)),
+                             "X-Status": stopped, "X-More": "1" if cur else "0"})
+
+
 @app.get("/kalshi_stat")                                          # type: ignore[name-defined]
 def kalshi_stat_endpoint():
     """지금까지 모인 것으로 ① 기저 확률을 바로 본다."""
