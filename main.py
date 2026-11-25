@@ -15777,23 +15777,25 @@ def kalshi_csv_endpoint(budget: int = 60, gz: int = 1, reset: int = 0, cand: int
         _KX_STATE["csv_cur"] = ""
     cur = _KX_STATE.get("csv_cur") or ""
     t0 = _t.time(); budget = max(10, min(int(budget), 110))
-    rows, nmk, stopped = [], 0, "완료"
+    # [버그수정 2026-11-25] HTTP 헤더는 latin-1 만 된다. 한글을 넣으면 UnicodeEncodeError 로
+    #   500 이 난다. 그래서 상태는 **ASCII 코드**로 두고, 한글 설명은 JSON 본문에서만 쓴다.
+    rows, nmk, stopped = [], 0, "done"
     while True:
         if _t.time() - t0 > budget:
-            stopped = "시간초과 — 같은 주소를 다시 눌러라"; break
+            stopped = "timeout-click-again"; break
         p = {"series_ticker": _KX_SERIES, "limit": 100, "status": "settled"}
         if cur:
             p["cursor"] = cur
         try:
             j = _kx_get("/markets", p)
         except Exception as e:
-            stopped = f"목록 조회 실패: {str(e)[:80]}"; break
+            stopped = "list-error"; _KX_STATE["csv_err"] = str(e)[:150]; break
         ms = j.get("markets") or []
         if not ms:
-            stopped = "더 없음(끝까지 받음)"; break
+            stopped = "no-more"; break
         for m in ms:
             if _t.time() - t0 > budget:
-                stopped = "시간초과 — 같은 주소를 다시 눌러라"; break
+                stopped = "timeout-click-again"; break
             tk = m.get("ticker") or ""
             k0 = _kx_f(m.get("floor_strike")); k1 = _kx_f(m.get("expiration_value"))
             ot, ct = m.get("open_time", ""), m.get("close_time", "")
@@ -15821,14 +15823,19 @@ def kalshi_csv_endpoint(budget: int = 60, gz: int = 1, reset: int = 0, cand: int
                                       str(pr.get("low_dollars", "")), str(cc.get("volume_fp", "")),
                                       str(cc.get("open_interest_fp", ""))]))
             _t.sleep(0.05)                                 # Kalshi 조회 한도 배려
-        if stopped.startswith("시간초과"):
+        if stopped.startswith("timeout"):
             break
         cur = j.get("cursor") or ""
         if not cur:
-            stopped = "더 없음(끝까지 받음)"; break
+            stopped = "no-more"; break
     _KX_STATE["csv_cur"] = cur
     if not rows:
-        return JSONResponse({"상태": stopped, "계약": nmk, "안내": "reset=1 로 처음부터"}, status_code=404)
+        _MSG = {"timeout-click-again": "시간초과 — 같은 주소를 다시 눌러라",
+                "no-more": "더 없다 (끝까지 받았다)", "list-error": "목록 조회 실패",
+                "done": "완료"}
+        return JSONResponse({"상태": _MSG.get(stopped, stopped), "계약": nmk,
+                             "오류": _KX_STATE.get("csv_err", ""),
+                             "안내": "처음부터 다시 받으려면 ?reset=1"}, status_code=404)
     head = ("ticker,open_time,close_time,strike,settle,result,"
             "ts,remain,mid,bid,ask,high,low,vol,oi\n")
     body = (head + "\n".join(rows) + "\n").encode()
