@@ -15591,6 +15591,174 @@ def _h1_email_check(now, cfg):
     _h1_log(f"요약 메일 {'보냄' if _h1_send(today) else '실패'}")
 
 
+# ═══════════════ Kalshi 금 15분 예측시장 수집기 (2026-11-25) ═══════════════
+#  목적: **주문은 절대 안 낸다.** 과거에 끝난 계약을 긁어모아 "엣지가 있는지" 를 재기만 한다.
+#
+#  API 로 확인한 이 상품의 정체 (중요)
+#   · 시리즈 KXGOLD15M · 제목 "Gold price up in next 15 mins?"
+#   · floor_strike = **창이 열리는 시각의 금값 그 자체**다 (예: 3960.61)
+#   · 정산 규칙: 창 끝의 1분봉 종가 ≥ 창 시작의 1분봉 종가 → Yes
+#   · 즉 **행사가 사다리가 아니라 순수 "15분 뒤 오를까" 동전던지기**다
+#   · 정산 출처 Pyth - Gold (Metal.Index.1OZGOLD/USD) · 소수 2자리 반올림
+#   · 유동성 실재: 끝난 계약들 volume_fp 43만~91만, open_interest_fp 9만~54만
+#   · 가격 눈금 tapered_deci_cent: 0~0.10 과 0.90~1.00 구간은 0.001 단위
+#
+#  재려는 것 세 가지
+#   ① 기저 확률 — 실제로 몇 %가 Yes 로 끝나나. 50% 인가, 치우쳐 있나
+#   ② 호가가 공정가에서 체계적으로 벗어나나 (분봉 캔들로 경로 확인)
+#   ③ 벗어남이 수수료(0.07×p×(1-p), 50센트에서 3.5%) 보다 큰가
+#  셋 다 통과해야 전략을 만들 가치가 있다. 하나라도 걸리면 거기서 끝낸다.
+_KX_BASE = "https://api.elections.kalshi.com/trade-api/v2"
+_KX_SERIES = _h1_os.environ.get("KX_SERIES", "KXGOLD15M")
+_KX_TAB = "KX_금15분"
+_KX_HEAD = ["키", "창시작ET", "창종료ET", "기준가", "정산가", "변동$", "결과",
+            "거래량", "미결제", "마지막가", "수수료%@50c", "기록시각"]
+_KX_TAB_C = "KX_금호가"
+_KX_HEAD_C = ["키", "시각ET", "남은초", "종가", "고가", "저가", "거래량", "기록시각"]
+_KX_STATE = {"last": None, "seen": None}
+
+
+def _kx_get(path, params=None, timeout=20):
+    """Kalshi 공개 조회. **인증 불필요, 읽기 전용.** 주문 경로는 이 파일에 아예 없다."""
+    import urllib.request as _u, urllib.parse as _p
+    url = _KX_BASE + path + (("?" + _p.urlencode(params)) if params else "")
+    req = _u.Request(url, headers={"User-Agent": "h24-research/1.0", "Accept": "application/json"})
+    with _u.urlopen(req, timeout=timeout) as r:
+        return _h1_json.loads(r.read().decode())
+
+
+def _kx_f(x, d=0.0):
+    try:
+        return float(x)
+    except Exception:
+        return d
+
+
+def _kx_pull(pages=3, want_candles=6):
+    """끝난 계약을 긁어 시트에 쌓는다. 이미 있는 키는 건너뛴다."""
+    rows = _h1_rows(_KX_TAB, _KX_HEAD)
+    if rows is None:
+        _h1_log("KX: 시트 열기 실패"); return 0, 0
+    seen = {r["키"] for r in rows}
+    _KX_STATE["seen"] = len(seen)
+    new, cur, got = [], "", []
+    for _ in range(max(1, int(pages))):
+        p = {"series_ticker": _KX_SERIES, "limit": 100, "status": "settled"}
+        if cur:
+            p["cursor"] = cur
+        try:
+            j = _kx_get("/markets", p)
+        except Exception as e:
+            _h1_log(f"KX 조회 실패: {str(e)[:90]}"); break
+        ms = j.get("markets") or []
+        for m in ms:
+            t = m.get("ticker") or ""
+            if not t or t in seen:
+                continue
+            seen.add(t); got.append(m)
+            k0 = _kx_f(m.get("floor_strike"))                     # 창 시작 금값
+            k1 = _kx_f(m.get("expiration_value"))                 # 창 끝 금값
+            ot = _h1_pd.Timestamp(m.get("open_time")).tz_convert(_H1_NY) if m.get("open_time") else None
+            ct = _h1_pd.Timestamp(m.get("close_time")).tz_convert(_H1_NY) if m.get("close_time") else None
+            new.append([t,
+                        f"{ot:%Y-%m-%d %H:%M}" if ot is not None else "",
+                        f"{ct:%Y-%m-%d %H:%M}" if ct is not None else "",
+                        round(k0, 2), round(k1, 2), round(k1 - k0, 2) if (k0 and k1) else "",
+                        m.get("result", ""),
+                        round(_kx_f(m.get("volume_fp")), 1), round(_kx_f(m.get("open_interest_fp")), 1),
+                        m.get("last_price_dollars", ""), 3.5,
+                        f"{_h1_dt.now(_H1_NY):%Y-%m-%d %H:%M}"])
+        cur = j.get("cursor") or ""
+        if not cur or not ms:
+            break
+    if new and not _h1_append(_KX_TAB, _KX_HEAD, new):
+        _h1_log("KX: 기록 실패"); return 0, 0
+    nc = _kx_candles_many(got[:max(0, int(want_candles))]) if want_candles else 0
+    _KX_STATE["last"] = f"{_h1_dt.now(_H1_NY):%m-%d %H:%M}"
+    if new:
+        _h1_log(f"KX: 새 계약 {len(new)}건 · 분봉 {nc}행 기록 (누적 {len(seen)}건)")
+    return len(new), nc
+
+
+def _kx_candles_many(markets):
+    """각 계약의 1분봉 호가 경로. 엔드포인트 모양이 바뀌어도 수집 전체가 멈추지 않게 감싼다."""
+    if not markets:
+        return 0
+    rows = _h1_rows(_KX_TAB_C, _KX_HEAD_C)
+    seen = {r["키"] + r["시각ET"] for r in rows} if rows is not None else set()
+    out = []
+    for m in markets:
+        t = m.get("ticker") or ""
+        try:
+            st = int(_h1_pd.Timestamp(m["open_time"]).timestamp()) - 60
+            en = int(_h1_pd.Timestamp(m["close_time"]).timestamp()) + 60
+            j = _kx_get(f"/series/{_KX_SERIES}/markets/{t}/candlesticks",
+                        {"start_ts": st, "end_ts": en, "period_interval": 1})
+        except Exception as e:
+            _h1_log(f"KX 분봉 실패({t[:24]}): {str(e)[:70]}"); break
+        for c in (j.get("candlesticks") or []):
+            ts = c.get("end_period_ts") or c.get("ts")
+            if not ts:
+                continue
+            et = _h1_dt.fromtimestamp(int(ts), _H1_NY)
+            key = f"{et:%Y-%m-%d %H:%M}"
+            if t + key in seen:
+                continue
+            seen.add(t + key)
+            pr = c.get("price") or {}
+            out.append([t, key, int(_h1_pd.Timestamp(m["close_time"]).timestamp()) - int(ts),
+                        pr.get("close", c.get("close", "")), pr.get("high", c.get("high", "")),
+                        pr.get("low", c.get("low", "")), c.get("volume", ""),
+                        f"{_h1_dt.now(_H1_NY):%m-%d %H:%M}"])
+    if out:
+        _h1_append(_KX_TAB_C, _KX_HEAD_C, out)
+    return len(out)
+
+
+def _kx_tick(now):
+    """매시 07분에 한 번만. 주문과 완전히 무관한 읽기 전용 작업이다."""
+    if _h1_os.environ.get("KX_COLLECT", "1") in ("0", "false", "False", ""):
+        return
+    if now.minute != 7:
+        return
+    tag = f"{now:%Y-%m-%d %H}"
+    if _KX_STATE.get("hour") == tag:
+        return
+    _KX_STATE["hour"] = tag
+    try:
+        _kx_pull()
+    except Exception as e:
+        _h1_log(f"KX 수집 예외: {str(e)[:90]}")
+
+
+@app.get("/kalshi_pull")                                          # type: ignore[name-defined]
+def kalshi_pull_endpoint(pages: int = 3, candles: int = 6):
+    """손으로 한 번 당길 때. **읽기 전용 — 주문과 무관하다.**"""
+    try:
+        n, nc = _kx_pull(pages=pages, want_candles=candles)
+        return {"새계약": n, "분봉행": nc, "누적": _KX_STATE.get("seen"),
+                "시리즈": _KX_SERIES, "시트탭": [_KX_TAB, _KX_TAB_C]}
+    except Exception as e:
+        return {"오류": str(e)[:200]}
+
+
+@app.get("/kalshi_stat")                                          # type: ignore[name-defined]
+def kalshi_stat_endpoint():
+    """지금까지 모인 것으로 ① 기저 확률을 바로 본다."""
+    rows = _h1_rows(_KX_TAB, _KX_HEAD) or []
+    done = [r for r in rows if str(r.get("결과") or "").lower() in ("yes", "no")]
+    if not done:
+        return {"상태": "아직 자료 없음 — /kalshi_pull 을 먼저 부르거나 매시 07분을 기다려라"}
+    y = sum(1 for r in done if str(r["결과"]).lower() == "yes")
+    mv = [_kx_f(r.get("변동$")) for r in done if r.get("변동$") not in ("", None)]
+    up = [v for v in mv if v > 0]
+    return {"표본": len(done), "Yes 비율%": round(100 * y / len(done), 1),
+            "동전던지기라면": "50%", "평균 변동$": round(sum(mv) / len(mv), 3) if mv else None,
+            "오른 비율%": round(100 * len(up) / len(mv), 1) if mv else None,
+            "읽는법": "Yes 비율이 50%에서 크게 벗어나면 ①번 관문 통과. 표본 500건은 넘어야 말이 된다",
+            "마지막수집": _KX_STATE.get("last")}
+
+
 # ───────────────────────── 루프·엔드포인트 ─────────────────────────
 
 async def _h1_loop():
@@ -15604,6 +15772,10 @@ async def _h1_loop():
             await _h1_asyncio.to_thread(_h1_watchdog)    # [안전2] 계산 잠금과 무관하게 돈다
         except Exception as e:
             print(f"⚠️ [H24] 감시 예외: {e}")
+        try:                                             # [2026-11-25] Kalshi 수집 — 읽기 전용, 주문 무관
+            await _h1_asyncio.to_thread(_kx_tick, _h1_dt.now(_H1_NY))
+        except Exception as e:
+            print(f"⚠️ [KX] 수집 예외: {e}")
         await _h1_asyncio.sleep(30)
 
 
