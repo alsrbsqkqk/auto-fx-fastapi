@@ -15613,8 +15613,18 @@ _KX_SERIES = _h1_os.environ.get("KX_SERIES", "KXGOLD15M")
 _KX_TAB = "KX_금15분"
 _KX_HEAD = ["키", "창시작ET", "창종료ET", "기준가", "정산가", "변동$", "결과",
             "거래량", "미결제", "마지막가", "수수료%@50c", "기록시각"]
-_KX_TAB_C = "KX_금호가"
-_KX_HEAD_C = ["키", "시각ET", "남은초", "종가", "고가", "저가", "거래량", "기록시각"]
+# [2026-11-25 버그수정] 첫 판에서 가격 칸이 전부 비었다. 캔들 JSON 필드 이름을 잘못 짚었다.
+#   실제 스키마 (API 로 확인):
+#     end_period_ts(int) · volume_fp · open_interest_fp
+#     price   : {open_dollars, high_dollars, low_dollars, close_dollars, mean_dollars, previous_dollars}
+#     yes_bid : {open_dollars, high_dollars, low_dollars, close_dollars}
+#     yes_ask : {open_dollars, high_dollars, low_dollars, close_dollars}
+#   전부 "0.4900" 같은 소수 문자열이다. 정수 센트가 아니다.
+#   그리고 **매수/매도 호가를 따로 받는다** — 실제로 사면 매도호가(ask)를 내야 하므로
+#   중간가만 보면 안 된다. 관측된 스프레드가 1센트였다 (0.4800/0.4900).
+_KX_TAB_C = "KX_금호가2"
+_KX_HEAD_C = ["키", "시각ET", "남은초", "중간가", "매수호가", "매도호가", "스프레드",
+              "고가", "저가", "거래량", "미결제", "기록시각"]
 _KX_STATE = {"last": None, "seen": None}
 
 
@@ -15706,9 +15716,16 @@ def _kx_candles_many(markets):
                 continue
             seen.add(t + key)
             pr = c.get("price") or {}
+            bid = c.get("yes_bid") or {}
+            ask = c.get("yes_ask") or {}
+            b = _kx_f(bid.get("close_dollars"), None if bid.get("close_dollars") is None else 0.0)
+            a = _kx_f(ask.get("close_dollars"), None if ask.get("close_dollars") is None else 0.0)
+            sp = round(a - b, 4) if (isinstance(a, float) and isinstance(b, float)) else ""
             out.append([t, key, int(_h1_pd.Timestamp(m["close_time"]).timestamp()) - int(ts),
-                        pr.get("close", c.get("close", "")), pr.get("high", c.get("high", "")),
-                        pr.get("low", c.get("low", "")), c.get("volume", ""),
+                        pr.get("close_dollars", ""), bid.get("close_dollars", ""),
+                        ask.get("close_dollars", ""), sp,
+                        pr.get("high_dollars", ""), pr.get("low_dollars", ""),
+                        c.get("volume_fp", ""), c.get("open_interest_fp", ""),
                         f"{_h1_dt.now(_H1_NY):%m-%d %H:%M}"])
     if out:
         _h1_append(_KX_TAB_C, _KX_HEAD_C, out)
