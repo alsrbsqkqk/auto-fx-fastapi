@@ -15759,6 +15759,74 @@ def kalshi_pull_endpoint(pages: int = 3, candles: int = 6):
         return {"오류": str(e)[:200]}
 
 
+@app.get("/stock_csv")                                            # type: ignore[name-defined]
+def stock_csv_endpoint(sym: str = "SPY", tf: str = "1Hour",
+                       start: str = "", end: str = "", gz: int = 1, feed: str = ""):
+    """[2026-11-26] 주식·ETF 과거 캔들 내려받기 (Alpaca). **읽기 전용 — 주문과 무관하다.**
+
+    브라우저에서 열면 CSV 가 바로 받아진다. 키는 이미 Render 환경변수에 있어서
+    아무것도 입력할 필요가 없다.
+
+    예) /stock_csv?sym=SPY&tf=1Hour&start=2023-01-01
+        /stock_csv?sym=SOXL,TQQQ&tf=1Day&start=2015-01-01
+    tf: 1Min 5Min 15Min 1Hour 4Hour 1Day 1Week
+    """
+    from fastapi.responses import Response
+    syms = ",".join(s.strip().upper() for s in str(sym or "").split(",") if s.strip())
+    if not syms:
+        return JSONResponse({"오류": "sym 을 넣어라 (예: SPY 또는 SPY,QQQ)"}, status_code=400)
+    if not (ALPACA_API_KEY and ALPACA_SECRET_KEY):
+        return JSONResponse({"오류": "ALPACA_API_KEY / ALPACA_SECRET_KEY 가 없다"}, status_code=500)
+    try:
+        frm = _h1_pd.Timestamp(start, tz="UTC") if start else _h1_pd.Timestamp.now(tz="UTC") - _h1_pd.Timedelta(days=400)
+        to = _h1_pd.Timestamp(end, tz="UTC") if end else _h1_pd.Timestamp.now(tz="UTC") - _h1_pd.Timedelta(minutes=20)
+    except Exception as e:
+        return JSONResponse({"오류": f"날짜 형식: {str(e)[:80]}"}, status_code=400)
+    rows, tok, n = [], "", 0
+    for _ in range(40):                                   # 10000봉 × 40 = 40만봉 상한
+        p = {"symbols": syms, "timeframe": tf, "limit": 10000,
+             "start": frm.strftime("%Y-%m-%dT%H:%M:%SZ"), "end": to.strftime("%Y-%m-%dT%H:%M:%SZ"),
+             "adjustment": "split", "sort": "asc"}
+        if feed:
+            p["feed"] = feed
+        if tok:
+            p["page_token"] = tok
+        try:
+            r = _h1_rq.get(f"{ALPACA_DATA_BASE_URL}/v2/stocks/bars", headers=ALPACA_HEADERS,
+                           params=p, timeout=30)
+        except Exception as e:
+            if rows:
+                break
+            return JSONResponse({"오류": f"Alpaca 요청 실패: {str(e)[:120]}"}, status_code=502)
+        if r.status_code != 200:
+            if rows:
+                break
+            return JSONResponse({"오류": f"Alpaca {r.status_code}", "내용": r.text[:300]},
+                                status_code=502)
+        j = r.json() or {}
+        bars = j.get("bars") or {}
+        for s, bb in bars.items():
+            for b in bb:
+                rows.append(f'{s},{b["t"]},{b["o"]},{b["h"]},{b["l"]},{b["c"]},{b.get("v",0)},'
+                            f'{b.get("n",0)},{b.get("vw","")}')
+                n += 1
+        tok = j.get("next_page_token") or ""
+        if not tok:
+            break
+        _t.sleep(0.1)
+    if not rows:
+        return JSONResponse({"오류": "받은 캔들이 없다", "종목": syms, "봉": tf}, status_code=404)
+    rows.sort(key=lambda x: (x.split(",")[0], x.split(",")[1]))
+    body = ("symbol,time,open,high,low,close,volume,trades,vwap\n" + "\n".join(rows) + "\n").encode()
+    name = f"ALPACA_{syms.replace(',', '-')}_{tf}_{n}.csv"
+    if gz:
+        import gzip as _gz
+        body = _gz.compress(body, 6); name += ".gz"
+    return Response(content=body, media_type="application/octet-stream",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"',
+                             "X-Rows": str(n)})
+
+
 @app.get("/kalshi_csv")                                           # type: ignore[name-defined]
 def kalshi_csv_endpoint(budget: int = 60, gz: int = 1, reset: int = 0, cand: int = 1):
     """[2026-11-25] 과거 계약 + 분 단위 호가를 한 번에 CSV 로 내려받는다.
