@@ -10475,8 +10475,12 @@ def _pr_get_report_tab():
     return ws
 
 
-def _pr_send_email(subject: str, body: str) -> bool:
-    """🟥 [PR-5] SMTP 직접 발송. PR_SMTP_USER / PR_SMTP_PASS 없으면 건너뛴다."""
+def _pr_send_email(subject: str, body: str, html: str = "") -> bool:
+    """🟥 [PR-5] SMTP 직접 발송. PR_SMTP_USER / PR_SMTP_PASS 없으면 건너뛴다.
+
+    [2026-11-27] html 을 주면 multipart/alternative 로 보낸다. 텍스트 본문은 그대로
+    같이 실려 나가므로, HTML 을 못 그리는 앱(텍스트 전용 클라이언트·일부 알림)에서도
+    지금과 똑같이 읽힌다. html 생성이 터져도 호출부에서 빈 문자열을 넘기면 예전 동작이다."""
     if not (PR_SMTP_USER and PR_SMTP_PASS and PR_EMAIL_TO):
         print("ℹ️ [PR] SMTP 미설정 — 이메일 건너뜀")
         return False
@@ -10488,6 +10492,11 @@ def _pr_send_email(subject: str, body: str) -> bool:
         msg["From"] = PR_SMTP_USER
         msg["To"] = PR_EMAIL_TO
         msg.set_content(body or "(내용 없음)")
+        if html:
+            try:
+                msg.add_alternative(html, subtype="html")
+            except Exception as e:                       # HTML 때문에 메일 자체를 잃지 않는다
+                print(f"⚠️ [PR] HTML 첨부 실패, 텍스트로만 보냄: {e}")
         with smtplib.SMTP(PR_SMTP_HOST, PR_SMTP_PORT, timeout=30) as s:
             s.ehlo()
             s.starttls()
@@ -13735,6 +13744,21 @@ def _h1_recv_why(instr, sd, cdir):
 _H1_BLOCK_DEFAULT = "EUR_USD:17-20,USD_JPY:2-6,USD_JPY:17-17,EUR_JPY:17-17,AUD_JPY:17-17"
 
 
+def _h1_hours_text(hrs):
+    """{2,3,4,5,6,17} → '2~6시, 17시'  — 끊어진 구간을 min~max 로 뭉개지 않는다. [2026-11-27]"""
+    s = sorted(set(int(h) for h in hrs))
+    if not s:
+        return "없음"
+    out, i = [], 0
+    while i < len(s):
+        j = i
+        while j + 1 < len(s) and s[j + 1] == s[j] + 1:
+            j += 1
+        out.append(f"{s[i]}시" if i == j else f"{s[i]}~{s[j]}시")
+        i = j + 1
+    return ", ".join(out)
+
+
 def _h1_blocks():
     """'EUR_USD:17-20,USD_JPY:2-6' → {'EUR_USD': {17,18,19,20}, ...}  (ET 진입 시각, 양 끝 포함, 22-2 처럼 넘어가도 됨)"""
     raw = str(_h1_os.environ.get("H24_BLOCK", _H1_BLOCK_DEFAULT)).strip()
@@ -14729,8 +14753,13 @@ def _h1_sig_sheet(cfg):
         return
     try:
         rows = _h1_blocked_mark(_h1_blocked_all(cfg))
-        if rows and _h1_rewrite(_H1_TAB_SIG, _H1_HEAD_SIG, _h1_sig_rows(cfg, rows)):
+        srows = _h1_sig_rows(cfg, rows) if rows else []
+        if srows and _h1_rewrite(_H1_TAB_SIG, _H1_HEAD_SIG, srows):
             _h1_log(f"신호 기록 {len(rows)}행 갱신")
+            # [2026-11-27] 날짜가 바뀌는 행 아래에 구분선. 서식만 바꾸므로 값은 안 건드린다.
+            if str(_h1_os.environ.get("H24_SIG_LINES", "on")).strip().lower() in ("on", "1", "true", "yes"):
+                if _h1_day_borders(_H1_TAB_SIG, _H1_HEAD_SIG, srows, datecol=1):
+                    _h1_log("신호 기록 날짜 구분선 갱신")
     except Exception as e:
         _h1_log(f"신호 기록 실패: {str(e)[:80]}")
 
@@ -14830,7 +14859,15 @@ def _h1_blocked_lines(cfg, today):
     if not recent:
         L.append("  없음 — 다이버전스 자체가 안 나왔다")
     for r in recent:
-        mark = "✅ 진입" if r["사유"] == "통과" else f"⛔ {r['사유']}"
+        # [2026-11-27 버그수정] 여기서 r['사유'] 만 찍고 있었다. 그건 **집계용 대표 사유**로
+        #   걸린 사유 중 첫 번째 하나뿐이다. 'H24_신호' 탭은 r['사유전체'](걸린 사유 전부 +
+        #   금리 방향 설명)를 쓰므로, 사유가 2개 이상이면 메일과 시트가 서로 달라 보였다.
+        #   → 메일도 시트와 같은 사유전체를 쓰고, 몇 개가 동시에 막았는지 함께 적는다.
+        if r["사유"] == "통과":
+            mark = "✅ 진입"
+        else:
+            nw = int(r.get("사유수") or 1)
+            mark = "⛔ " + str(r.get("사유전체") or r["사유"]) + (f"  [동시 {nw}개]" if nw > 1 else "")
         L.append(f"  {r['시각']:%m-%d %H:%M}  {r['통화']} {r['방향']}  {mark}")
     L.append("")
 
@@ -14838,6 +14875,9 @@ def _h1_blocked_lines(cfg, today):
     pure = [r for r in done if not r["겹침"]]          # 진짜로 막힌 것만
     dup = [r for r in done if r["겹침"]]                # 실제 거래와 같은 움직임
     fresh = [r for r in done if (td - r["시각"].date()).days <= days + 2]
+    # [2026-11-27] HTML 메일이 같은 계산을 다시 하지 않도록 여기서 넘겨둔다.
+    #   _h1_blocked_all 은 네 쌍의 캔들을 다시 받으므로 두 번 돌리면 느리고 API 를 두 배 쓴다.
+    _H1_STATE["mail"] = {"recent": recent, "fresh": fresh, "pure": pure, "dup": dup, "risk": risk}
     L.append(f"■ 막힌 신호의 그림자 결과 (들어갔다면 어떻게 됐을까) — 최근 {len(fresh)}건")
     if not fresh:
         L.append("  아직 결과가 확정된 것이 없다 (28봉 = 28시간 필요)")
@@ -14924,6 +14964,54 @@ def _h1_rewrite(tab, head, rows):
         ws.update("A1", body)
         return True
     return bool(_h1_timeout(_go, _H1_SHEET_TIMEOUT * 3, False, f"시트 전면기록({tab})"))
+
+
+def _h1_day_borders(tab, head, rows, datecol=1):
+    """[2026-11-27] 날짜가 바뀌는 행 아래에 굵은 구분선을 긋는다.
+
+    왜 '구분 행'을 끼워넣지 않는가: 가짜 행을 넣으면 정렬·필터·수식이 전부 망가지고
+    _h1_rows 가 그 행까지 읽는다. 셀 테두리는 **값이 아니라 서식**이라 데이터가 깨끗하다.
+
+    datecol = 날짜가 들어있는 열 번호(0부터). _H1_HEAD_SIG 는 1번이 '시각ET' 이다.
+    읽기 전용 보기용이므로 여기서 터져도 기록·주문에는 영향이 없다."""
+    def _go():
+        ws = _h1_ws_raw(tab, head)
+        if ws is None or not rows:
+            return False
+        sid = ws.id
+        ncol = len(head)
+        # 날짜가 바뀌는 지점 찾기 (rows 는 머리글 제외, 시트에서는 2행부터)
+        # 시트 행 번호와 API 색인: 1행=머리글=색인 0 → 데이터 i번째(0부터) = 색인 i+1.
+        # 선은 '이전 날짜의 마지막 행' 아래에 가야 한다 = 데이터 i-1 = 색인 i.
+        # (i+1 로 쓰면 새 날짜의 첫 행 아래에 그려진다 — 검증에서 잡았다)
+        cuts, prev = [], None
+        for i, r in enumerate(rows):
+            day = str(r[datecol] if len(r) > datecol else "")[:10]
+            if prev is not None and day != prev:
+                cuts.append(i)
+            prev = day
+        reqs = [{                                 # 먼저 전 구역의 테두리를 지운다 (안 하면 누적된다)
+            "updateBorders": {
+                "range": {"sheetId": sid, "startRowIndex": 1,
+                          "endRowIndex": len(rows) + 1, "startColumnIndex": 0,
+                          "endColumnIndex": ncol},
+                "bottom": {"style": "NONE"}}}]
+        for c in cuts[:200]:                      # 한 번에 너무 많은 요청을 보내지 않는다
+            reqs.append({"updateBorders": {
+                "range": {"sheetId": sid, "startRowIndex": c, "endRowIndex": c + 1,
+                          "startColumnIndex": 0, "endColumnIndex": ncol},
+                "bottom": {"style": "SOLID_MEDIUM",
+                           "color": {"red": 0.25, "green": 0.25, "blue": 0.28}}}})
+        if len(reqs) <= 1:
+            return False                          # 구분할 날짜가 하나뿐
+        ws.spreadsheet.batch_update({"requests": reqs})
+        return True
+    try:
+        ok = bool(_h1_timeout(_go, _H1_SHEET_TIMEOUT * 2, False, f"날짜 구분선({tab})"))
+        return ok
+    except Exception as e:
+        _h1_log(f"날짜 구분선 실패(기록에는 영향 없음): {str(e)[:80]}")
+        return False
 
 
 def _h1_append(tab, head, rows):                     # [안전1] 시간제한
@@ -15427,7 +15515,10 @@ def _h1_email_body(today, cfg):
          f"금리 방향: {_h1_carry_text()} · 받는 방향 {cfg['carry_up']}배, 내는 방향 "
          + ("**진입 금지** (2026-11-24 채택)" if cfg["recvonly"] else f"{cfg['carry_dn']}배"),
          "묶음 = MACD 같은 방향 + 12시·금요일 진입 금지 / 추세 = 일봉 200EMA 방향만 / FOMC 전 24시간 진입은 위험 2배",
-         "시간 금지 = " + (", ".join(f"{k} {min(v)}~{max(v)}시" for k, v in cfg["blocks"].items()) or "없음"),
+         # [2026-11-27 버그수정] min~max 로 찍으면 끊어진 구간이 거짓말을 한다.
+         #   USD_JPY 는 {2,3,4,5,6,17} 인데 "2~17시" 로 나와 16시간 금지처럼 보였다. 실제 금지는 6시간.
+         #   엔진은 집합 멤버십(ehr in blk)을 쓰므로 거래는 처음부터 정상이었고, 이 줄의 표시만 틀렸다.
+         "시간 금지 = " + (", ".join(f"{k} " + _h1_hours_text(v) for k, v in cfg["blocks"].items()) or "없음"),
          (f"OANDA **실계좌** · 거래당 ${cfg['risk']:,.0f} 위험 (FOMC 전 2배) · 순자산 ${_h1_nav(cfg):,.0f} · 중단선 ${cfg['stop_nav']:,.0f}"
           if _H1_REAL else f"OANDA 데모 실주문 · 거래당 ${cfg['risk']:,.0f} 위험 · 가상계좌 $10,000"), ""]
     soon = _h1_cb_soon(cfg, today, 3)                              # [안전5] 중앙은행 발표 예고
@@ -15564,16 +15655,164 @@ def _h1_email_body(today, cfg):
     return sl, "\n".join(L), warn
 
 
+# ───────────────── HTML 메일 (2026-11-27) ─────────────────
+#  왜: 텍스트만으로는 200EMA 섹션과 신호 목록이 숫자 벽이어서 한눈에 안 들어온다.
+#  어떻게: multipart/alternative — 텍스트 본문은 지금과 똑같이 그대로 실려 나가고,
+#          HTML 은 '덧붙이는' 것이다. 그래서 HTML 쪽이 망가져도 읽을 건 남는다.
+#  제약: 메일 클라이언트는 <style> 을 자주 떼간다 → **전부 인라인 style**. flex·grid 금지,
+#        표(table)와 고정 px 폭만 쓴다. 외부 이미지 없음(대부분 기본 차단된다).
+_H1_C = {"up": "#0f766e", "dn": "#b91c1c", "upl": "#99f6e4", "dnl": "#fecaca",
+         "ink": "#111827", "sub": "#6b7280", "line": "#e5e7eb",
+         "ok": "#ecfdf5", "okb": "#10b981", "blk": "#f9fafb", "blkb": "#9ca3af"}
+
+
+def _h1_esc(s):
+    import html as _hh
+    return _hh.escape(str(s if s is not None else ""))
+
+
+def _h1_bar_html(frac, color, w=200, thr=None):
+    """0~1 비율 막대. 메일에서 안전한 건 중첩 div + 표 + 고정 px 뿐이다 (flex·position 금지).
+    thr 을 주면 막대 **아래** 줄에 문턱 표식(▲)을 둔다 — 겹치기(overlay)는 메일에서 깨진다."""
+    frac = 0.0 if frac is None else max(0.0, min(1.0, float(frac)))
+    inner = max(2, int(round(w * frac)))
+    bar = (f'<div style="width:{w}px;height:10px;background:{_H1_C["line"]};'
+           f'border-radius:5px;overflow:hidden;">'
+           f'<div style="width:{inner}px;height:10px;background:{color};border-radius:5px;"></div></div>')
+    if thr is None:
+        return bar
+    left = max(0, min(w - 1, int(round(w * max(0.0, min(1.0, float(thr)))))))
+    return (bar + f'<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;'
+                  f'width:{w}px;table-layout:fixed;"><tr>'
+                  f'<td style="width:{left}px;"></td>'
+                  f'<td style="font:9px/9px system-ui,sans-serif;color:{_H1_C["sub"]};'
+                  f'white-space:nowrap;">▲문턱</td></tr></table>')
+
+
+def _h1_ema_html(cfg):
+    """일봉 200EMA 상태 — 방향·거리·전환까지 막대로. 거리 막대의 가운데가 '확립' 문턱이다."""
+    tr = _H1_STATE.get("trend") or {}
+    if not tr:
+        return ""
+    fm = cfg["farmin"] or 1.0
+    o = [f'<h3 style="font:600 15px/1.4 system-ui,sans-serif;color:{_H1_C["ink"]};margin:22px 0 4px;">'
+         f'일봉 200EMA 상태</h3>'
+         f'<div style="font:12px/1.5 system-ui,sans-serif;color:{_H1_C["sub"]};margin:0 0 10px;">'
+         f'EMA 위 = 상승 → <b>매수만</b> 통과 · EMA 아래 = 하락 → <b>매도만</b> 통과. '
+         f'거리 막대의 <b>점선</b>이 확립 문턱({fm:g})이다 — 넘으면 크기 {cfg["farmul"]:g}배.</div>'
+         f'<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;'
+         f'font:13px/1.45 system-ui,sans-serif;color:{_H1_C["ink"]};">']
+    for k in _H1_PAIRS:
+        t = tr.get(k)
+        if not t:
+            continue
+        prec = _H1_PAIRS[k][1]
+        up = bool(t["up"]); col = _H1_C["up"] if up else _H1_C["dn"]
+        estab = bool(cfg["farmin"] > 0 and t["dist"] >= cfg["farmin"])
+        mult = cfg["farmul"] if estab else 1.0
+        # 거리 막대: 문턱이 정확히 가운데 오도록 0~2×farmin 을 눈금으로 쓴다
+        frac = min(1.0, t["dist"] / (2 * fm))
+        o.append(
+            f'<tr><td style="padding:9px 10px 9px 0;border-top:1px solid {_H1_C["line"]};'
+            f'white-space:nowrap;"><b>{_h1_esc(k)}</b><br>'
+            f'<span style="color:{col};font-weight:600;">{"상승 ▲" if up else "하락 ▼"}</span> '
+            f'<span style="color:{_H1_C["sub"]};">{"매수만" if up else "매도만"}</span></td>'
+            f'<td style="padding:9px 10px;border-top:1px solid {_H1_C["line"]};white-space:nowrap;">'
+            f'{_h1_bar_html(frac, col, thr=0.5)}'
+            f'<span style="font-size:11px;color:{_H1_C["sub"]};">거리 {t["dist"]:.2f} '
+            f'<b style="color:{col};">{"확립" if estab else "전환 임박"}</b> · 크기 {mult:g}배</span></td>'
+            f'<td style="padding:9px 0 9px 10px;border-top:1px solid {_H1_C["line"]};'
+            f'font-size:12px;color:{_H1_C["sub"]};">'
+            f'현재 <b style="color:{_H1_C["ink"]};">{t["px"]:.{prec}f}</b> / EMA {t["ema"]:.{prec}f} '
+            f'(차이 {t["gap"]:+.1f}pip)<br>'
+            f'전환까지 가격이 {"하락" if up else "상승"} {abs(t["gap"]):.0f}pip ≈ {t["dist"]:.1f}일 · '
+            f'가만 있으면 EMA 가 하루 {t["ema_d"]:+.1f}pip 따라옴 (절반 {t["half"]:.0f}일)</td></tr>')
+    o.append('</table>'
+             f'<div style="font:11px/1.5 system-ui,sans-serif;color:{_H1_C["sub"]};margin:6px 0 0;">'
+             f"'전환 임박' 구간 과거 승률 18.8% (확립 구간 31%). 그래서 크기를 안 키운다.</div>")
+    return "".join(o)
+
+
+def _h1_sig_html(cfg):
+    """최근 잡힌 신호 — 한 줄씩, 걸린 사유 전부. 시트 'H24_신호' 의 사유와 같은 값을 쓴다."""
+    m = _H1_STATE.get("mail") or {}
+    recent = m.get("recent")
+    if recent is None:
+        return ""
+    o = [f'<h3 style="font:600 15px/1.4 system-ui,sans-serif;color:{_H1_C["ink"]};margin:22px 0 4px;">'
+         f'최근 잡힌 신호 {len(recent)}건</h3>'
+         f'<div style="font:12px/1.5 system-ui,sans-serif;color:{_H1_C["sub"]};margin:0 0 10px;">'
+         f'시각은 진입했을 시각(ET). 사유는 <b>H24_신호 탭과 같은 값</b>이다 — 걸린 게 여러 개면 전부 적는다.</div>']
+    if not recent:
+        o.append(f'<div style="font:13px system-ui,sans-serif;color:{_H1_C["sub"]};">'
+                 f'없음 — 다이버전스 자체가 안 나왔다</div>')
+        return "".join(o)
+    o.append(f'<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;'
+             f'font:13px/1.45 system-ui,sans-serif;color:{_H1_C["ink"]};">')
+    for r in recent:
+        ok = (r["사유"] == "통과")
+        bg, bd = (_H1_C["ok"], _H1_C["okb"]) if ok else (_H1_C["blk"], _H1_C["blkb"])
+        nw = int(r.get("사유수") or 1)
+        why = "실거래 진입" if ok else _h1_esc(r.get("사유전체") or r["사유"])
+        badge = (f'<span style="display:inline-block;background:{_H1_C["dnl"]};color:{_H1_C["dn"]};'
+                 f'font-size:11px;font-weight:600;padding:1px 6px;border-radius:9px;'
+                 f'margin-left:6px;">동시 {nw}개</span>') if (not ok and nw > 1) else ""
+        dcol = _H1_C["up"] if r["방향"] == "매수" else _H1_C["dn"]
+        o.append(
+            f'<tr><td style="padding:8px 10px;background:{bg};border-left:3px solid {bd};'
+            f'border-bottom:2px solid #fff;white-space:nowrap;vertical-align:top;">'
+            f'<b>{r["시각"]:%m-%d %H:%M}</b><br>'
+            f'<span style="font-size:12px;">{_h1_esc(r["통화"])}</span> '
+            f'<span style="color:{dcol};font-weight:600;font-size:12px;">{_h1_esc(r["방향"])}</span></td>'
+            f'<td style="padding:8px 10px;background:{bg};border-bottom:2px solid #fff;'
+            f'vertical-align:top;"><b style="color:{bd if ok else _H1_C["ink"]};">'
+            f'{"✅ 진입" if ok else "⛔ 막힘"}</b>{badge}<br>'
+            f'<span style="font-size:12px;color:{_H1_C["sub"]};">{why}</span></td></tr>')
+    o.append('</table>')
+    return "".join(o)
+
+
+def _h1_email_html(today, cfg, body, s):
+    """텍스트 본문(body)은 <pre> 로 전부 보존하고, 그 위에 시각화 두 개를 올린다.
+    즉 HTML 쪽에서 정보가 빠지는 일은 없다."""
+    tot = s.get("누적$", 0)
+    tcol = _H1_C["up"] if tot >= 0 else _H1_C["dn"]
+    return (
+        f'<!doctype html><html><body style="margin:0;padding:18px;background:#fff;">'
+        f'<div style="max-width:720px;margin:0 auto;">'
+        f'<div style="font:600 13px system-ui,sans-serif;color:{_H1_C["sub"]};">'
+        f'H24 · {_h1_esc(today)} (ET){" · 실계좌" if _H1_REAL else " · 데모"}</div>'
+        f'<div style="font:700 26px/1.2 system-ui,sans-serif;color:{tcol};margin:2px 0 0;">'
+        f'누적 {tot:+,.0f}$</div>'
+        f'<div style="font:13px system-ui,sans-serif;color:{_H1_C["sub"]};margin:2px 0 0;">'
+        f'{s.get("거래", 0)}건 · 거래당 위험 ${cfg["risk"]:,.0f}</div>'
+        f'{_h1_sig_html(cfg)}{_h1_ema_html(cfg)}'
+        f'<h3 style="font:600 15px/1.4 system-ui,sans-serif;color:{_H1_C["ink"]};margin:24px 0 6px;">'
+        f'전체 보고서</h3>'
+        f'<pre style="font:12px/1.5 ui-monospace,Menlo,Consolas,monospace;color:{_H1_C["ink"]};'
+        f'background:{_H1_C["blk"]};border:1px solid {_H1_C["line"]};border-radius:6px;'
+        f'padding:12px;white-space:pre-wrap;word-break:break-word;margin:0;">'
+        f'{_h1_esc(body)}</pre></div></body></html>')
+
+
 def _h1_send(today):
     cfg = _h1_cfg()
+    # [2026-11-27] 신호 계산이 시간초과로 건너뛰어지면 어제 것이 남아 HTML 에 옛 신호가 찍힌다.
+    #   본문 계산 전에 비워서, 실패하면 HTML 에서도 그냥 빠지게 한다.
+    _H1_STATE.pop("mail", None)
     s, body, warn = _h1_email_body(today, cfg)
     soon = _h1_cb_soon(cfg, today, 3)
     cb = ("📅" + "·".join(sorted({w for _, w, _ in soon})) + " ") if soon else ""
     stop = "" if _h1_sw12(cfg)[0] else "⛔중단 "
+    try:                                                 # [2026-11-27] HTML 은 '덧붙이기'다
+        html = _h1_email_html(today, cfg, body, s)       #   터지면 예전처럼 텍스트만 나간다
+    except Exception as e:
+        _h1_log(f"HTML 메일 생성 실패 — 텍스트로만 보낸다: {str(e)[:80]}")
+        html = ""
     return _pr_send_email(f"{'⚠ ' if warn else ''}{stop}{cb}{'[실계좌] ' if _H1_REAL else ''}"
                           f"[{_H1_MAXBARS}봉 묶음] {today} "
                           f"누적 {s.get('누적$', 0):+,.0f}$ ({s.get('거래', 0)}건)",
-                          body)                                   # type: ignore[name-defined]
+                          body, html)                               # type: ignore[name-defined]
 
 
 def _h1_email_check(now, cfg):
@@ -15978,7 +16217,8 @@ def h24_status_endpoint(run: int = 0):
                                      if k in (_H1_FINCACHE.get("gap") or {}) else "")
                              for k, v in (_h1_carry_dirs(cfg) or {}).items()} or "아직 조회 전",
                    "금리방향출처": _H1_FINCACHE.get("src", ""),
-                   "진입금지시간ET": {k: f"{min(v)}~{max(v)}시" if len(v) == max(v) - min(v) + 1 else sorted(v) for k, v in cfg["blocks"].items()},
+                   "진입금지시간ET": {k: _h1_hours_text(v) for k, v in cfg["blocks"].items()},
+                   "진입금지시간개수": {k: len(v) for k, v in cfg["blocks"].items()},
                    "다음FOMC": [f for f in cfg["fomc"] if f >= f"{_h1_dt.now(_H1_NY):%Y-%m-%d}"][:3],
                    "중단잔고$": cfg["stop_bal"], "3개월경고$": -cfg["warn3m"],
                    "시작": f"{_H1_START:%Y-%m-%d %H:%M} ET", "점검일": _H1_JUDGE}}
